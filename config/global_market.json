@@ -1,0 +1,161 @@
+{
+  "provider": "YAHOO",
+  "enabled": true,
+  "source_mode": "LIVE",
+  "period": "10d",
+  "interval": "1d",
+  "retry_count": 2,
+  "retry_delay_seconds": 3,
+  "request_timeout_seconds": 20,
+  "cache_enabled": true,
+  "cache_max_age_minutes": 30,
+  "minimum_sentiment_coverage_ratio": 0.5,
+  "batch_fetch_enabled": true,
+  "freshness": {
+    "US_INDEX": {
+      "timezone": "America/New_York",
+      "market_close": "16:00",
+      "accepted_delay_days": 1,
+      "max_age_days": 5
+    },
+    "ASIA_INDEX": {
+      "timezone": "Asia/Jakarta",
+      "market_close": "16:00",
+      "accepted_delay_days": 1,
+      "max_age_days": 5
+    },
+    "CURRENCY": {
+      "timezone": "UTC",
+      "market_close": "17:00",
+      "accepted_delay_days": 1,
+      "max_age_days": 5
+    },
+    "COMMODITY": {
+      "timezone": "America/New_York",
+      "market_close": "17:00",
+      "accepted_delay_days": 1,
+      "max_age_days": 5
+    }
+  },
+  "instruments": [
+    {
+      "key": "sp500",
+      "name": "S&P 500",
+      "category": "US_INDEX",
+      "symbol": "^GSPC",
+      "enabled": true,
+      "weight": 1.0
+    },
+    {
+      "key": "nasdaq",
+      "name": "Nasdaq",
+      "category": "US_INDEX",
+      "symbol": "^IXIC",
+      "enabled": true,
+      "weight": 1.0
+    },
+    {
+      "key": "dow_jones",
+      "name": "Dow Jones",
+      "category": "US_INDEX",
+      "symbol": "^DJI",
+      "enabled": true,
+      "weight": 1.0
+    },
+    {
+      "key": "vix",
+      "name": "VIX",
+      "category": "US_INDEX",
+      "symbol": "^VIX",
+      "enabled": true,
+      "weight": -1.0,
+      "inverse_sentiment": true
+    },
+    {
+      "key": "nikkei225",
+      "name": "Nikkei 225",
+      "category": "ASIA_INDEX",
+      "symbol": "^N225",
+      "enabled": true,
+      "weight": 1.0,
+      "timezone": "Asia/Tokyo"
+    },
+    {
+      "key": "hang_seng",
+      "name": "Hang Seng",
+      "category": "ASIA_INDEX",
+      "symbol": "^HSI",
+      "enabled": true,
+      "weight": 1.0,
+      "timezone": "Asia/Hong_Kong"
+    },
+    {
+      "key": "shanghai_composite",
+      "name": "Shanghai Composite",
+      "category": "ASIA_INDEX",
+      "symbol": "000001.SS",
+      "enabled": true,
+      "weight": 1.0,
+      "timezone": "Asia/Shanghai"
+    },
+    {
+      "key": "kospi",
+      "name": "KOSPI",
+      "category": "ASIA_INDEX",
+      "symbol": "^KS11",
+      "enabled": true,
+      "weight": 1.0,
+      "timezone": "Asia/Seoul"
+    },
+    {
+      "key": "usd_idr",
+      "name": "USD/IDR",
+      "category": "CURRENCY",
+      "symbol": "IDR=X",
+      "enabled": true,
+      "weight": -0.5,
+      "inverse_sentiment": true
+    },
+    {
+      "key": "dxy",
+      "name": "Dollar Index",
+      "category": "CURRENCY",
+      "symbol": "DX-Y.NYB",
+      "enabled": true,
+      "weight": -0.75,
+      "inverse_sentiment": true
+    },
+    {
+      "key": "gold",
+      "name": "Gold",
+      "category": "COMMODITY",
+      "symbol": "GC=F",
+      "enabled": true,
+      "weight": 0.25
+    },
+    {
+      "key": "wti_crude",
+      "name": "WTI Crude Oil",
+      "category": "COMMODITY",
+      "symbol": "CL=F",
+      "enabled": true,
+      "weight": 0.25
+    },
+    {
+      "key": "brent_crude",
+      "name": "Brent Crude Oil",
+      "category": "COMMODITY",
+      "symbol": "BZ=F",
+      "enabled": true,
+      "weight": 0.25
+    },
+    {
+      "key": "natural_gas",
+      "name": "Natural Gas",
+      "category": "COMMODITY",
+      "symbol": "NG=F",
+      "enabled": true,
+      "weight": 0.1
+    }
+  ]
+}

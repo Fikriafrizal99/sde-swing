@@ -1,0 +1,15 @@
+SDE BASELINE COMPLETE V1 - VALIDATION REPORT
+============================================
+
+Validation performed:
+1. Python compileall: PASS for all Python modules.
+2. Broker Fusion test: PASS.
+   - Technical candidates read: 30
+   - Broker symbols matched: 15/30 from the available validation Broker Summary
+   - FINAL_DECISION_V2.csv generated successfully.
+3. Decision Engine v3.1 test: PASS.
+   - FINAL_DECISION_V3.csv generated successfully.
+   - MARKET_STATUS.json generated successfully.
+4. End-to-end run_pipeline.py test: PASS.
+
+The distributed data/input/FINAL_DECISION_V2.csv is header-only. It contains no sample decisions and will be overwritten by broker_fusion.py during a real run.

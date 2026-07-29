@@ -1,0 +1,87 @@
+{
+  "timezone": "Asia/Jakarta",
+  "trading_days_only": true,
+  "trading_calendar": "config/trading_calendar.json",
+  "paths": {
+    "preview_root": "data/output/previews",
+    "job_status_root": "data/output/job_status",
+    "state_root": "data/state/scheduler",
+    "job_log": "logs/sde_job_runner.log"
+  },
+  "market_outlook": {
+    "enabled": true,
+    "time": "07:30"
+  },
+  "post_market": {
+    "enabled": true,
+    "time": "16:30",
+    "stage": "technical_only",
+    "allow_broker_fusion": false,
+    "allow_final_decision": false,
+    "fallback_to_existing_on_refresh_failure": true,
+    "report_mode": "compact_single_message"
+  },
+  "locks": {
+    "stale_after_minutes": 180,
+    "global_resource_lock_name": "sde_pipeline_write.lock"
+  },
+  "final_watchlist": {
+    "enabled": true,
+    "start_time": "18:00",
+    "retry_interval_minutes": 5,
+    "broker_retry_seconds": 300,
+    "cutoff_time": "18:30",
+    "broker_cutoff_time": "18:30",
+    "max_detail_symbols": 5,
+    "missing_broker_policy": "skip_final_watchlist",
+    "strict_trade_date_match": true,
+    "detail_statuses": [
+      "BUY CONFIRMED",
+      "BUY CANDIDATE"
+    ]
+  },
+  "broker_readiness": {
+    "minimum_broker_records": 1,
+    "minimum_broker_coverage_ratio": 0.8,
+    "stable_file_check_seconds": 5,
+    "reject_sample_data": true,
+    "required_broker_columns": [
+      "EMITEN",
+      "TO_DATE",
+      "TOTAL_BUY",
+      "TOTAL_SELL"
+    ],
+    "allowed_broker_sources": [
+      "LIVE",
+      "STOCKBIT",
+      "MANUAL_FILE"
+    ]
+  },
+  "runtime": {
+    "job_lock_enabled": true,
+    "global_resource_lock_enabled": true,
+    "stale_lock_detection": true
+  },
+  "telegram": {
+    "prevent_duplicate": true,
+    "main_report_idempotency_by_type": true,
+    "maximum_message_length": 4000,
+    "split_long_messages": true,
+    "html_escape_dynamic_values": true,
+    "detail_cooldown_minutes": 360
+  },
+  "delivery": {
+    "idempotency_index": "data/state/scheduler/telegram_idempotency.json",
+    "delivery_log": "data/state/scheduler/delivery_log.jsonl",
+    "failed_root": "data/output/failed_delivery",
+    "topic_routing": {
+      "market_outlook": "9",
+      "post_market": "9",
+      "final_watchlist": "6",
+      "signal_detail": "6",
+      "evaluation": "5",
+      "system": "5"
+    }
+  }
+}
+

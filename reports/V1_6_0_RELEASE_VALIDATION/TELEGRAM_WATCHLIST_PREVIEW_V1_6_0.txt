@@ -1,0 +1,55 @@
+📋 <b>SDE SWING — WATCHLIST</b>
+📅 Jumat, 24 Juli 2026
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+👀 <b>PANTAUAN UTAMA</b> — belum ada setup READY
+
+<b>1. ICBP</b>
+   🟠 <b>BUY CANDIDATE</b> — Score 86,2%
+   ⚠️ Plan  : WAITING — resistance minor masih dekat; tunggu konfirmasi
+   🎯 Entry : tunggu close &gt; 7.150
+   💰 TP    : ditetapkan setelah trigger
+   🛡️ SL    : ditetapkan setelah trigger
+   🌊 Flow  : Pola STRONG ACCUMULATION | net +Rp5,61 miliar | confidence 90%
+   📝 Alasan: trend kuat; RSI sehat; MACD positif; volume mendukung; breakout; net flow positif; buyer concentration dominan
+
+<b>2. INDF</b>
+   🟠 <b>BUY CANDIDATE</b> — Score 85,0%
+   ⚠️ Plan  : WAITING — harga masih di atas area entry; tunggu pullback
+   🎯 Entry : pantau area 6.729–6.808
+   💰 TP    : ditetapkan setelah trigger
+   🛡️ SL    : ditetapkan setelah trigger
+   🌊 Flow  : Pola STRONG ACCUMULATION | net +Rp8,26 miliar | confidence 94%
+   📝 Alasan: trend kuat; RSI sehat; MACD positif; volume mendukung; pullback; net flow positif; buyer concentration dominan
+
+<b>3. TINS</b>
+   🟡 <b>WATCH HIGH</b> — Score 72,8%
+   ⚠️ Plan  : WAITING — resistance minor masih dekat; tunggu konfirmasi
+   🎯 Entry : tunggu close &gt; 3.700
+   💰 TP    : ditetapkan setelah trigger
+   🛡️ SL    : ditetapkan setelah trigger
+   🌊 Flow  : Pola NEUTRAL | net -Rp21,44 miliar | confidence 39%
+   📝 Alasan: trend kuat; RSI sehat; MACD positif; volume mendukung; breakout; long upper wick; buyer concentration dominan
+
+<b>4. ADRO</b>
+   🔵 <b>WATCH</b> — Score 68,7%
+   ⚠️ Plan  : WAITING — rencana entry belum tersedia
+   🎯 Entry : menunggu konfirmasi
+   💰 TP    : belum ditetapkan
+   🛡️ SL    : berdasarkan invalidation setup
+   🌊 Flow  : Pola NEUTRAL | net +Rp47,97 miliar | confidence 39%
+   📝 Alasan: trend kuat; RSI sehat; MACD positif; volume mendukung; trend continuation; net flow positif
+
+<b>5. AKRA</b>
+   🔵 <b>WATCH</b> — Score 61,6%
+   ⚠️ Plan  : WAITING — rencana entry belum tersedia
+   🎯 Entry : menunggu konfirmasi
+   💰 TP    : belum ditetapkan
+   🛡️ SL    : berdasarkan invalidation setup
+   🌊 Flow  : Pola NEUTRAL | net +Rp39,82 miliar | confidence 39%
+   📝 Alasan: trend kuat; RSI sehat; MACD positif; volume mendukung; trend continuation; net flow positif
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+🧭 <b>ARAHAN</b>
+Belum ada kandidat yang siap entry. Urutan di atas adalah prioritas pemantauan, bukan prioritas beli.
+
+⚠️ Watchlist sistem, bukan rekomendasi transaksi.

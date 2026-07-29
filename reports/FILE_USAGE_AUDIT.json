@@ -1,0 +1,33 @@
+{
+  "audit_date": "2026-07-24",
+  "package_version": "SDE_SWING_V1_2_SAFE_BASELINE",
+  "canonical_pipeline": "master_pipeline.py",
+  "removed_duplicate_files": [
+    "modules/decision_engine/decision_engine_v3_1.py",
+    "modules/preprocessor/stockbit_preprocessor.py"
+  ],
+  "removed_legacy_launchers": [
+    "run_pipeline.py",
+    "RUN_FUSION_AND_DECISION.bat",
+    "RUN_SDE_REFRESH_DATA.bat",
+    "run_daily_signal.bat",
+    "run_decision_engine.bat"
+  ],
+  "removed_replaced_modules": [
+    "modules/decision_source_builder/build_decision_source.py",
+    "modules/decision_source_builder/refresh_decision_source.py",
+    "modules/backtesting/archive_daily_signal.py"
+  ],
+  "stale_snapshot_audit": {
+    "candidate_count": 30,
+    "broker_match_count": 17,
+    "broker_coverage": 0.5666666667,
+    "minimum_required": 0.8,
+    "old_v2_run_id": "SWING-20260721-175034-8482",
+    "old_v2_data_quality": "STALE_ACCEPTED"
+  },
+  "historical_source_preserved": true,
+  "database_preserved": true,
+  "telegram_preserved": true,
+  "tampermonkey_preserved": true
+}

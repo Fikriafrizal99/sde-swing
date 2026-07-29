@@ -1,0 +1,72 @@
+{
+  "Pipeline_Version": "SDE_SWING_V1_5_TELEGRAM_UI",
+  "Validation_Date": "2026-07-24",
+  "Status": "PARTIAL_PASS_TIMEOUT",
+  "Completed_Stages": 10,
+  "Stages": [
+    {
+      "stage_log": "01_python_compile.log",
+      "status": "PASS",
+      "size_bytes": 67
+    },
+    {
+      "stage_log": "02_regression_tests.log",
+      "status": "PASS",
+      "size_bytes": 745
+    },
+    {
+      "stage_log": "03_technical_feature_engine.log",
+      "status": "PASS",
+      "size_bytes": 1646
+    },
+    {
+      "stage_log": "04_candidate_selector.log",
+      "status": "PASS",
+      "size_bytes": 703
+    },
+    {
+      "stage_log": "05_broker_fusion.log",
+      "status": "PASS",
+      "size_bytes": 694
+    },
+    {
+      "stage_log": "06_decision_engine.log",
+      "status": "PASS",
+      "size_bytes": 461
+    },
+    {
+      "stage_log": "07_exit_engine.log",
+      "status": "PASS",
+      "size_bytes": 576
+    },
+    {
+      "stage_log": "08_swing_analytics.log",
+      "status": "PASS",
+      "size_bytes": 1917
+    },
+    {
+      "stage_log": "09_database_archive.log",
+      "status": "PASS",
+      "size_bytes": 2169
+    },
+    {
+      "stage_log": "10_telegram_dry_run.log",
+      "status": "PASS",
+      "size_bytes": 15229
+    }
+  ],
+  "Completed_Checks": [
+    "Python compile",
+    "65 unit/regression tests",
+    "Technical feature engine: 439 success, 2 failed source symbols",
+    "Candidate selector: 30 candidates",
+    "Broker fusion: 30/30 matched",
+    "Decision engine",
+    "Exit engine",
+    "Swing analytics",
+    "Database archive",
+    "Telegram professional UI dry run"
+  ],
+  "Incomplete_Check": "Master pipeline orchestration stage did not finish before the execution-environment timeout.",
+  "Interpretation": "UI implementation and downstream formatter path passed targeted validation. Full master orchestration is not claimed as passed in this release report."
+}

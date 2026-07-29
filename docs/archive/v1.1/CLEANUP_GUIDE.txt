@@ -1,0 +1,12 @@
+JANGAN DIHAPUS SEKARANG:
+- Stock_Decision_Engine_v4
+- file CSV sumber asli yang belum disalin
+
+SETELAH v4 BERHASIL:
+Pindahkan (bukan hapus) folder versi lama ke LEGACY_BACKUP, termasuk:
+- stockbit_decision_engine_v1_0, v2_0, v3_0, v3_1
+- stockbit_telegram_bot_v1_0, v1_1
+- stockbit_backtesting_engine_v1_0, v1_1
+- folder modul lama lain yang sudah tersedia di modules v4
+
+Simpan LEGACY_BACKUP minimal beberapa hari sampai seluruh pipeline v4 terbukti berjalan.

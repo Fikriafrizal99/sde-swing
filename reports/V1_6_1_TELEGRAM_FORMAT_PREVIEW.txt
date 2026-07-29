@@ -1,0 +1,163 @@
+SDE V1.6.1 TELEGRAM FORMAT PREVIEW
+====================================
+
+CATATAN: Semua kode saham dan angka di bawah adalah data simulasi untuk validasi format, bukan hasil analisis live.
+
+--- POST MARKET ---
+
+📊 <b>SDE SWING — POST MARKET</b>
+📅 Senin, 27 Juli 2026
+🕒 21:54 WIB
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📈 <b>KONDISI PASAR</b>
+📈 IHSG : 7.100,00 (+0,71%)
+🟢 Regime: <b>BULLISH</b>
+🌐 Breadth: 87% di atas SMA20 — positif
+
+🔍 <b>HASIL SCAN TEKNIKAL</b>
+<pre>Saham diproses : 439
+Kandidat lolos : 3
+Ready Zone     : 1
+Developing     : 2
+Extended       : 0</pre>
+⭐ <b>KANDIDAT TEKNIKAL UTAMA</b>
+1. <b>ABCD</b> — Quality 83,0% | Entry 79,0%
+   Setup: PULLBACK | READY ZONE
+2. <b>EFGH</b> — Quality 80,0% | Entry 69,0%
+   Setup: BREAKOUT | DEVELOPING
+3. <b>IJKL</b> — Quality 76,0% | Entry 62,0%
+   Setup: TREND CONTINUATION | DEVELOPING
+
+🧭 <b>KESIMPULAN</b>
+1 kandidat berada dekat zona entry. Keputusan final tetap menunggu Broker Summary valid.
+
+⚠️ Post Market adalah screening teknikal awal, bukan sinyal entry final.
+
+--- FINAL WATCHLIST ---
+
+📋 <b>SDE SWING — FINAL WATCHLIST</b>
+📅 Senin, 27 Juli 2026
+🕒 21:54 WIB
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ <b>BUY CONFIRMED</b>
+1. <b>ABCD</b> — Score 84,2%
+   Entry 1.200–1.220 | TP 1.280 / 1.340 | SL 1.160
+   Broker: Pola ACCUMULATION | net +Rp4,20 miliar | confidence 76%
+   Top Buy : YP @Rp1.208
+   Top Sell: PD @Rp1.226
+   Aksi: tunggu harga masuk area entry; jangan mengejar.
+
+🟠 <b>BUY CANDIDATE</b>
+2. <b>EFGH</b> — Score 79,0%
+   Setup: BREAKOUT | WAITING
+   Trigger/Area: pantau area 2.050–2.050
+   Broker: Pola ACCUMULATION | net +Rp6,75 miliar | confidence 68%
+   Top Buy : CC @Rp2.015
+   Top Sell: PD @Rp2.045
+   Aksi: menunggu harga masuk area entry atau trigger.
+
+🟡 <b>WATCH HIGH</b>
+3. <b>IJKL</b> — Score 74,0%
+   Setup: TREND CONTINUATION
+   Kendala: rencana entry belum tersedia
+   Aksi: pantau; belum menjadi prioritas entry.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+🧭 <b>RINGKASAN</b>
+BUY Confirmed : 1
+BUY Candidate : 1
+Watch High    : 1
+
+Detail broker lengkap dikirim untuk BUY CONFIRMED dan BUY CANDIDATE terbaik.
+
+⚠️ Watchlist sistem, bukan rekomendasi transaksi.
+
+--- DETAIL BUY CONFIRMED ---
+
+📊 <b>ABCD | 🟢 BUY CONFIRMED | 84,2%</b>
+📅 Senin, 27 Juli 2026 | 🕒 21:54 WIB
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📈 <b>TEKNIKAL</b>
+<pre>Setup      : PULLBACK
+Trend      : BULLISH
+Quality    : 83,0%
+Readiness  : 79,0%
+Momentum   : positif — RSI 61.0
+Volume     : tinggi — 1.80x MA20</pre>
+🌊 <b>BROKER SUMMARY</b>
+<pre>Status     : ACCUMULATION
+Direction  : ACCUMULATION
+Confidence : 76%
+Net Flow   : +Rp4,20 miliar
+Buy / Sell : 62% / 38%
+Flow Status: SELARAS</pre>
+🟢 <b>TOP BUYER</b>
+1. YP — Rp2,10 miliar | Avg Rp1.208
+2. CC — Rp1,35 miliar | Avg Rp1.214
+3. AK — Rp920,00 juta | Avg Rp1.205
+
+🔴 <b>TOP SELLER</b>
+1. PD — Rp1,10 miliar | Avg Rp1.226
+2. ZP — Rp780,00 juta | Avg Rp1.219
+3. BK — Rp550,00 juta | Avg Rp1.230
+
+💰 <b>POSISI BROKER</b>
+<pre>Avg Buyer     : Rp1.209
+Avg Seller    : Rp1.225
+Harga terakhir: Rp1.215
+Jarak buy avg : +0,48%</pre>
+🎯 <b>RENCANA</b>
+<pre>Status: READY — rencana entry valid
+Entry : 1.200–1.220
+TP1   : 1.280
+TP2   : 1.340
+SL    : 1.160</pre>
+🧭 <b>EKSEKUSI</b>
+Rencana entry sudah valid. Eksekusi hanya di area entry, gunakan stop loss yang ditetapkan, dan jangan mengejar harga.
+
+⚠️ Disiplin pada area entry dan level invalidation.
+
+--- DETAIL BUY CANDIDATE ---
+
+📊 <b>EFGH | 🟠 BUY CANDIDATE | 79,0%</b>
+📅 Senin, 27 Juli 2026 | 🕒 21:54 WIB
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📈 <b>TEKNIKAL</b>
+<pre>Setup      : BREAKOUT
+Trend      : BULLISH
+Quality    : 80,0%
+Readiness  : 69,0%
+Momentum   : positif — RSI 63.0
+Volume     : tinggi — 1.50x MA20</pre>
+🌊 <b>BROKER SUMMARY</b>
+<pre>Status     : ACCUMULATION
+Direction  : ACCUMULATION
+Confidence : 68%
+Net Flow   : +Rp6,75 miliar
+Buy / Sell : 58% / 42%
+Flow Status: SELARAS</pre>
+🟢 <b>TOP BUYER</b>
+1. CC — Rp3,20 miliar | Avg Rp2.015
+2. YU — Rp2,10 miliar | Avg Rp2.025
+3. XL — Rp1,40 miliar | Avg Rp2.010
+
+🔴 <b>TOP SELLER</b>
+1. PD — Rp2,00 miliar | Avg Rp2.045
+2. ZP — Rp1,30 miliar | Avg Rp2.035
+3. DR — Rp900,00 juta | Avg Rp2.050
+
+💰 <b>POSISI BROKER</b>
+<pre>Avg Buyer     : Rp2.017
+Avg Seller    : Rp2.043
+Harga terakhir: Rp2.040
+Jarak buy avg : +1,14%</pre>
+🎯 <b>RENCANA</b>
+<pre>Status: WAITING — menunggu harga masuk area entry atau trigger
+Entry : pantau area 2.050–2.050
+TP1   : ditetapkan setelah trigger
+TP2   : belum ditetapkan
+SL    : ditetapkan setelah trigger</pre>
+🧭 <b>EKSEKUSI</b>
+Kualitas, timing, dan broker cukup mendukung. Tunggu area entry atau trigger yang ditetapkan sebelum eksekusi.
+
+⚠️ Disiplin pada area entry dan level invalidation.

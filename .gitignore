@@ -1,0 +1,57 @@
+﻿# Credential
+.env
+.env.*
+!.env.example
+credentials*.json
+secrets*.json
+config/telegram.json
+config/*secret*.json
+config/*local*.json
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Runtime dan output
+data/input/
+data/output/
+data/state/
+data/database/
+logs/
+runtime/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary
+work/
+tmp/
+temp/
+*.log
+*.bak
+*.old
+
+# Archives
+*.zip
+*.rar
+*.7z
+
+# Editor
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Generated cache and machine-specific files
+data/cache/
+scheduler/windows/generated/
+
+# Unrelated/release payload
+payload/

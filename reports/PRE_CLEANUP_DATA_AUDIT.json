@@ -1,0 +1,43 @@
+{
+  "current_candidate_count": 30,
+  "stale_broker_row_count": 30,
+  "stale_broker_match_count": 17,
+  "stale_broker_coverage": 0.5666666666666667,
+  "missing_symbols": [
+    "AVIA",
+    "BAIK",
+    "BBKP",
+    "BFIN",
+    "BMTR",
+    "BSDE",
+    "DSNG",
+    "GMFI",
+    "PKPK",
+    "POWR",
+    "PTPP",
+    "SMRA",
+    "WIRG"
+  ],
+  "unexpected_symbols": [
+    "ARTO",
+    "BTPN",
+    "BTPS",
+    "EURO",
+    "FAST",
+    "JARR",
+    "KINO",
+    "LPIN",
+    "MAYA",
+    "MBMA",
+    "PGEO",
+    "SAFE",
+    "TARA"
+  ],
+  "stale_v2_rows": 30,
+  "stale_v2_run_ids": [
+    "SWING-20260721-175034-8482"
+  ],
+  "stale_v2_quality": [
+    "STALE_ACCEPTED"
+  ]
+}
