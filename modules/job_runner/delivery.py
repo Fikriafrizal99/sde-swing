@@ -18,15 +18,29 @@ from .reports import ReportPayload
 from .runtime import RunnerContext, append_jsonl, now_wib, read_json, resolve, write_json
 
 
+def _attachment_path(payload: ReportPayload) -> Path | None:
+    raw = getattr(payload, "attachment_path", None)
+    if raw in (None, ""):
+        return None
+    return Path(raw)
+
+
+def _attachment_caption(payload: ReportPayload) -> str:
+    return str(getattr(payload, "caption", "") or payload.text or "").strip()
+
+
 def _idempotency_key(ctx: RunnerContext, payload: ReportPayload) -> str:
     report = payload.report_type.upper()
+    attachment = _attachment_path(payload)
+    if attachment is not None:
+        return f"{ctx.trade_date.isoformat()}:{report}:{attachment.name.upper()}"
     if report == "DATA_WARNING":
         return f"{ctx.trade_date.isoformat()}:DATA_WARNING:{ctx.job.upper()}"
-    if report == "SIGNAL_DETAIL":
+    if report in {"SIGNAL_DETAIL", "FINAL_WATCHLIST_DETAIL"}:
         symbol = (payload.symbol or payload.filename.replace("signal_detail_", "").replace(".txt", "")).upper()
         status = (payload.signal_status or "UNKNOWN").upper()
         version = payload.signal_version or ctx.run_id
-        return f"{ctx.trade_date.isoformat()}:SIGNAL_DETAIL:{symbol}:{status}:{version}"
+        return f"{ctx.trade_date.isoformat()}:{report}:{symbol}:{status}:{version}"
     return f"{ctx.trade_date.isoformat()}:{report}"
 
 
@@ -113,31 +127,40 @@ def split_telegram_text(text: str, max_len: int = 4000) -> list[str]:
             part = part[content_limit:]
         normalized.append(part)
     total = len(normalized)
-    marked: list[str] = []
-    for index, part in enumerate(normalized, start=1):
-        marker = f"Bagian {index}/{total}\n\n"
-        marked.append(marker + part)
-    return marked
+    return [f"Bagian {index}/{total}\n\n{part}" for index, part in enumerate(normalized, start=1)]
 
 
 def normalize_telegram_text(text: str) -> str:
-    """Keep message spacing stable across Windows, preview files, and Telegram."""
     normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     normalized = re.sub(r"[ \t]+\n", "\n", normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized)
     return normalized.strip()
 
 
-def _send_telegram(ctx: RunnerContext, payload: ReportPayload, text: str | None = None, part_index: int = 1, part_count: int = 1) -> dict[str, Any]:
-    if requests is None:
-        raise RuntimeError("Dependency requests belum terpasang. Jalankan maintenance\\INSTALL_REQUIREMENTS.bat.")
-    cfg = _telegram_config(ctx)
-    telegram = cfg.get("telegram", {})
+def _credentials() -> tuple[str, str]:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     if not token or not chat_id:
         raise RuntimeError("Telegram token/chat_id belum dikonfigurasi.")
+    return token, chat_id
+
+
+def _response_json(response: Any) -> dict[str, Any]:
+    try:
+        body = response.json()
+    except Exception as exc:
+        raise RuntimeError(f"Respons Telegram bukan JSON: HTTP {response.status_code}") from exc
+    if not response.ok or not body.get("ok"):
+        raise RuntimeError(f"Telegram API gagal: {body}")
+    return body
+
+
+def _send_telegram(ctx: RunnerContext, payload: ReportPayload, text: str | None = None, part_index: int = 1, part_count: int = 1) -> dict[str, Any]:
+    if requests is None:
+        raise RuntimeError("Dependency requests belum terpasang. Jalankan maintenance\\INSTALL_REQUIREMENTS.bat.")
+    token, chat_id = _credentials()
     message_text = text if text is not None else payload.text
+    cfg = _telegram_config(ctx)
     ui_cfg = cfg.get("telegram_ui", {})
     parse_mode = str(ui_cfg.get("parse_mode", "HTML")).strip() or "HTML"
     data: dict[str, Any] = {
@@ -150,13 +173,33 @@ def _send_telegram(ctx: RunnerContext, payload: ReportPayload, text: str | None 
     if topic_id:
         data["message_thread_id"] = topic_id
     response = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", data=data, timeout=30)
-    try:
-        body = response.json()
-    except Exception as exc:
-        raise RuntimeError(f"Respons Telegram bukan JSON: HTTP {response.status_code}") from exc
-    if not response.ok or not body.get("ok"):
-        raise RuntimeError(f"Telegram API gagal: {body}")
-    return body
+    return _response_json(response)
+
+
+def _send_document(ctx: RunnerContext, payload: ReportPayload) -> dict[str, Any]:
+    if requests is None:
+        raise RuntimeError("Dependency requests belum terpasang. Jalankan maintenance\\INSTALL_REQUIREMENTS.bat.")
+    path = _attachment_path(payload)
+    if path is None:
+        raise RuntimeError("Attachment path tidak tersedia.")
+    if not path.exists() or not path.is_file():
+        raise RuntimeError(f"Attachment tidak ditemukan: {path}")
+    token, chat_id = _credentials()
+    data: dict[str, Any] = {"chat_id": chat_id}
+    caption = _attachment_caption(payload)
+    if caption:
+        data["caption"] = caption[:1024]
+    topic_id = _topic_id(ctx, payload)
+    if topic_id:
+        data["message_thread_id"] = topic_id
+    with path.open("rb") as handle:
+        response = requests.post(
+            f"https://api.telegram.org/bot{token}/sendDocument",
+            data=data,
+            files={"document": (path.name, handle, "text/csv")},
+            timeout=60,
+        )
+    return _response_json(response)
 
 
 def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str, Any]]:
@@ -168,9 +211,10 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
     for delivery_sequence, payload in enumerate(payloads, start=1):
         allowed, reason = should_send(ctx, payload)
         key = _idempotency_key(ctx, payload)
+        attachment = _attachment_path(payload)
         max_len = int(ctx.scheduler_config.get("telegram", {}).get("maximum_message_length", 4000))
         normalized_text = normalize_telegram_text(payload.text)
-        parts = split_telegram_text(normalized_text, max_len=max_len)
+        parts = [] if attachment is not None else split_telegram_text(normalized_text, max_len=max_len)
         base = {
             "time": now_wib().isoformat(timespec="seconds"),
             "run_id": ctx.run_id,
@@ -179,10 +223,11 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
             "report_type": payload.report_type,
             "signature": payload.signature,
             "idempotency_key": key,
-            "part_count": len(parts),
+            "part_count": 1 if attachment is not None else len(parts),
             "delivery_sequence": delivery_sequence,
             "delivery_total": delivery_total,
             "force_resend": bool(ctx.force),
+            "attachment_path": str(attachment) if attachment else "",
             **telegram_route(ctx, payload),
             "telegram_message_id": "",
         }
@@ -194,13 +239,21 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
         message_ids: list[Any] = []
         part_events: list[dict[str, Any]] = []
         try:
-            for idx, part in enumerate(parts, start=1):
-                response = _send_telegram(ctx, payload, text=part, part_index=idx, part_count=len(parts))
+            if attachment is not None:
+                response = _send_document(ctx, payload)
                 message_id = response.get("result", {}).get("message_id", "")
                 message_ids.append(message_id)
-                part_event = {**base, "status": "SENT_PART", "part_index": idx, "telegram_message_id": message_id}
+                part_event = {**base, "status": "SENT_PART", "part_index": 1, "telegram_message_id": message_id}
                 append_jsonl(log_path, part_event)
                 part_events.append(part_event)
+            else:
+                for idx, part in enumerate(parts, start=1):
+                    response = _send_telegram(ctx, payload, text=part, part_index=idx, part_count=len(parts))
+                    message_id = response.get("result", {}).get("message_id", "")
+                    message_ids.append(message_id)
+                    part_event = {**base, "status": "SENT_PART", "part_index": idx, "telegram_message_id": message_id}
+                    append_jsonl(log_path, part_event)
+                    part_events.append(part_event)
             event = {**base, "status": "SENT", "telegram_message_ids": message_ids, "parts": part_events}
             index[key] = event
             write_json(index_path, index)
@@ -209,8 +262,12 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
         except Exception as exc:
             folder = failed_root / ctx.trade_date.isoformat()
             folder.mkdir(parents=True, exist_ok=True)
-            payload_path = folder / f"{ctx.run_id}_{payload.report_type}.txt"
-            payload_path.write_text(normalized_text, encoding="utf-8")
+            suffix = attachment.suffix if attachment is not None else ".txt"
+            payload_path = folder / f"{ctx.run_id}_{payload.report_type}{suffix}"
+            if attachment is not None and attachment.exists():
+                payload_path.write_bytes(attachment.read_bytes())
+            else:
+                payload_path.write_text(normalized_text, encoding="utf-8")
             event = {
                 **base,
                 "status": "FAILED",
