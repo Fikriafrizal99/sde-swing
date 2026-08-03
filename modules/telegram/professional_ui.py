@@ -274,7 +274,7 @@ def public_counts(decisions: pd.DataFrame, entry_plans: pd.DataFrame | None = No
     work = unique_final_decisions(decisions)
     plans = entry_plans if entry_plans is not None else pd.DataFrame()
     counts = {"BUY CONFIRMED": 0, "BUY CANDIDATE": 0, "WATCH HIGH": 0, "WATCH": 0, "AVOID": 0}
-    decision_col = find_col(work, "Decision_Status", "Decision_V3", "Decision")
+    decision_col = find_col(work, "Decision_Status_Final", "Decision_Status", "Decision_V3", "Decision")
     symbol_col = find_col(work, "Symbol", "EMITEN", "Ticker")
     if not decision_col:
         return counts

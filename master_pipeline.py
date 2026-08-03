@@ -490,6 +490,7 @@ def main() -> int:
             "--run-id", run_id,
             "--manifest-dir", str(manifest_dir),
             "--data-quality-status", data_quality,
+            "--config", str(config_path),
         ], log)
         run_manifest["Exit_Output"] = str(exitout)
         run_manifest["Output_Files"]["Exit"] = str(exitout)
@@ -510,6 +511,24 @@ def main() -> int:
                 "--entry-plans", str(exitout / "ENTRY_PLANS.csv"),
             ], log)
             run_manifest["Output_Files"]["Analytics"] = str(analytics_output)
+
+        if cfg.get("analytics", {}).get("profile_comparison_enabled", True):
+            stage = "MODERATE PROFILE SHADOW"
+            shadow_output = resolve(paths.get("profile_shadow_output_root", "data/output/profile_shadow")) / run_id
+            shadow_cmd = [
+                sys.executable, "-u", str(resolve(paths.get("profile_shadow_runner", "tools/run_moderate_shadow.py"))),
+                str(final),
+                "--entry-plans", str(exitout / "ENTRY_PLANS.csv"),
+                "--config", str(config_path),
+                "--output-dir", str(shadow_output),
+                "--run-id", run_id,
+            ]
+            if watchlist_outcomes.exists() and watchlist_outcomes.stat().st_size > 0:
+                shadow_cmd.extend(["--outcomes", str(watchlist_outcomes)])
+            run_command(stage, shadow_cmd, log)
+            run_manifest["Output_Files"]["Profile_Shadow"] = str(shadow_output)
+            run_manifest["Shadow_Mode"] = "SHADOW_ONLY"
+            run_manifest["Auto_Entry_Enabled"] = False
 
         run_manifest["Finished_At"] = datetime.now().isoformat(timespec="seconds")
         run_manifest["Pipeline_Status"] = "SUCCESS"

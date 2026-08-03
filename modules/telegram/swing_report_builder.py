@@ -190,7 +190,7 @@ def fmt_bool(v: Any) -> str:
 def decision_counts(decisions: pd.DataFrame) -> dict[str, int]:
     if decisions.empty:
         return {d: 0 for d in DECISION_ORDER}
-    col = find_col(decisions, "Decision_Status", "Decision_Status_Final", "Decision_V3", "Decision")
+    col = find_col(decisions, "Decision_Status_Final", "Decision_Status", "Decision_V3", "Decision")
     if not col:
         return {d: 0 for d in DECISION_ORDER}
     values = decisions[col].astype(str).str.upper().str.strip().replace({
@@ -306,7 +306,7 @@ def broker_confirm_count(decisions: pd.DataFrame) -> int:
 def current_watchlist(decisions: pd.DataFrame) -> pd.DataFrame:
     if decisions.empty:
         return pd.DataFrame()
-    decision_col = find_col(decisions, "Decision_Status", "Decision_Status_Final", "Decision_V3", "Decision")
+    decision_col = find_col(decisions, "Decision_Status_Final", "Decision_Status", "Decision_V3", "Decision")
     symbol_col = find_col(decisions, "Symbol", "EMITEN", "Ticker")
     if not decision_col or not symbol_col:
         return pd.DataFrame()
@@ -327,7 +327,7 @@ def sort_by_score(df: pd.DataFrame) -> pd.DataFrame:
 
 def stock_block(row: pd.Series, entry_plans: pd.DataFrame, use_emoji: bool) -> str:
     symbol = value(row, "Symbol", "EMITEN", "Ticker", default="?")
-    decision = str(value(row, "Decision_Status", "Decision_V3", "Decision", default="WATCH")).upper()
+    decision = str(value(row, "Decision_Status_Final", "Decision_Status", "Decision_V3", "Decision", default="WATCH")).upper()
     plan = pd.Series(dtype=object)
     if not entry_plans.empty:
         sym_col = find_col(entry_plans, "Symbol")

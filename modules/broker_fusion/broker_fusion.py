@@ -279,63 +279,37 @@ def grade(score: float) -> str:
     return "★"
 
 
-def make_decision(row: pd.Series) -> tuple[str, str, str, float, float, float]:
+def scoring_facts(row: pd.Series) -> tuple[float, float, str, str]:
+    """Return confirmation bonus/penalty facts without assigning a decision."""
     tech = float(row.get("Technical_Quality_Score", row.get("Technical_Score_Final", 0.0)) or 0.0)
-    readiness = float(row.get("Entry_Readiness_PreScore", min(tech, 70.0)) or 0.0)
-    broker = float(row.get("Broker_Score", 0.0) or 0.0)
-    confidence_value = row.get("Broker_Confidence", np.nan)
-    confirmation = str(row.get("Broker_Confirmation", "NO DATA")).upper()
-    direction = str(row.get("Broker_Direction", "")).upper()
-    if not direction:
-        direction = "ACCUMULATION" if "ACCUMULATION" in confirmation else "DISTRIBUTION" if "DISTRIBUTION" in confirmation else "NEUTRAL"
-    try:
-        broker_confidence = float(confidence_value)
-        if math.isnan(broker_confidence):
-            raise ValueError
-    except Exception:
-        broker_confidence = 70.0 if direction == "ACCUMULATION" else 25.0 if direction == "DISTRIBUTION" else 50.0
+    confidence = float(row.get("Broker_Confidence", 0.0) or 0.0)
+    direction_score = float(row.get("Broker_Direction_Score", 0.0) or 0.0)
+    direction = str(row.get("Broker_Direction", "NEUTRAL") or "NEUTRAL").upper()
+    confirmation = str(row.get("Broker_Confirmation", "NO DATA") or "NO DATA").upper()
+    divergence = bool(row.get("Broker_Divergence", False))
     available = bool(row.get("Broker_Data_Available", False))
-    hard_blocker = str(row.get("Entry_Hard_Blocker", "")).strip().lower() in {"1", "true", "yes"}
 
-    synergy = 0.0
-    if direction == "ACCUMULATION" and broker_confidence >= 70 and tech >= 78 and readiness >= 70:
-        synergy = 4.0
-    elif direction == "ACCUMULATION" and broker_confidence >= 50 and tech >= 70:
-        synergy = 2.0
-
-    risk = 0.0
-    if not available:
-        risk += 15.0
-    if confirmation == "STRONG DISTRIBUTION":
-        risk += 20.0
-    elif confirmation == "DISTRIBUTION":
-        risk += 10.0
-    if bool(row.get("Broker_Divergence", False)):
-        risk += 4.0
-    if hard_blocker:
-        risk += 20.0
-
-    base = float(np.clip(0.50 * tech + 0.20 * readiness + 0.30 * broker + synergy - risk, 0, 100))
-    if not available:
-        decision, confidence, action = "AVOID", "LOW", "WAIT FOR BROKER DATA"
-    elif hard_blocker or confirmation == "STRONG DISTRIBUTION":
-        decision, confidence, action = "AVOID", "HIGH", "DO NOT ENTER"
-    elif base >= 85 and tech >= 80 and readiness >= 78 and direction == "ACCUMULATION" and broker_confidence >= 70:
-        decision, confidence, action = "STRONG BUY", "VERY HIGH", "BUY ON VALID ENTRY"
-    elif base >= 76 and tech >= 72 and readiness >= 70 and direction == "ACCUMULATION" and broker_confidence >= 55:
-        decision, confidence, action = "BUY", "HIGH", "VALIDATE ENTRY PLAN"
-    elif base >= 68 and tech >= 70 and readiness >= 58 and direction != "DISTRIBUTION" and broker_confidence >= 40:
-        decision, confidence, action = "BUY CANDIDATE", "MEDIUM HIGH", "WAIT FOR ENTRY PLAN"
-    elif base >= 62 and tech >= 68 and direction != "DISTRIBUTION":
-        decision, confidence, action = "WATCH HIGH", "MEDIUM", "MONITOR TRIGGER"
-    elif base >= 55 and confirmation != "STRONG DISTRIBUTION":
-        decision, confidence, action = "WATCH", "MEDIUM", "MONITOR CONFIRMATION"
-    elif tech >= 65:
-        decision, confidence, action = "SPECULATIVE", "LOW", "HIGH RISK / SMALL SIZE ONLY"
+    if confirmation == "STRONG DISTRIBUTION" or (direction == "DISTRIBUTION" and confidence >= 70 and direction_score <= -60):
+        context, blocker = "STRONG_DISTRIBUTION", "STRONG_BROKER_DISTRIBUTION"
+        bonus, penalty = 0.0, 20.0
+    elif direction == "DISTRIBUTION" or confirmation == "DISTRIBUTION":
+        context, blocker = "DISTRIBUTION", ""
+        bonus, penalty = 0.0, 6.0
+    elif divergence:
+        context, blocker = "DIVERGENCE", ""
+        bonus, penalty = 0.0, 3.0
+    elif confirmation == "STRONG ACCUMULATION" or (direction == "ACCUMULATION" and confidence >= 65 and direction_score >= 60):
+        context, blocker = "STRONG_ACCUMULATION", ""
+        bonus, penalty = 4.0 if tech >= 70 else 3.0, 0.0
+    elif direction == "ACCUMULATION" or confirmation == "ACCUMULATION":
+        context, blocker = "ACCUMULATION", ""
+        bonus, penalty = 2.0, 0.0
     else:
-        decision, confidence, action = "AVOID", "LOW", "SKIP"
-    return decision, confidence, action, synergy, risk, base
-
+        context, blocker = "NEUTRAL", ""
+        bonus, penalty = 0.0, 0.0
+    if not available:
+        penalty += 5.0
+    return bonus, penalty, context, blocker
 
 def fuse(
     technical_path: Path,
@@ -443,13 +417,14 @@ def fuse(
             merged[col] = default
         merged[col] = merged[col].fillna(default)
 
-    decisions = merged.apply(make_decision, axis=1, result_type="expand")
-    decisions.columns = ["Decision", "Confidence", "Suggested_Action", "Synergy_Bonus", "Risk_Penalty", "Base_Score"]
-    merged = pd.concat([merged, decisions], axis=1)
-    merged["Final_Score"] = merged["Base_Score"].round(2)
+    facts = merged.apply(scoring_facts, axis=1, result_type="expand")
+    facts.columns = ["Synergy_Bonus", "Risk_Penalty", "Broker_Context", "Broker_Hard_Blocker"]
+    merged = pd.concat([merged, facts], axis=1)
+    merged["Broker_Confirmation_Score"] = (
+        merged["Broker_Score"].astype(float) + merged["Synergy_Bonus"] - merged["Risk_Penalty"]
+    ).clip(0, 100).round(2)
     merged["Technical_Grade"] = merged["Technical_Score_Final"].map(grade)
     merged["Broker_Grade"] = merged["Broker_Score"].map(grade)
-    merged["Stars"] = merged["Final_Score"].map(grade)
     merged["Decision_Reasons"] = (
         merged.get("Candidate_Reason", pd.Series("", index=merged.index)).fillna("").astype(str).str.strip()
         + "; "
@@ -460,17 +435,17 @@ def fuse(
         merged["Run_ID"] = run_id
     merged["Data_Quality_Status"] = effective_quality
 
-    decision_order = {"STRONG BUY": 0, "BUY": 1, "BUY CANDIDATE": 2, "WATCH HIGH": 3, "WATCH": 4, "SPECULATIVE": 5, "AVOID": 6}
-    merged["_decision_order"] = merged["Decision"].map(decision_order).fillna(9)
-    merged = merged.sort_values(["_decision_order", "Final_Score"], ascending=[True, False]).drop(columns="_decision_order")
+    merged = merged.sort_values(
+        ["Technical_Score_Final", "Broker_Confirmation_Score"], ascending=[False, False]
+    )
     merged.insert(0, "Rank", range(1, len(merged) + 1))
 
     lead = [
-        "Rank", "Symbol", "Stars", "Decision", "Confidence", "Suggested_Action",
-        "Final_Score", "Technical_Score_Final", "Technical_Grade", "Broker_Score",
-        "Broker_Grade", "Broker_Confirmation", "Broker_Direction", "Broker_Strength",
-        "Broker_Confidence", "Broker_Divergence", "Synergy_Bonus", "Risk_Penalty",
-        "Decision_Reasons", "Warnings", "Broker_Data_Available", "Base_Score",
+        "Rank", "Symbol", "Technical_Score_Final", "Technical_Grade", "Broker_Score",
+        "Broker_Confirmation_Score", "Broker_Grade", "Broker_Context", "Broker_Hard_Blocker",
+        "Broker_Confirmation", "Broker_Direction", "Broker_Strength", "Broker_Confidence",
+        "Broker_Divergence", "Synergy_Bonus", "Risk_Penalty", "Decision_Reasons", "Warnings",
+        "Broker_Data_Available",
     ]
     columns = lead + [c for c in merged.columns if c not in lead]
     merged = merged[columns]

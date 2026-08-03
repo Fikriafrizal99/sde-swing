@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from swing_utils import dataframe_hash, file_sha256, make_run_id, write_json
 from modules.runtime_config import load_runtime_config
+from modules.decision_engine.moderate_profiles import resolve_setup_profile
 
 
 EXCLUDED = {"IHSG", "BRENT", "OIL", "XAU", "JECX", "JELI"}
@@ -124,7 +125,7 @@ def candidate_content_hash(df_or_path: pd.DataFrame | Path) -> str:
     return dataframe_hash(df[cols] if cols else df)
 
 
-def score_candidates(df: pd.DataFrame, min_avg_value: float) -> pd.DataFrame:
+def score_candidates(df: pd.DataFrame, min_avg_value: float, decision_config: dict | None = None) -> pd.DataFrame:
     """Score technical quality and pre-entry readiness separately.
 
     Technical quality answers whether the stock is structurally attractive.
@@ -305,6 +306,16 @@ def score_candidates(df: pd.DataFrame, min_avg_value: float) -> pd.DataFrame:
         index=out.index,
     )
 
+    setup_parameters = {
+        setup: resolve_setup_profile(decision_config or {}, setup)
+        for setup in ["BREAKOUT", "PULLBACK", "TREND_CONTINUATION", "EARLY_ACCUMULATION", "DEVELOPING"]
+    }
+    setup_soft_extension = setup_type.map({k: v["soft_extension"] for k, v in setup_parameters.items()}).astype(float)
+    setup_hard_extension = setup_type.map({k: v["hard_extension"] for k, v in setup_parameters.items()}).astype(float)
+    setup_technical_min = setup_type.map({k: v["technical_min"] for k, v in setup_parameters.items()}).astype(float)
+    setup_readiness_ready = setup_type.map({k: v["readiness_ready"] for k, v in setup_parameters.items()}).astype(float)
+    setup_volume_min = setup_type.map({k: v["volume_ratio_min"] for k, v in setup_parameters.items()}).astype(float)
+
     readiness_context = pd.Series(0.0, index=out.index)
     readiness_context += np.where(close > sma20, 5, 0)
     readiness_context += np.where(sma20 > sma50, 7, 0)
@@ -356,7 +367,7 @@ def score_candidates(df: pd.DataFrame, min_avg_value: float) -> pd.DataFrame:
     readiness_risk = readiness_risk.clip(upper=10)
 
     readiness_penalty = pd.Series(0.0, index=out.index)
-    readiness_penalty += np.where((dist_ema20 > 8) | (atr_extension > 2.5), 20, 0)
+    readiness_penalty += np.where((dist_ema20 > 8) | (atr_extension > setup_soft_extension), 20, 0)
     readiness_penalty += np.where(rsi > 78, 12, 0)
     readiness_penalty += np.where((volume_ratio > 5) & (rsi > 72), 8, 0)
     readiness_penalty += np.where(upper_wick_pct > 50, 8, 0)
@@ -382,12 +393,28 @@ def score_candidates(df: pd.DataFrame, min_avg_value: float) -> pd.DataFrame:
     )
     soft_warning = pd.Series(
         np.select(
-            [dist_ema20.gt(8) | atr_extension.gt(2.5), upper_wick_pct.gt(50), (volume_ratio > 5) & (rsi > 72)],
+            [dist_ema20.gt(8) | atr_extension.gt(setup_soft_extension), upper_wick_pct.gt(50), (volume_ratio > 5) & (rsi > 72)],
             ["PRICE_EXTENDED", "LONG_UPPER_WICK", "VOLUME_SPIKE_OVERHEATED"],
             default="",
         ),
         index=out.index,
     )
+    extension_class = pd.Series(
+        np.select(
+            [atr_extension.gt(setup_hard_extension), atr_extension.gt(setup_soft_extension)],
+            ["HARD_EXTENDED", "SOFT_EXTENDED"],
+            default="NORMAL",
+        ),
+        index=out.index,
+    )
+    if avg_value.notna().any():
+        liquidity_execution_class = pd.Series(
+            np.select([avg_value.lt(min_avg_value), avg_value.lt(10_000_000_000)], ["VERY_POOR", "THIN_BUT_TRADEABLE"], default="NORMAL"),
+            index=out.index,
+        )
+    else:
+        liquidity_execution_class = pd.Series("UNKNOWN", index=out.index)
+    volume_confirmation_pass = volume_ratio.ge(setup_volume_min)
 
     out["Score_Trend"] = score_trend
     out["Score_Momentum"] = score_momentum
@@ -406,6 +433,14 @@ def score_candidates(df: pd.DataFrame, min_avg_value: float) -> pd.DataFrame:
     out["Setup_Type"] = setup_type
     out["Distance_EMA20_Pct"] = dist_ema20.round(4)
     out["ATR_Extension"] = atr_extension.round(4)
+    out["Extension_Class"] = extension_class
+    out["Setup_Soft_Extension"] = setup_soft_extension
+    out["Setup_Hard_Extension"] = setup_hard_extension
+    out["Setup_Technical_Min"] = setup_technical_min
+    out["Setup_Readiness_Ready"] = setup_readiness_ready
+    out["Setup_Volume_Ratio_Min"] = setup_volume_min
+    out["Volume_Confirmation_Pass"] = volume_confirmation_pass
+    out["Liquidity_Execution_Class"] = liquidity_execution_class
     out["Entry_Hard_Blocker"] = hard_blocker
     out["Entry_Hard_Blocker_Reason"] = hard_reason
     out["Entry_Soft_Warning"] = soft_warning
@@ -468,7 +503,9 @@ def score_candidates(df: pd.DataFrame, min_avg_value: float) -> pd.DataFrame:
         "Setup_Type", "Entry_Hard_Blocker", "Entry_Hard_Blocker_Reason", "Entry_Soft_Warning",
         "Technical_Score", "Setup_Label", "Candidate_Status", "Candidate_Rejected_By", "Candidate_Reason",
         "Score_Trend", "Score_Momentum", "Score_Volume", "Score_Price_Position",
-        "Score_Risk", "Score_Liquidity", "Distance_EMA20_Pct", "ATR_Extension",
+        "Score_Risk", "Score_Liquidity", "Distance_EMA20_Pct", "ATR_Extension", "Extension_Class",
+        "Setup_Soft_Extension", "Setup_Hard_Extension", "Setup_Technical_Min", "Setup_Readiness_Ready",
+        "Setup_Volume_Ratio_Min", "Volume_Confirmation_Pass", "Liquidity_Execution_Class",
     ]
     remaining = [c for c in out.columns if c not in preferred]
     result = out[preferred + remaining].copy()
@@ -546,7 +583,7 @@ def main() -> int:
         technical_data_date = pd.NaT
     technical_date_text = technical_data_date.date().isoformat() if pd.notna(technical_data_date) else ""
     source_hash = file_sha256(input_path)
-    ranking = score_candidates(df, args.min_avg_value)
+    ranking = score_candidates(df, args.min_avg_value, cfg.get("decision", {}))
     generated_at = datetime.now().isoformat(timespec="seconds")
     lineage_cols = {
         "Run_ID": args.run_id,

@@ -87,6 +87,26 @@ def validate_config(payload: dict[str, Any], *, strict: bool = True) -> list[str
         total = sum(float(value) for value in weights.values())
         if abs(total - 1.0) > 1e-9:
             raise RuntimeConfigError(f"DECISION_WEIGHT_SUM_INVALID: {total:.12f}")
+        profiles = decision.get("profiles", {})
+        production_profile = str(decision.get("production_profile", "")).strip().upper()
+        shadow_profiles = [str(value).strip().upper() for value in decision.get("shadow_profiles", [])]
+        if production_profile and production_profile not in profiles:
+            raise RuntimeConfigError(f"PRODUCTION_PROFILE_NOT_CONFIGURED: {production_profile}")
+        for profile_name in shadow_profiles:
+            if profile_name not in profiles:
+                raise RuntimeConfigError(f"SHADOW_PROFILE_NOT_CONFIGURED: {profile_name}")
+        for profile_name, profile_payload in profiles.items():
+            if not isinstance(profile_payload, dict):
+                raise RuntimeConfigError(f"PROFILE_CONFIG_INVALID: {profile_name}")
+            profile_weights = profile_payload.get("weights", {})
+            if not isinstance(profile_weights, dict) or not profile_weights:
+                raise RuntimeConfigError(f"PROFILE_WEIGHTS_MISSING: {profile_name}")
+            profile_total = sum(float(value) for value in profile_weights.values())
+            if abs(profile_total - 1.0) > 1e-9:
+                raise RuntimeConfigError(f"PROFILE_WEIGHT_SUM_INVALID[{profile_name}]: {profile_total:.12f}")
+        calibration = decision.get("calibration", {})
+        if calibration and bool(calibration.get("auto_entry_enabled", False)):
+            raise RuntimeConfigError("AUTO_ENTRY_MUST_REMAIN_DISABLED_DURING_CALIBRATION")
 
     legacy_keys = _find_legacy_override_keys(payload)
     if legacy_keys:

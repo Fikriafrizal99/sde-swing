@@ -1,9 +1,8 @@
-# SDE Swing V1.6.2 Stage 1 Stabilized
+# SDE Swing V1.6.2 Stage 2 — Moderate Calibration
 
-Branch release: `SDE_SWING_V1_6_2_STAGE1_STABILIZED`  
-Baseline: V1.6.1 remains preserved on `main`.
+Branch ini melanjutkan Stage 1 dengan satu Final Decision Engine, Entry Plan Validator yang hanya menilai kesiapan eksekusi, dan tiga profile shadow moderat. Produksi tetap `MODERATE_BASELINE`; auto-entry tetap nonaktif.
 
-Stage 1 stabilizes runtime configuration, Stockbit number parsing, decision ownership, telemetry, active-trade guards, and Telegram compatibility. Validation completed with **116/116 tests passing**. See `STAGE1_STABILIZATION_REPORT_20260803.md` for evidence and limitations.
+Validasi engineering: **124/124 tests PASS**. Historical/live shadow 20–40 sesi masih menjadi release gate. Detail: `STAGE2_MODERATE_CALIBRATION_REPORT_20260803.md`.
 
 ---
 

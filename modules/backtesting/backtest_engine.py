@@ -10,8 +10,8 @@ import numpy as np
 import pandas as pd
 
 
-DECISION_ORDER = ["STRONG BUY", "BUY", "BUY CANDIDATE", "WATCH HIGH", "WATCH", "SPECULATIVE", "AVOID"]
-ENTRY_DECISIONS = {"STRONG BUY", "BUY"}
+DECISION_ORDER = ["BUY READY", "BUY ON TRIGGER", "WATCH", "AVOID", "STRONG BUY", "BUY", "BUY CANDIDATE", "WATCH HIGH", "SPECULATIVE"]
+ENTRY_DECISIONS = {"BUY READY", "STRONG BUY", "BUY"}
 
 
 def norm_col(value: str) -> str:
@@ -64,7 +64,7 @@ def load_signals(path: Path) -> pd.DataFrame:
         signals["Snapshot_Source"] = path.name
 
     symbol_col = require_col(signals, "Symbol", "EMITEN", "Ticker")
-    decision_col = require_col(signals, "Decision_V3", "Decision_V2_1", "Decision")
+    decision_col = require_col(signals, "Decision_Status_Final", "Decision_Status", "Decision_V3", "Decision_V2_1", "Decision")
     score_col = find_col(signals, "Final_Score_V3", "Final_Score", "Score")
 
     # FINAL_DECISION_V3 can contain both Decision_V3 and an older Decision column.
@@ -148,13 +148,7 @@ def regime_asof(regime: pd.DataFrame, date: pd.Timestamp) -> str:
 
 
 def apply_market_gate(decision: str, regime: str) -> str:
-    if regime == "BEARISH":
-        if decision == "STRONG BUY":
-            return "WATCH"
-        if decision == "BUY":
-            return "WATCH"
-    if regime == "SIDEWAYS" and decision == "STRONG BUY":
-        return "BUY"
+    """Market regime is context, not a universal rejection gate in Stage 2."""
     return decision
 
 
@@ -192,8 +186,10 @@ def evaluate_signal(signal, px, horizons, entry_mode, max_hold_days):
         return {**base, "Status": "NO_FUTURE_PRICE"}
 
     entry_idx = int(candidates[0])
-    entry_price = float(px.loc[entry_idx, "Open"] if entry_mode == "next_open" else px.loc[entry_idx, "Close"])
-    result = {**base, "Status": "OK", "Entry_Date": px.loc[entry_idx, "Date"], "Entry_Price": entry_price}
+    raw_entry_price = float(px.loc[entry_idx, "Open"] if entry_mode == "next_open" else px.loc[entry_idx, "Close"])
+    slippage_pct = pd.to_numeric(pd.Series([signal.get("Estimated_Slippage_Pct", signal.get("Liquidity_Estimated_Slippage_Pct", 0.0))]), errors="coerce").fillna(0.0).iloc[0]
+    entry_price = raw_entry_price * (1.0 + max(float(slippage_pct), 0.0) / 100.0)
+    result = {**base, "Status": "OK", "Entry_Date": px.loc[entry_idx, "Date"], "Raw_Entry_Price": raw_entry_price, "Entry_Price": entry_price, "Slippage_Pct": slippage_pct}
 
     for h in horizons:
         exit_idx = entry_idx + h
@@ -244,6 +240,15 @@ def evaluate_signal(signal, px, horizons, entry_mode, max_hold_days):
         result["Final_Outcome_D7"] = "LOSS"
     else:
         result["Final_Outcome_D7"] = "AMBIGUOUS"
+
+    risk_pct = ((entry_price - stop) / entry_price * 100.0) if pd.notna(stop) and entry_price > stop else np.nan
+    result["Initial_Risk_Pct"] = risk_pct
+    result["Return_R_D7"] = result["Return_D7_Pct"] / risk_pct if pd.notna(risk_pct) and risk_pct > 0 and pd.notna(result["Return_D7_Pct"]) else np.nan
+    result["MFE_R_D7"] = result["MFE_D7_Pct"] / risk_pct if pd.notna(risk_pct) and risk_pct > 0 else np.nan
+    result["MAE_R_D7"] = result["MAE_D7_Pct"] / risk_pct if pd.notna(risk_pct) and risk_pct > 0 else np.nan
+    result["Holding_Period_Days"] = min(7, max(0, len(window7) - 1))
+    result["False_Positive"] = bool(signal.get("Gated_Decision") in ENTRY_DECISIONS and result["Final_Outcome_D7"] == "LOSS")
+    result["False_Negative"] = bool(signal.get("Gated_Decision") not in ENTRY_DECISIONS and pd.notna(result["Return_D7_Pct"]) and result["Return_D7_Pct"] >= 3.0)
 
     last_idx = min(entry_idx + max_hold_days, len(px) - 1)
     result["MaxHold_Exit_Date"] = px.loc[last_idx, "Date"]
@@ -300,6 +305,19 @@ def aggregate(detail: pd.DataFrame, horizons: list[int]) -> pd.DataFrame:
             record[f"Profit_Factor_{h}D"] = valid[valid > 0].sum() / abs(valid[valid < 0].sum()) if (valid < 0).any() else np.nan
             record[f"Avg_MFE_{h}D_Pct"] = pd.to_numeric(group[mfe_col], errors="coerce").mean() if mfe_col in group.columns else np.nan
             record[f"Avg_MAE_{h}D_Pct"] = pd.to_numeric(group[mae_col], errors="coerce").mean() if mae_col in group.columns else np.nan
+        actionable = group[group["Gated_Decision"].isin(ENTRY_DECISIONS)]
+        r_values = pd.to_numeric(actionable.get("Return_R_D7", pd.Series(dtype=float)), errors="coerce").dropna()
+        record["Trigger_Rate"] = float((group["Gated_Decision"] == "BUY READY").sum() / max((group["Gated_Decision"].isin(["BUY READY", "BUY ON TRIGGER"])).sum(), 1))
+        record["Expectancy_R"] = float(r_values.mean()) if len(r_values) else np.nan
+        record["Average_MFE_R"] = pd.to_numeric(actionable.get("MFE_R_D7", pd.Series(dtype=float)), errors="coerce").mean()
+        record["Average_MAE_R"] = pd.to_numeric(actionable.get("MAE_R_D7", pd.Series(dtype=float)), errors="coerce").mean()
+        record["Stop_Rate"] = float(actionable.get("SL_Hit_D7", pd.Series(dtype=bool)).fillna(False).mean()) if len(actionable) else np.nan
+        record["Target_1_Rate"] = float(actionable.get("TP1_Hit_D7", pd.Series(dtype=bool)).fillna(False).mean()) if len(actionable) else np.nan
+        record["Target_2_Rate"] = float(actionable.get("TP2_Hit_D7", pd.Series(dtype=bool)).fillna(False).mean()) if len(actionable) else np.nan
+        record["False_Positive"] = int(actionable.get("False_Positive", pd.Series(dtype=bool)).fillna(False).sum())
+        record["False_Negative"] = int(group.get("False_Negative", pd.Series(dtype=bool)).fillna(False).sum())
+        record["Average_Slippage_Pct"] = pd.to_numeric(actionable.get("Slippage_Pct", pd.Series(dtype=float)), errors="coerce").mean()
+        record["Average_Holding_Period"] = pd.to_numeric(actionable.get("Holding_Period_Days", pd.Series(dtype=float)), errors="coerce").mean()
         rows.append(record)
     out = pd.DataFrame(rows)
     order = {"ALL": -1, **{d: i for i, d in enumerate(DECISION_ORDER)}}
@@ -361,6 +379,8 @@ def main():
         "Return_D1_Pct", "Return_D3_Pct", "Return_D5_Pct", "Return_D7_Pct",
         "Max_Price_D7", "Min_Price_D7", "MFE_D7_Pct", "MAE_D7_Pct",
         "TP1_Hit_D7", "TP2_Hit_D7", "SL_Hit_D7", "Final_Outcome_D7",
+        "Initial_Risk_Pct", "Return_R_D7", "MFE_R_D7", "MAE_R_D7", "Slippage_Pct",
+        "Holding_Period_Days", "False_Positive", "False_Negative", "Setup_Type",
         "Market_Regime", "Repeat_Status", "Status",
     ]
     existing_outcome_cols = [c for c in outcome_cols if c in detail.columns]
@@ -373,22 +393,25 @@ def main():
             agg_map[f"Avg_Return_{h}D_Pct"] = (col, "mean")
     regime_summary = evaluated.groupby(["Market_Regime", "Gated_Decision"]).agg(**agg_map).reset_index()
     regime_summary.to_csv(output / "MARKET_REGIME_SUMMARY.csv", index=False)
+    if "Setup_Type" in evaluated.columns:
+        setup_summary = evaluated.groupby(["Setup_Type", "Gated_Decision"]).agg(**agg_map).reset_index()
+        setup_summary.to_csv(output / "SETUP_SUMMARY.csv", index=False)
 
     repeats = detail[detail["Repeat_Status"].astype(str).str.contains("SUPPRESSED", na=False)]
     repeats.to_csv(output / "SUPPRESSED_REPEAT_SIGNALS.csv", index=False)
     pd.DataFrame({"Symbol": sorted(set(missing))}).to_csv(output / "MISSING_PRICE_SYMBOLS.csv", index=False)
 
     manifest = {
-        "version": "1.1",
-        "transaction_cost": "SKIPPED",
+        "version": "1.6.2-stage2",
+        "transaction_cost": "SLIPPAGE_FROM_SIGNAL_OR_ZERO",
         "horizons": horizons,
         "max_hold_days": args.max_hold_days,
         "decisions_tested": DECISION_ORDER,
-        "repeat_policy": "One symbol = one active trade; repeated BUY/STRONG BUY suppressed until 20 business days.",
+        "repeat_policy": "One symbol = one active trade; repeated BUY READY/legacy entry suppressed until max hold.",
         "market_gate": {
-            "BULLISH": "unchanged",
-            "SIDEWAYS": "STRONG BUY downgraded to BUY",
-            "BEARISH": "STRONG BUY and BUY downgraded to WATCH"
+            "BULLISH": "context only",
+            "SIDEWAYS": "trigger confirmation handled before backtest",
+            "BEARISH": "conditional sizing/trigger; no universal downgrade"
         },
         "entry_mode": args.entry_mode,
         "rows_input": len(signals),
@@ -397,7 +420,7 @@ def main():
         "missing_symbols": len(set(missing))
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    print("Backtest V1.2 selesai")
+    print("Backtest Stage 2 moderate calibration selesai")
     print(summary.to_string(index=False))
 
 

@@ -793,9 +793,30 @@ def run_final_from_snapshot(ctx: RunnerContext) -> dict[str, Any]:
         str(manifest_dir),
         "--data-quality-status",
         str(manifest.get("Data_Quality_Status", "VALID")),
+        "--config",
+        str(ctx.config_path),
     ])
     manifest["Exit_Output"] = str(exit_dir)
     manifest["Output_Files"]["Exit"] = str(exit_dir)
+    if cfg.get("analytics", {}).get("profile_comparison_enabled", True):
+        shadow_output = resolve(paths.get("profile_shadow_output_root", "data/output/profile_shadow")) / ctx.run_id
+        run_command(ctx, "MODERATE PROFILE SHADOW", [
+            sys.executable,
+            "-u",
+            str(resolve(paths.get("profile_shadow_runner", "tools/run_moderate_shadow.py"))),
+            str(final),
+            "--entry-plans",
+            str(exit_dir / "ENTRY_PLANS.csv"),
+            "--config",
+            str(ctx.config_path),
+            "--output-dir",
+            str(shadow_output),
+            "--run-id",
+            ctx.run_id,
+        ])
+        manifest["Output_Files"]["Profile_Shadow"] = str(shadow_output)
+        manifest["Shadow_Mode"] = "SHADOW_ONLY"
+        manifest["Auto_Entry_Enabled"] = False
     manifest["Finished_At"] = now_wib().isoformat(timespec="seconds")
     manifest["Pipeline_Status"] = "SUCCESS"
     write_json(run_manifest_path, manifest)

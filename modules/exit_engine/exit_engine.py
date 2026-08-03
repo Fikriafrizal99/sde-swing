@@ -18,10 +18,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from swing_utils import DISPLAY_VERSION, PACKAGE_VERSION, PIPELINE_VERSION, file_sha256, make_run_id, write_json
-from modules.decision_engine.smart_selective_v162 import finalize_after_entry_plan
+from modules.decision_engine.moderate_profiles import assess_liquidity, classify_extension, resolve_profile, resolve_setup_profile
+from modules.entry_plan_validator.validator import finalize_entry_plan
+from modules.runtime_config import load_runtime_config
 
 
-PLAN_DECISIONS = {"STRONG BUY", "BUY", "BUY CANDIDATE", "WATCH HIGH"}
+PLAN_DECISIONS = {"BUY READY", "BUY ON TRIGGER", "STRONG BUY", "BUY", "BUY CANDIDATE", "WATCH HIGH"}
 BROKER_DISTRIBUTION = {"DISTRIBUTION", "STRONG DISTRIBUTION"}
 BROKER_ACCUMULATION = {"ACCUMULATION", "STRONG ACCUMULATION"}
 
@@ -68,11 +70,15 @@ def load_decisions(path: Path) -> pd.DataFrame:
 
     required = {
         "Symbol": ("Symbol", "Ticker", "EMITEN"),
-        "Decision": ("Decision_V3", "Decision"),
+        "Decision": ("Decision_Status_Final", "Decision_Status", "Decision_V3", "Decision"),
     }
     optional = {
         "Final_Score": ("Final_Score_V3", "Final_Score"),
-        "Decision_Status_PrePlan": ("Decision_Status",),
+        "Decision_Status_PrePlan": ("Decision_Status_PrePlan", "Decision_Status_Final", "Decision_Status"),
+        "Execution_Conditions_PrePlan": ("Execution_Conditions",),
+        "Position_Size_Multiplier_PrePlan": ("Position_Size_Multiplier",),
+        "Liquidity_Execution_Class": ("Liquidity_Execution_Class",),
+        "Extension_Class_PrePlan": ("Extension_Class",),
         "Rejected_By_PrePlan": ("Rejected_By",),
         "Decision_Trace_PrePlan": ("Decision_Trace",),
         "Technical_Score": ("Technical_Score_Final", "Technical_Score"),
@@ -90,6 +96,7 @@ def load_decisions(path: Path) -> pd.DataFrame:
         "Broker_Divergence": ("Broker_Divergence",),
         "RSI_14": ("RSI_14",),
         "Volume_Ratio_20": ("Volume_Ratio_20",),
+        "Volume_Confirmation_Pass": ("Volume_Confirmation_Pass",),
         "Distance_EMA20_Pct": ("Distance_EMA20_Pct", "Distance_EMA_20_Pct"),
         "ATR_Extension": ("ATR_Extension",),
         "Turnover_MA_20": ("Turnover_MA_20",),
@@ -223,6 +230,15 @@ def nearest_resistance(px: pd.DataFrame, entry: float, lookback: int = 60) -> fl
 
 
 def should_build_plan(row: pd.Series) -> bool:
+    """Build production plans only for canonical trigger candidates.
+
+    The quality-based WATCH branch is retained solely for legacy snapshots that
+    do not contain the Stage 2 canonical pre-plan status.
+    """
+    canonical = str(row.get("Decision_Status_PrePlan", "") or "").upper().strip()
+    if canonical:
+        return canonical in {"BUY READY", "BUY ON TRIGGER"}
+
     decision = str(row.get("Decision", "")).upper()
     broker_direction = str(row.get("Broker_Direction", "")).upper()
     broker_confirmation = str(row.get("Broker_Confirmation", "")).upper()
@@ -237,14 +253,19 @@ def should_build_plan(row: pd.Series) -> bool:
     liquidity = str(row.get("Liquidity_Class", "")).upper()
     return quality >= 72 and readiness >= 55 and liquidity not in {"THIN", "ILLIQUID"}
 
-
-def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_rr: float, max_risk_pct: float, max_hold_days: int) -> dict:
+def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_rr: float, max_risk_pct: float, max_hold_days: int, decision_config: dict[str, Any] | None = None, profile_name: str | None = None) -> dict:
     latest = px.iloc[-1]
     reference_close = float(latest["Close"])
     atr = to_num(latest.get("ATR14"))
     ema20 = to_num(latest.get("EMA20"))
 
     setup_type = str(row.get("Setup_Type", "DEVELOPING") or "DEVELOPING").upper()
+    setup_cfg = resolve_setup_profile(decision_config or {}, setup_type)
+    profile_cfg = resolve_profile(decision_config or {}, profile_name)
+    support_lookback = int(setup_cfg.get("support_lookback", 20))
+    resistance_lookback = int(setup_cfg.get("resistance_lookback", 120))
+    min_rr = max(float(min_rr), float(setup_cfg.get("min_rr", min_rr)))
+    preferred_rr = max(min_rr, float(setup_cfg.get("preferred_rr", preferred_rr)))
     previous_high_20 = float(px["High"].iloc[-21:-1].max()) if len(px) >= 21 else np.nan
     if setup_type == "BREAKOUT" and not math.isnan(previous_high_20) and not math.isnan(atr):
         entry_low = max(previous_high_20, reference_close - 0.50 * atr)
@@ -263,7 +284,7 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
     # reference. Risk, targets, and resistance RR must not be calculated from the
     # current close when the strategy is explicitly waiting for a lower pullback.
     planned_entry = float(entry_high)
-    support = recent_support(px, 20)
+    support = recent_support(px, support_lookback)
     stop, stop_basis = determine_stop(planned_entry, support, atr, max_risk_pct)
     risk = planned_entry - stop
     risk_pct = (risk / planned_entry) * 100 if planned_entry else np.nan
@@ -272,7 +293,7 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
     rr2_target = planned_entry + risk * preferred_rr
     # Resistance used for RR must be strictly above the actual planned entry.
     # Using a lower floor can select a pivot below entry and create negative RR.
-    levels = resistance_levels(px, planned_entry, 120)
+    levels = resistance_levels(px, planned_entry, resistance_lookback)
     minor_resistance = levels[0] if levels else np.nan
     minor_rr = (minor_resistance - planned_entry) / risk if levels and risk > 0 else np.nan
     major_resistance = next(
@@ -323,44 +344,105 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
     readiness_final = float(np.clip(readiness_final, 0, 100))
 
     hard_blocker = str(row.get("Entry_Hard_Blocker", "")).strip().lower() in {"1", "true", "yes"}
-    liquidity = str(row.get("Liquidity_Class", "")).upper()
-    turnover_ma20 = to_num(row.get("Turnover_MA_20"), 0.0)
-    market = str(row.get("Market_Regime", "")).upper()
-    extension_limit = {
-        "BREAKOUT": 3.3,
-        "PULLBACK": 2.8,
-        "TREND_CONTINUATION": 3.0,
-        "EARLY_ACCUMULATION": 2.6,
-    }.get(setup_type, 3.0)
+    market = str(row.get("Market_Regime", "")).upper().replace("BEARISH", "BEAR")
+    extension_class = str(row.get("Extension_Class_PrePlan", "") or "").upper()
+    if not extension_class:
+        extension_class = classify_extension(atr_extension, setup_cfg)
+    liquidity_facts = assess_liquidity(row, liquidity_score=to_num(row.get("Liquidity_Score"), 0.0))
+    explicit_liquidity = str(row.get("Liquidity_Execution_Class", "") or "").upper()
+    legacy_liquidity = str(row.get("Liquidity_Class", "") or "").upper().replace(" ", "_")
+    if explicit_liquidity:
+        liquidity_class = explicit_liquidity
+    elif legacy_liquidity in {"VERY_LIQUID", "LIQUID", "ADEQUATE", "NORMAL"}:
+        liquidity_class = "NORMAL"
+    elif legacy_liquidity in {"THIN", "THIN_BUT_TRADEABLE"}:
+        liquidity_class = "THIN_BUT_TRADEABLE"
+    elif legacy_liquidity in {"ILLIQUID", "VERY_POOR"}:
+        liquidity_class = "VERY_POOR" if to_num(row.get("Turnover_MA_20"), 0.0) > 0 else "THIN_BUT_TRADEABLE"
+    else:
+        liquidity_class = str(liquidity_facts["classification"]).upper()
+    preplan_multiplier = to_num(row.get("Position_Size_Multiplier_PrePlan"), 1.0)
+    position_multiplier = min(preplan_multiplier, float(liquidity_facts["position_size_multiplier"]))
     setup_quality = "ACCEPT"
     rejection_reason = ""
     warnings: list[str] = []
+    conditional_reasons: list[str] = []
 
     if risk <= 0:
         setup_quality, rejection_reason = "REJECT", "INVALID_STOP"
-    elif liquidity == "ILLIQUID" and turnover_ma20 < 2_000_000_000:
+    elif risk_pct > max_risk_pct:
+        setup_quality, rejection_reason = "REJECT", "MAXIMUM_RISK_EXCEEDED"
+    elif liquidity_class == "VERY_POOR":
         setup_quality, rejection_reason = "REJECT", "LIQUIDITY_VERY_POOR"
     elif hard_blocker:
         setup_quality, rejection_reason = "REJECT", "ENTRY_HARD_BLOCKER"
-    elif not math.isnan(atr_extension) and atr_extension > extension_limit:
+    elif extension_class == "HARD_EXTENDED":
         setup_quality, rejection_reason = "REJECT", "PRICE_EXTENDED_HARD"
-    elif market in {"BEAR", "BEARISH"}:
-        setup_quality, rejection_reason = "CONDITIONAL", "BEAR_MARKET_TRIGGER_REQUIRED"
-    elif liquidity in {"ILLIQUID", "THIN"}:
-        setup_quality, rejection_reason = "CONDITIONAL", "THIN_LIQUIDITY_TRIGGER_REQUIRED"
     elif not math.isnan(minor_rr) and minor_rr < min_rr and math.isnan(major_rr):
         setup_quality, rejection_reason = "REJECT", "NO_VALID_RESISTANCE_PATH"
-    elif price_position_to_zone == "ABOVE_ZONE" and price_to_zone > 0.5:
-        setup_quality, rejection_reason = "CONDITIONAL", "WAIT_FOR_ENTRY_ZONE"
-    elif not math.isnan(minor_rr) and minor_rr < 0.60 and not math.isnan(major_rr):
-        setup_quality, rejection_reason = "CONDITIONAL", "MINOR_RESISTANCE_NEAR"
-    elif readiness_final >= 72 and price_to_zone <= 2.0:
-        setup_quality, rejection_reason = "ACCEPT", ""
-    elif readiness_final >= 58:
-        setup_quality = "CONDITIONAL"
-        rejection_reason = "MINOR_RESISTANCE_NEAR" if not math.isnan(minor_rr) and minor_rr < min_rr else "WAIT_FOR_ENTRY_TRIGGER"
     else:
-        setup_quality, rejection_reason = "REJECT", "ENTRY_READINESS_BELOW_MINIMUM"
+        volume_pass_raw = str(row.get("Volume_Confirmation_Pass", "")).strip().lower()
+        volume_ratio = to_num(row.get("Volume_Ratio_20"), 0.0)
+        volume_required = float(setup_cfg.get("volume_ratio_min", 1.0))
+        if volume_pass_raw in {"true", "1", "yes"}:
+            volume_confirmed: bool | None = True
+        elif volume_pass_raw in {"false", "0", "no"}:
+            volume_confirmed = False
+        elif volume_ratio > 0:
+            volume_confirmed = volume_ratio >= volume_required
+        else:
+            volume_confirmed = None
+
+        readiness_ready = float(setup_cfg.get("readiness_ready", 65.0))
+        trigger_location_ok = price_to_zone <= 0.5 and price_position_to_zone != "BELOW_ZONE"
+        trigger_confirmed = readiness_final >= readiness_ready and trigger_location_ok and volume_confirmed is not False
+        strict_trigger_confirmed = trigger_confirmed and volume_confirmed is True
+
+        if volume_confirmed is False:
+            conditional_reasons.append("VOLUME_CONFIRMATION_PENDING")
+        if market == "BEAR":
+            position_multiplier = min(position_multiplier, float(profile_cfg["bear_position_multiplier"]))
+            minimum_bear_score = float(profile_cfg.get("minimum_bear_confidence", 70.0))
+            final_score = to_num(row.get("Final_Score"), to_num(row.get("Final_Score_V3"), 0.0))
+            if final_score < minimum_bear_score or not strict_trigger_confirmed:
+                conditional_reasons.append("BEAR_MARKET_TRIGGER_REQUIRED")
+        elif market == "SIDEWAYS" and not strict_trigger_confirmed:
+            conditional_reasons.append("SIDEWAYS_TRIGGER_CONFIRMATION")
+        if liquidity_class == "THIN_BUT_TRADEABLE":
+            position_multiplier = min(position_multiplier, float(profile_cfg["thin_position_multiplier"]))
+            execution_evidence_ok = (
+                float(liquidity_facts["estimated_slippage_pct"]) <= 0.75
+                and not liquidity_facts["poor_flags"]
+                and "SPREAD" not in liquidity_facts["missing_metrics"]
+            )
+            if not (trigger_confirmed and execution_evidence_ok):
+                conditional_reasons.extend(["THIN_LIQUIDITY_TRIGGER_REQUIRED", "CHECK_SPREAD_SLIPPAGE"])
+        if extension_class == "SOFT_EXTENDED":
+            conditional_reasons.append("WAIT_PULLBACK_OR_CONFIRMATION")
+        if price_position_to_zone == "ABOVE_ZONE" and price_to_zone > 0.5:
+            conditional_reasons.append("WAIT_FOR_ENTRY_ZONE")
+        if not math.isnan(minor_rr) and minor_rr < 0.60 and not math.isnan(major_rr):
+            conditional_reasons.append("MINOR_RESISTANCE_NEAR")
+        if readiness_final < readiness_ready:
+            conditional_reasons.append("WAIT_FOR_ENTRY_TRIGGER")
+        if conditional_reasons:
+            setup_quality = "CONDITIONAL"
+            reason_priority = [
+                "WAIT_FOR_ENTRY_ZONE",
+                "MINOR_RESISTANCE_NEAR",
+                "WAIT_PULLBACK_OR_CONFIRMATION",
+                "WAIT_FOR_ENTRY_TRIGGER",
+                "VOLUME_CONFIRMATION_PENDING",
+                "THIN_LIQUIDITY_TRIGGER_REQUIRED",
+                "BEAR_MARKET_TRIGGER_REQUIRED",
+                "SIDEWAYS_TRIGGER_CONFIRMATION",
+            ]
+            rejection_reason = next(
+                (item for item in reason_priority if item in conditional_reasons),
+                conditional_reasons[0],
+            )
+        else:
+            setup_quality, rejection_reason = "ACCEPT", "ENTRY_TRIGGERED"
 
     # Final readiness must remain semantically consistent with the plan status.
     # A setup waiting for a trigger must not display 100% readiness, and a
@@ -384,7 +466,7 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
     preplan_status = str(row.get("Decision_Status_PrePlan", "") or "").upper()
     if not preplan_status:
         preplan_status = "BUY ON TRIGGER" if decision in {"STRONG BUY", "BUY", "BUY CANDIDATE"} else "WATCH" if decision in {"WATCH", "WATCH HIGH", "SPECULATIVE"} else "AVOID"
-    finalization = finalize_after_entry_plan(
+    finalization = finalize_entry_plan(
         preplan_status=preplan_status,
         plan_status=setup_quality,
         plan_reason=rejection_reason,
@@ -392,9 +474,20 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
         decision_trace_preplan=row.get("Decision_Trace_PrePlan", ""),
         major_rr=None if math.isnan(major_rr) else major_rr,
         risk_pct=risk_pct,
+        trigger_confirmed=(setup_quality == "ACCEPT"),
+        conditional_reasons=conditional_reasons,
+        position_size_multiplier=position_multiplier,
     )
     decision_status_final = finalization["Decision_Status_Final"]
     execution_status = finalization["Execution_Status"]
+    trigger_definitions = {
+        "BREAKOUT": "CLOSE_ABOVE_BREAKOUT_LEVEL_WITH_SETUP_VOLUME",
+        "PULLBACK": "PRICE_IN_PULLBACK_ZONE_WITH_BULLISH_CONFIRMATION",
+        "TREND_CONTINUATION": "TREND_RESUMPTION_WITH_VOLUME_CONFIRMATION",
+        "EARLY_ACCUMULATION": "ACCUMULATION_BASE_CONFIRMATION_NEAR_SUPPORT",
+        "DEVELOPING": "SETUP_SPECIFIC_CONFIRMATION_PENDING",
+    }
+    trigger_definition = trigger_definitions.get(setup_type, trigger_definitions["DEVELOPING"])
 
     return {
         "Symbol": row["Symbol"],
@@ -404,6 +497,8 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
         "Rejected_By": finalization["Rejected_By"],
         "Decision_Trace": finalization["Decision_Trace"],
         "Final_Decision_Owner": finalization["Final_Decision_Owner"],
+        "Entry_Validator_Owner": finalization["Entry_Validator_Owner"],
+        "Position_Size_Multiplier": finalization["Position_Size_Multiplier"],
         "Execution_Status": execution_status,
         "Plan_Status": setup_quality,
         "Rejection_Reason": rejection_reason,
@@ -437,6 +532,17 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
         "EMA20": ema20,
         "ATR14": atr,
         "ATR_Extension": atr_extension,
+        "Extension_Class": extension_class,
+        "Liquidity_Execution_Class": liquidity_class,
+        "Estimated_Slippage_Pct": liquidity_facts["estimated_slippage_pct"],
+        "Conditional_Entry_Reasons": json.dumps(list(dict.fromkeys(conditional_reasons)), ensure_ascii=False),
+        "Trigger_Definition": trigger_definition,
+        "Trigger_Confirmed": setup_quality == "ACCEPT",
+        "Volume_Confirmation_Pass": volume_confirmed,
+        "Setup_Volume_Ratio_Min": float(setup_cfg.get("volume_ratio_min", 1.0)),
+        "Support_Lookback": support_lookback,
+        "Resistance_Lookback": resistance_lookback,
+        "Readiness_Formula_Version": "SETUP_SPECIFIC_STAGE2",
         "Broker_Confirmation": row.get("Broker_Confirmation", "NEUTRAL"),
         "Broker_Direction": row.get("Broker_Direction", "NEUTRAL"),
         "Broker_Confidence": row.get("Broker_Confidence", np.nan),
@@ -575,8 +681,17 @@ def main() -> int:
     p.add_argument("--run-id", default=None)
     p.add_argument("--manifest-dir", default=None)
     p.add_argument("--data-quality-status", default="VALID")
+    p.add_argument("--config", default="config/pipeline.json")
+    p.add_argument("--profile", default=None)
     args = p.parse_args()
     args.run_id = args.run_id or make_run_id()
+
+    config_path = Path(args.config)
+    if not config_path.is_absolute():
+        config_path = PROJECT_ROOT / config_path
+    runtime_cfg, _config_provenance = load_runtime_config(config_path, strict=config_path.name.lower() == "pipeline.json")
+    decision_config = runtime_cfg.get("decision", {})
+    profile_name = args.profile or decision_config.get("production_profile", "MODERATE_BASELINE")
 
     decisions = load_decisions(Path(args.decision_csv))
     price_index = index_price_files(Path(args.price_dir))
@@ -611,8 +726,12 @@ def main() -> int:
     if args.open_approved and not plans_df.empty:
         existing_active = set(active.loc[active.get("Status", pd.Series(dtype=str)).astype(str).eq("ACTIVE"), "Symbol"]) if not active.empty else set()
         new_rows = []
+        active_count = len(existing_active)
+        bear_limit = int(resolve_profile(decision_config, profile_name).get("bear_max_active_positions", 2))
         for _, plan in plans_df[plans_df["Decision_Status_Final"] == "BUY READY"].iterrows():
             if plan["Symbol"] in existing_active:
+                continue
+            if str(plan.get("Market_Regime", "")).upper() in {"BEAR", "BEARISH"} and active_count >= bear_limit:
                 continue
             new_rows.append({
                 "Symbol": plan["Symbol"],
@@ -623,13 +742,17 @@ def main() -> int:
                 "Current_Stop": plan["Initial_Stop"],
                 "Target_1": plan["Target_1"],
                 "Target_2": plan["Target_2"],
+                "Position_Size_Multiplier": plan.get("Position_Size_Multiplier", 1.0),
+                "Estimated_Slippage_Pct": plan.get("Estimated_Slippage_Pct", 0.0),
                 "Status": "ACTIVE",
                 "Highest_Close": plan["Reference_Close"],
                 "Holding_Days": 0,
                 "Last_Update": plan["Reference_Date"],
                 "Last_Decision": plan["Decision"],
                 "Last_Broker_Confirmation": plan["Broker_Confirmation"],
+                "Market_Regime_At_Entry": plan.get("Market_Regime", "UNKNOWN"),
             })
+            active_count += 1
         if new_rows:
             active = pd.concat([active, pd.DataFrame(new_rows)], ignore_index=True)
 
