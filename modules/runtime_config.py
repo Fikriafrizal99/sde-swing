@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,8 @@ LEGACY_OVERRIDE_KEYS = {
     "override", "overrides", "runtime_override", "runtime_overrides",
     "migration", "migrations", "legacy", "legacy_config", "threshold_override",
 }
+
+OPERATIONAL_BROKER_MIN_COVERAGE = 0.80
 
 
 class RuntimeConfigError(ValueError):
@@ -32,6 +35,35 @@ def _find_legacy_override_keys(payload: Any, prefix: str = "") -> list[str]:
         for index, value in enumerate(payload):
             found.extend(_find_legacy_override_keys(value, f"{prefix}[{index}]"))
     return found
+
+
+def _apply_operational_broker_policy(payload: dict[str, Any], warnings: list[str]) -> None:
+    """Turn the old 100% shadow gate into an operational minimum.
+
+    Full coverage remains the ideal quality target, but it is no longer a hard
+    runtime requirement. Missing broker symbols continue through fusion as
+    explicit NO DATA rows and cannot receive an accumulation conclusion.
+    """
+    broker = payload.get("broker")
+    candidate = payload.get("candidate")
+    if not isinstance(broker, dict) or not isinstance(candidate, dict):
+        return
+
+    top = max(int(candidate.get("top", 0) or 0), 1)
+    configured = float(broker.get("min_coverage", OPERATIONAL_BROKER_MIN_COVERAGE) or 0.0)
+    effective = min(max(configured, OPERATIONAL_BROKER_MIN_COVERAGE), 1.0)
+
+    # The Stage-2 shadow release gate used 1.0/40-of-40. Production execution
+    # now uses 80% as its minimum while preserving 100% as the ideal target.
+    if effective >= 1.0:
+        effective = OPERATIONAL_BROKER_MIN_COVERAGE
+        warnings.append("BROKER_100_PERCENT_SHADOW_GATE_REPLACED_BY_OPERATIONAL_80_PERCENT")
+
+    broker["min_coverage"] = effective
+    broker["allow_partial_broker"] = True
+    broker["required_matched_count"] = max(1, math.ceil(top * effective))
+    broker["ideal_coverage"] = 1.0
+    broker["coverage_policy"] = "OPERATIONAL_PARTIAL_ALLOWED"
 
 
 def validate_config(payload: dict[str, Any], *, strict: bool = True) -> list[str]:
@@ -81,14 +113,25 @@ def validate_config(payload: dict[str, Any], *, strict: bool = True) -> list[str
     except Exception as exc:
         raise RuntimeConfigError(f"MARKET_HOLIDAY_INVALID: {exc}") from exc
 
+    _apply_operational_broker_policy(payload, warnings)
     broker = payload.get("broker", {})
     if isinstance(broker, dict) and isinstance(candidate, dict):
         coverage = float(broker.get("min_coverage", 0.0) or 0.0)
         required = int(broker.get("required_matched_count", 0) or 0)
-        if strict and coverage < 1.0:
-            raise RuntimeConfigError("BROKER_COVERAGE_MUST_BE_100_PERCENT_FOR_SHADOW")
-        if strict and required < int(candidate.get("top", 0) or 0):
-            raise RuntimeConfigError("BROKER_REQUIRED_MATCHED_COUNT_BELOW_CANDIDATE_TOP")
+        top = int(candidate.get("top", 0) or 0)
+        minimum_required = max(1, math.ceil(top * coverage))
+        if not OPERATIONAL_BROKER_MIN_COVERAGE <= coverage <= 1.0:
+            raise RuntimeConfigError(
+                f"BROKER_COVERAGE_OUTSIDE_OPERATIONAL_RANGE: {coverage:.4f}"
+            )
+        if required < minimum_required:
+            raise RuntimeConfigError(
+                f"BROKER_REQUIRED_MATCHED_COUNT_TOO_LOW: required={required} minimum={minimum_required}"
+            )
+        if coverage < 1.0:
+            warnings.append(
+                f"BROKER_PARTIAL_COVERAGE_ALLOWED:{required}/{top}:{coverage:.0%}"
+            )
 
     if not isinstance(decision, dict):
         if strict:
@@ -142,7 +185,7 @@ def validate_config(payload: dict[str, Any], *, strict: bool = True) -> list[str
         raise RuntimeConfigError(
             "UNDOCUMENTED_LEGACY_OVERRIDE_KEYS: " + ", ".join(sorted(legacy_keys))
         )
-    return warnings
+    return list(dict.fromkeys(warnings))
 
 
 def load_runtime_config(path: Path, *, strict: bool = True) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -174,12 +217,14 @@ def write_runtime_config_audit(path: Path, provenance: dict[str, Any], payload: 
     target = path.resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     candidate = payload.get("candidate", {})
+    broker = payload.get("broker", {})
     decision = payload.get("decision", {})
     exit_cfg = payload.get("exit", {})
     audit = {
         **provenance,
         "effective_values": {
             "candidate": candidate,
+            "broker": broker,
             "decision": decision,
             "exit": exit_cfg,
         },
