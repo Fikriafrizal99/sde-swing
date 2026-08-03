@@ -32,7 +32,7 @@
     "price_tolerance_pct": 0.005,
     "volume_tolerance_pct": 0.2,
     "max_symbols": 0,
-    "non_blocking": true
+    "non_blocking": false
   },
   "enhanced_reporting": {
     "enabled": true,
@@ -58,7 +58,7 @@
     "stage": "technical_only",
     "allow_broker_fusion": false,
     "allow_final_decision": false,
-    "fallback_to_existing_on_refresh_failure": true,
+    "fallback_to_existing_on_refresh_failure": false,
     "report_mode": "compact_single_message"
   },
   "locks": {

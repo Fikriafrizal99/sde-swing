@@ -64,6 +64,18 @@ class MultiDayContext:
             "Broker_MultiDay_Primary_Window": self.primary_window,
             "Broker_MultiDay_Trace": " | ".join(self.trace),
         }
+        # Publish the per-window context labels used by the report contract.
+        # These remain descriptive broker context; they never become BUY/WATCH/
+        # AVOID decisions.
+        for window in WINDOWS:
+            classification = self.classifications.get(window)
+            out[f"Broker_Context_{window}"] = (
+                classification.classification if classification else "INSUFFICIENT_DATA"
+            )
+            if classification is not None:
+                out[f"Broker_Score_{window}"] = round(classification.score, 4)
+                out[f"Broker_Confidence_{window}"] = round(classification.confidence, 2)
+                out[f"Broker_Blocker_{window}"] = bool(classification.blocker)
         out.update(self.alignment.to_dict())
         out.update(self.acceleration)
         out.update(self.divergence)

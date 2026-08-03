@@ -247,13 +247,15 @@ def write_status(
     final_status = status != "RUNNING"
     duration = (finished_at - ctx.started_at).total_seconds() if final_status else None
     detail_payload = details or {}
+    official_runtime = ctx.config_provenance.get("config_version") == RUNTIME_CONFIG_VERSION
+    unavailable = "" if official_runtime else "NOT_CONFIGURED"
     source_meta: dict[str, Any] = {}
     try:
         source_meta = ctx.source_manager.provider_metadata()
     except Exception as exc:
         source_meta = {
-            "provider_status": "NOT_CONFIGURED",
-            "data_source_mode": "NOT_CONFIGURED",
+            "provider_status": unavailable,
+            "data_source_mode": unavailable,
             "source_health": {},
             "source_manager_warning": str(exc),
         }
@@ -265,7 +267,7 @@ def write_status(
         # Legacy hand-built contexts retain the historical status string for
         # regression compatibility; official 1.7 contexts expose the unified
         # finite status vocabulary and keep the old value in legacy_status.
-        "status": _normalized_runtime_status(status) if ctx.config_provenance.get("config_version") == RUNTIME_CONFIG_VERSION else status,
+        "status": _normalized_runtime_status(status) if official_runtime else status,
         "status_v1_7": _normalized_runtime_status(status),
         "current_stage": stage,
         "exit_code": exit_code,
@@ -282,7 +284,7 @@ def write_status(
         "duration_seconds": duration,
         "updated_at": now_wib().isoformat(timespec="seconds"),
         "data_status": detail_payload.get("data_status", detail_payload.get("Data_Quality_Status", "")),
-        "provider_status": detail_payload.get("provider_status") or source_meta.get("provider_status", "NOT_CONFIGURED"),
+        "provider_status": detail_payload.get("provider_status") or source_meta.get("provider_status", unavailable),
         "snapshot_id": detail_payload.get("snapshot_id", ""),
         "snapshot_trade_date": detail_payload.get("snapshot_trade_date", ""),
         "global_market_snapshot_id": detail_payload.get("global_market_snapshot_id", ""),
@@ -307,7 +309,7 @@ def write_status(
         "warnings": detail_payload.get("warnings", []),
         "errors": detail_payload.get("errors", []),
         "traceback_path": detail_payload.get("traceback_path", ""),
-        "data_source_mode": detail_payload.get("data_source_mode") or source_meta.get("data_source_mode", "NOT_CONFIGURED"),
+        "data_source_mode": detail_payload.get("data_source_mode") or source_meta.get("data_source_mode", unavailable),
         "hostname": socket.gethostname(),
         "process_id": os.getpid(),
         "lock_status": detail_payload.get("lock_status", ""),
@@ -318,7 +320,7 @@ def write_status(
         "config_loaded_at": ctx.config_provenance.get("loaded_at", ""),
         "config_validation_status": ctx.config_provenance.get("validation_status", ""),
         "config_override_mode": ctx.config_provenance.get("override_mode", "NONE"),
-        "primary_provider": detail_payload.get("primary_provider") or source_meta.get("primary_provider", "NOT_CONFIGURED"),
+        "primary_provider": detail_payload.get("primary_provider") or source_meta.get("primary_provider", unavailable),
         "providers_attempted": detail_payload.get("providers_attempted", source_meta.get("providers_attempted", [])),
         "fallback_used": bool(detail_payload.get("fallback_used", source_meta.get("fallback_used", False))),
         "mock_used": bool(detail_payload.get("mock_used", source_meta.get("mock_used", False))),

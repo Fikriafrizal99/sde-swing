@@ -307,9 +307,12 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
         "symbols_valid": snapshot.get("symbols_valid", 0),
         "symbols_failed": snapshot.get("symbols_failed", 0),
         "symbols_skipped": snapshot.get("symbols_skipped", 0),
-        "provider_status": source_metadata.get("provider_status", "NOT_CONFIGURED"),
-        "data_source_mode": source_metadata.get("data_source_mode", "NOT_CONFIGURED"),
-        "source_coverage_ratio": (snapshot.get("symbols_valid", 0) / snapshot.get("symbols_requested", 1)) if snapshot.get("symbols_requested", 0) else 0.0,
+        # The snapshot is the Stage-1/2 source of truth.  Do not report the
+        # DataSourceManager readiness metadata as if it described the Yahoo
+        # files that were actually consumed by the technical engine.
+        "provider_status": snapshot.get("source_metadata", {}).get("provider_status") or source_metadata.get("provider_status", ""),
+        "data_source_mode": snapshot.get("source_metadata", {}).get("data_source_mode") or source_metadata.get("data_source_mode", ""),
+        "source_coverage_ratio": snapshot.get("source_metadata", {}).get("source_coverage_ratio"),
         "snapshot_ids": {"technical": snapshot.get("snapshot_id", "")},
         "Config_Version": ctx.runtime_version,
         "Broker_Navigator_Path": str(navigator_path),
@@ -419,6 +422,7 @@ def create_technical_snapshot(
             "provider": yahoo_manifest.get("Data_Source", "HISTORICAL_PROVIDER"),
             "provider_status": yahoo_manifest.get("Provider_Status", "FILE" if str(yahoo_manifest.get("Data_Source", "")).upper() != "LIVE_YAHOO" else "LIVE"),
             "data_source_mode": yahoo_manifest.get("Data_Source_Mode", "FILE" if str(yahoo_manifest.get("Data_Source", "")).upper() != "LIVE_YAHOO" else "LIVE"),
+            "source_coverage_ratio": round((symbols_valid / symbols_requested), 4) if symbols_requested else 0.0,
         },
         "broker_navigator_path": str(navigator_path) if navigator_path else "",
         "output_paths": copied,
@@ -708,6 +712,388 @@ def run_interactive_broker_break(
     return ready, detail
 
 
+def run_broker_fusion_from_snapshot(
+    ctx: RunnerContext,
+    snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run the single Broker Fusion stage used by summary and final jobs.
+
+    Broker Fusion is the owner of broker score/confirmation fields.  Keeping
+    this command in one helper prevents the report bridge from re-deriving
+    broker state from the raw Stockbit export.
+    """
+    snapshot = snapshot or load_technical_snapshot(ctx)
+    if snapshot.get("status") != "VALID":
+        raise RuntimeError(f"Invalid technical snapshot: {snapshot.get('status')} {snapshot.get('reason', '')}")
+    cfg = ctx.config
+    paths = cfg.get("paths", {})
+    manifest_dir = resolve(paths.get("manifest_dir", "data/output/manifests"))
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    candidate = Path(str(snapshot.get("output_paths", {}).get("technical_candidates", "")))
+    decision_source = resolve(paths.get("decision_source", "data/input/FINAL_DECISION_V2.csv"))
+    broker_summary = resolve(paths.get("broker_summary_latest", "data/input/broker/BROKER_SUMMARY_LATEST.csv"))
+    broker_raw = resolve(paths.get("broker_raw_latest", "data/input/broker/BROKER_RAW_LATEST.csv"))
+    bcfg = cfg.get("broker", {})
+    fusion_manifest_path = manifest_dir / f"BROKER_FUSION_MANIFEST_{ctx.run_id}.json"
+    existing_manifest = read_json_safely(fusion_manifest_path)
+    if ctx.preview_existing and decision_source.exists():
+        # Preview mode may reuse a canonical artifact produced by an earlier
+        # run.  The caller validates date/config/source before allowing this
+        # path; the engine run ID does not become a reason to re-fuse data.
+        for candidate_manifest_path in sorted(
+            manifest_dir.glob("BROKER_FUSION_MANIFEST_*.json"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        ):
+            candidate_manifest = read_json_safely(candidate_manifest_path)
+            if str(candidate_manifest.get("broker_date", "")) != ctx.trade_date.isoformat():
+                continue
+            if str(candidate_manifest.get("output", "")) and Path(str(candidate_manifest.get("output"))).resolve() != decision_source.resolve():
+                continue
+            return {
+                "candidate": candidate,
+                "decision_source": decision_source,
+                "broker_summary": broker_summary,
+                "broker_raw": broker_raw,
+                "manifest_dir": candidate_manifest_path.parent,
+                "fusion_manifest": candidate_manifest,
+                "fusion_manifest_path": str(candidate_manifest_path),
+                "reused": True,
+            }
+    if (
+        decision_source.exists()
+        and str(existing_manifest.get("broker_date", "")) == ctx.trade_date.isoformat()
+    ):
+        return {
+            "candidate": candidate,
+            "decision_source": decision_source,
+            "broker_summary": broker_summary,
+            "broker_raw": broker_raw,
+            "manifest_dir": manifest_dir,
+            "fusion_manifest": existing_manifest,
+            "fusion_manifest_path": str(fusion_manifest_path),
+            "reused": True,
+        }
+    if ctx.job != "broker_summary":
+        broker_status = read_json_safely(ctx.status_root / "broker_summary_latest.json")
+        status_paths = broker_status.get("output_paths", {}) if isinstance(broker_status, dict) else {}
+        dependency_manifest_raw = str(status_paths.get("broker_fusion_manifest", "")).strip()
+        dependency_manifest_path = Path(dependency_manifest_raw) if dependency_manifest_raw else None
+        dependency_manifest = read_json_safely(dependency_manifest_path) if dependency_manifest_path else {}
+        if (
+            decision_source.exists()
+            and str(dependency_manifest.get("broker_date", "")) == ctx.trade_date.isoformat()
+        ):
+            return {
+                "candidate": candidate,
+                "decision_source": decision_source,
+                "broker_summary": broker_summary,
+                "broker_raw": broker_raw,
+                "manifest_dir": dependency_manifest_path.parent if dependency_manifest_path else manifest_dir,
+                "fusion_manifest": dependency_manifest,
+                "fusion_manifest_path": str(dependency_manifest_path) if dependency_manifest_path else "",
+                "reused": True,
+            }
+    command = [
+        sys.executable,
+        "-u",
+        str(resolve(paths.get("broker_fusion", "modules/broker_fusion/broker_fusion.py"))),
+        str(candidate),
+        str(broker_summary),
+        "--output",
+        str(decision_source),
+        "--run-id",
+        ctx.run_id,
+        "--manifest-dir",
+        str(manifest_dir),
+        "--data-quality-status",
+        str(snapshot.get("data_quality_status") or "VALID"),
+        "--min-coverage",
+        str(bcfg.get("min_coverage", 0.80)),
+        "--expected-broker-date",
+        ctx.trade_date.isoformat(),
+        "--broker-raw",
+        str(broker_raw),
+    ]
+    if bool(bcfg.get("allow_partial_broker", False)):
+        command.append("--allow-partial-broker")
+    run_command(ctx, "BROKER FUSION FROM SNAPSHOT", command)
+    fusion_manifest = read_json_safely(fusion_manifest_path)
+    broker_date = str(fusion_manifest.get("broker_date", ""))
+    if broker_date != ctx.trade_date.isoformat():
+        raise RuntimeError(f"BROKER_DATE_MISMATCH: {broker_date} != {ctx.trade_date.isoformat()}")
+    return {
+        "candidate": candidate,
+        "decision_source": decision_source,
+        "broker_summary": broker_summary,
+        "broker_raw": broker_raw,
+        "manifest_dir": manifest_dir,
+        "fusion_manifest": fusion_manifest,
+        "fusion_manifest_path": str(fusion_manifest_path),
+        "reused": False,
+    }
+
+
+def run_broker_multiday_stage(ctx: RunnerContext) -> dict[str, Any]:
+    """Build the published broker multi-day context files from dated raw exports.
+
+    This activates the existing multi-day engine/output writer; it does not
+    calculate or alter BUY/WATCH/AVOID decisions.
+    """
+    from modules.data_sources.broker_multiday_output import write_multiday_outputs
+    from modules.data_sources.decision_bridge import build_contexts_for_symbols
+
+    paths = ctx.config.get("paths", {})
+    latest = resolve(paths.get("broker_raw_latest", "data/input/broker/BROKER_RAW_LATEST.csv"))
+    archive_dir = resolve(paths.get("broker_raw_archive_dir", "data/input/broker/archive"))
+    candidates = [path for path in [latest, *sorted(archive_dir.glob("BROKER_RAW_*.csv"), key=lambda item: item.stat().st_mtime, reverse=True)] if path.exists() and path.stat().st_size > 0]
+    if not candidates:
+        raise RuntimeError("BROKER_MULTI_DAY_RAW_SOURCE_NOT_FOUND")
+
+    # Pick the newest complete capture for each market date.  Multiple browser
+    # captures of one date must never be merged as if they were separate days.
+    selected: dict[str, tuple[Path, pd.DataFrame]] = {}
+    for path in candidates:
+        try:
+            frame = pd.read_csv(path, low_memory=False)
+        except Exception:
+            continue
+        date_col = find_col(frame, "TO_DATE", "Market_Date", "Date")
+        if date_col is None:
+            continue
+        dates = pd.to_datetime(frame[date_col], errors="coerce").dropna().dt.date.astype(str)
+        dates = [item for item in dates if item <= ctx.trade_date.isoformat()]
+        if not dates:
+            continue
+        market_date = max(dates)
+        if market_date not in selected:
+            selected[market_date] = (path, frame)
+
+    if not selected:
+        raise RuntimeError("BROKER_MULTI_DAY_MARKET_DATE_NOT_FOUND")
+
+    rows_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for _market_date, (_path, frame) in sorted(selected.items()):
+        symbol_col = find_col(frame, "SYMBOL", "EMITEN", "Ticker", "Symbol")
+        date_col = find_col(frame, "TO_DATE", "Market_Date", "Date")
+        if symbol_col is None or date_col is None:
+            continue
+        parsed_dates = pd.to_datetime(frame[date_col], errors="coerce").dt.date.astype(str)
+        frame = frame.loc[parsed_dates.eq(_market_date)].copy()
+        for raw in frame.to_dict(orient="records"):
+            symbol = str(raw.get(symbol_col, "")).strip().upper().replace(".JK", "")
+            parsed_market_date = pd.to_datetime(raw.get(date_col), errors="coerce")
+            if pd.isna(parsed_market_date):
+                continue
+            market_date = parsed_market_date.date().isoformat()
+            if not symbol or market_date > ctx.trade_date.isoformat():
+                continue
+            def number(*aliases: str) -> float | None:
+                column = find_col(frame, *aliases)
+                try:
+                    return float(raw.get(column)) if column and raw.get(column) not in (None, "") else None
+                except (TypeError, ValueError):
+                    return None
+            row = {
+                "symbol": symbol,
+                "market_date": market_date,
+                "broker_code": str(raw.get(find_col(frame, "BROKER_CODE", "Broker_Code") or "", "")).upper(),
+                "broker_type": str(raw.get(find_col(frame, "BROKER_TYPE", "Broker_Type") or "", "UNKNOWN")).upper(),
+                "side": str(raw.get(find_col(frame, "SIDE", "Side") or "", "")).upper(),
+                "net_value": number("NET_VALUE", "Net_Value"),
+                "net_lot": number("NET_LOT", "Net_Lot"),
+                "gross_value": number("GROSS_VALUE", "Gross_Value"),
+                "gross_lot": number("GROSS_LOT", "Gross_Lot"),
+                "frequency": number("FREQUENCY", "Frequency"),
+                "avg_price": number("AVG_PRICE", "Avg_Price"),
+                "rank": number("RANK", "Rank"),
+            }
+            rows_by_symbol.setdefault(symbol, []).append(row)
+
+    if not rows_by_symbol:
+        raise RuntimeError("BROKER_MULTI_DAY_ROWS_EMPTY")
+    contexts = build_contexts_for_symbols(rows_by_symbol, primary_window=str(ctx.config.get("broker", {}).get("primary_window", "5D")))
+    output_dir = resolve(paths.get("broker_multiday_output_dir", "data/output/broker_multiday"))
+    minimum_sessions = int(ctx.config.get("broker", {}).get("minimum_multiday_sessions", 20))
+    data_quality_status = "VALID" if len(selected) >= minimum_sessions else "INSUFFICIENT_HISTORY"
+    outputs = write_multiday_outputs(
+        contexts,
+        output_dir=output_dir,
+        run_id=ctx.run_id,
+        data_quality_status=data_quality_status,
+        market_dates=sorted(selected),
+        source_files=[str(path) for path, _frame in selected.values()],
+        minimum_sessions=minimum_sessions,
+    )
+    from modules.job_runner.report_validation import ReportSourceValidationError
+
+    # A short archive is a truthful partial/insufficient-history result.  It
+    # must remain publishable for audit, but it must not be attached to the
+    # decision source or used by the final decision stage.
+    if data_quality_status != "VALID":
+        return {
+            "output_paths": {name: str(path) for name, path in outputs.items()},
+            "symbol_count": len(contexts),
+            "market_dates": sorted(selected),
+            "source_files": [str(path) for path, _frame in selected.values()],
+            "data_quality_status": data_quality_status,
+            "minimum_sessions": minimum_sessions,
+            "coverage_ratio": round(len(selected) / max(minimum_sessions, 1), 4),
+            "decision_context_path": "",
+            "decision_context_symbols": 0,
+            "context_bridge": {
+                "status": "SKIPPED_INSUFFICIENT_HISTORY",
+                "reason": f"{len(selected)} sessions available; {minimum_sessions} required",
+            },
+        }
+
+    try:
+        context_bridge = attach_broker_multiday_context(
+            ctx,
+            fusion_path=ctx.path("broker_summary_engine", "data/input/FINAL_DECISION_V2.csv"),
+        )
+    except ReportSourceValidationError:
+        raise
+    except Exception as exc:
+        raise ReportSourceValidationError(
+            "broker_multi_day",
+            [f"CONTEXT_BRIDGE_FAILED:{type(exc).__name__}:{exc}"],
+            input_paths=[
+                output_dir / "BROKER_MULTIDAY_MANIFEST.json",
+                output_dir / "BROKER_MULTIDAY_SUMMARY.csv",
+                output_dir / "BROKER_MULTIDAY_DETAIL.csv",
+                ctx.path("broker_summary_engine", "data/input/FINAL_DECISION_V2.csv"),
+            ],
+            source_of_truth=[output_dir / "BROKER_MULTIDAY_DETAIL.csv", ctx.path("broker_summary_engine", "data/input/FINAL_DECISION_V2.csv")],
+        ) from exc
+    return {
+        "output_paths": {name: str(path) for name, path in outputs.items()},
+        "symbol_count": len(contexts),
+        "market_dates": sorted(selected),
+        "source_files": [str(path) for path, _frame in selected.values()],
+        "data_quality_status": data_quality_status,
+        "minimum_sessions": minimum_sessions,
+        "coverage_ratio": round(len(selected) / max(minimum_sessions, 1), 4),
+        "decision_context_path": context_bridge["fusion_path"],
+        "decision_context_symbols": context_bridge["symbols_attached"],
+    }
+
+
+def attach_broker_multiday_context(
+    ctx: RunnerContext,
+    *,
+    fusion_path: Path | None = None,
+) -> dict[str, Any]:
+    """Attach published multi-day context to the Broker Fusion input.
+
+    The bridge adds only the context columns declared by ``decision_bridge``;
+    protected decision/status/score columns are checked before and after the
+    write.  Decision Engine can therefore consume the existing context
+    contract without a second scoring implementation.
+    """
+    from modules.data_sources.decision_bridge import CONTEXT_COLUMNS
+    from modules.job_runner.report_validation import validate_broker_multiday_source
+
+    output_dir = resolve(ctx.config.get("paths", {}).get("broker_multiday_output_dir", "data/output/broker_multiday"))
+    manifest_path = output_dir / "BROKER_MULTIDAY_MANIFEST.json"
+    multiday_manifest = read_json_safely(manifest_path)
+    expected_run_ids = {ctx.run_id}
+    # The multi-day producer enriches the Broker Fusion file emitted by the
+    # preceding broker-summary job.  Individual scheduled jobs have distinct
+    # run IDs, while Full Manual keeps one run ID across both stages.
+    dependency_job = "broker_summary" if ctx.job == "broker_multi_day" else "broker_multi_day"
+    dependency_status = read_json_safely(ctx.status_root / f"{dependency_job}_latest.json")
+    if isinstance(dependency_status, dict) and dependency_status.get("run_id"):
+        expected_run_ids.add(str(dependency_status["run_id"]))
+    manifest_run_id = str(multiday_manifest.get("run_id", ""))
+    if manifest_run_id not in expected_run_ids:
+        raise RuntimeError(f"BROKER_MULTI_DAY_RUN_MISMATCH: {manifest_run_id} not in {sorted(expected_run_ids)}")
+    if str(multiday_manifest.get("data_quality_status", "")).upper() != "VALID":
+        raise RuntimeError(f"BROKER_MULTI_DAY_DATA_QUALITY:{multiday_manifest.get('data_quality_status', '')}")
+
+    summary_path = output_dir / "BROKER_MULTIDAY_SUMMARY.csv"
+    detail_path = output_dir / "BROKER_MULTIDAY_DETAIL.csv"
+    summary = pd.read_csv(summary_path, low_memory=False)
+    detail = pd.read_csv(detail_path, low_memory=False)
+    validate_broker_multiday_source(summary, summary_path)
+    validate_broker_multiday_source(detail, detail_path)
+    fusion = resolve(fusion_path or ctx.path("broker_summary_engine", "data/input/FINAL_DECISION_V2.csv"))
+    frame = pd.read_csv(fusion, low_memory=False)
+
+    fusion_symbol = find_col(frame, "Symbol", "EMITEN", "Ticker")
+    summary_symbol = find_col(summary, "Symbol", "EMITEN", "Ticker")
+    detail_symbol = find_col(detail, "Symbol", "EMITEN", "Ticker")
+    if fusion_symbol is None or summary_symbol is None or detail_symbol is None:
+        raise RuntimeError("BROKER_MULTI_DAY_CONTEXT_SYMBOL_COLUMN_MISSING")
+
+    def canonical(value: Any) -> str:
+        return str(value or "").strip().upper().replace(".JK", "")
+
+    summary_map = {canonical(row.get(summary_symbol)): row for row in summary.to_dict(orient="records")}
+    detail_map = {canonical(row.get(detail_symbol)): row for row in detail.to_dict(orient="records")}
+    symbols = [canonical(value) for value in frame[fusion_symbol].tolist()]
+    missing = sorted(symbol for symbol in symbols if symbol and symbol not in detail_map)
+    if missing:
+        raise RuntimeError(f"BROKER_MULTI_DAY_CONTEXT_MISSING:{','.join(missing)}")
+    missing_summary = sorted(symbol for symbol in symbols if symbol and symbol not in summary_map)
+    if missing_summary:
+        raise RuntimeError(f"BROKER_MULTI_DAY_SUMMARY_MISSING:{','.join(missing_summary)}")
+
+    def source_value(symbol: str, column: str, *aliases: str) -> Any:
+        detail_row = detail_map.get(symbol, {})
+        summary_row = summary_map.get(symbol, {})
+        for row in (detail_row, summary_row):
+            for alias in (column, *aliases):
+                if alias in row and row[alias] not in (None, ""):
+                    return row[alias]
+        return ""
+
+    aliases: dict[str, tuple[str, ...]] = {
+        "Broker_MultiDay_Score": ("Score",),
+        "Broker_MultiDay_Confidence": ("Confidence",),
+        "Broker_MultiDay_Penalty": ("Penalty",),
+        "Broker_MultiDay_Blocker": ("Blocker",),
+        "Broker_MultiDay_Context": ("Context",),
+    }
+    protected = {
+        column: frame[column].copy()
+        for column in ("Decision_Status_Final", "Decision_Status", "Decision_V3", "Final_Score_V3")
+        if column in frame.columns
+    }
+    for column in CONTEXT_COLUMNS:
+        frame[column] = [source_value(symbol, column, *aliases.get(column, ())) for symbol in symbols]
+    for column, before in protected.items():
+        if not frame[column].equals(before):
+            raise RuntimeError(f"BROKER_MULTI_DAY_PROTECTED_COLUMN_CHANGED:{column}")
+    frame.to_csv(fusion, index=False, encoding="utf-8-sig")
+    bridge_metadata = {
+        "manifest": str(manifest_path),
+        "columns": list(CONTEXT_COLUMNS),
+        "symbols_attached": len([symbol for symbol in symbols if symbol]),
+    }
+    fusion_artifact_manifest = fusion.with_suffix(".manifest.json")
+    manifest_candidates = {fusion_artifact_manifest}
+    fusion_run_id = str(read_json_safely(fusion_artifact_manifest).get("Run_ID", ""))
+    if fusion_run_id:
+        manifest_candidates.add(
+            resolve(ctx.config.get("paths", {}).get("manifest_dir", "data/output/manifests"))
+            / f"BROKER_FUSION_MANIFEST_{fusion_run_id}.json"
+        )
+    for manifest_candidate in manifest_candidates:
+        fusion_manifest_payload = read_json_safely(manifest_candidate)
+        if not fusion_manifest_payload:
+            continue
+        fusion_manifest_payload["output_hash"] = file_sha256(fusion)
+        fusion_manifest_payload["multi_day_context_bridge"] = bridge_metadata
+        write_json(manifest_candidate, fusion_manifest_payload)
+    return {
+        "fusion_path": str(fusion),
+        "symbols_attached": len([symbol for symbol in symbols if symbol]),
+        "manifest_path": str(manifest_path),
+        "context_columns": list(CONTEXT_COLUMNS),
+    }
+
+
 def run_final_from_snapshot(ctx: RunnerContext) -> dict[str, Any]:
     snapshot = load_technical_snapshot(ctx)
     if snapshot.get("status") != "VALID":
@@ -743,6 +1129,9 @@ def run_final_from_snapshot(ctx: RunnerContext) -> dict[str, Any]:
         "Data_Source": "LIVE_SNAPSHOT",
         "Technical_Date": snapshot.get("trade_date", ""),
         "Technical_Snapshot_ID": snapshot.get("snapshot_id", ""),
+        "Snapshot_ID": snapshot.get("snapshot_id", ""),
+        "Snapshot_Manifest": snapshot.get("manifest_path", ""),
+        "source_metadata": snapshot.get("source_metadata", {}),
         "Broker_Date": "",
         "Broker_Coverage": "",
         "Data_Quality_Status": "VALID",
@@ -753,38 +1142,64 @@ def run_final_from_snapshot(ctx: RunnerContext) -> dict[str, Any]:
         "Output_Files": {},
     }
     write_json(run_manifest_path, manifest)
-    fusion_cmd = [
-        sys.executable,
-        "-u",
-        str(resolve(paths.get("broker_fusion", "modules/broker_fusion/broker_fusion.py"))),
-        str(candidate),
-        str(broker_summary),
-        "--output",
-        str(decision_source),
-        "--run-id",
-        ctx.run_id,
-        "--manifest-dir",
-        str(manifest_dir),
-        "--data-quality-status",
-        "VALID",
-        "--min-coverage",
-        str(bcfg.get("min_coverage", 0.80)),
-        "--expected-broker-date",
-        ctx.trade_date.isoformat(),
-        "--broker-raw",
-        str(broker_raw),
-    ]
-    run_command(ctx, "BROKER FUSION FROM SNAPSHOT", fusion_cmd)
-    fusion_manifest = read_json_safely(manifest_dir / f"BROKER_FUSION_MANIFEST_{ctx.run_id}.json")
+    fusion = run_broker_fusion_from_snapshot(ctx, snapshot)
+    fusion_manifest = fusion["fusion_manifest"]
+    fusion_manifest_path = Path(str(fusion.get("fusion_manifest_path", manifest_dir / f"BROKER_FUSION_MANIFEST_{ctx.run_id}.json")))
     broker_date = str(fusion_manifest.get("broker_date", ""))
-    if broker_date != ctx.trade_date.isoformat():
-        raise RuntimeError(f"BROKER_DATE_MISMATCH: {broker_date} != {ctx.trade_date.isoformat()}")
     manifest["Broker_Date"] = broker_date
     manifest["Broker_Coverage"] = f"{fusion_manifest.get('broker_matched', 0)}/{fusion_manifest.get('broker_expected', 0)} - {fusion_manifest.get('broker_coverage', 0):.0%}"
     manifest["Fusion_Output"] = str(decision_source)
     manifest["Data_Quality_Status"] = fusion_manifest.get("Data_Quality_Status", "VALID")
     manifest["Output_Files"]["Fusion"] = str(decision_source)
     write_json(run_manifest_path, manifest)
+    context_bridge: dict[str, Any] = {}
+    if str(ctx.config_provenance.get("config_version", "")) == "1.7.0-multisource":
+        from modules.data_sources.decision_bridge import CONTEXT_COLUMNS
+
+        output_dir = resolve(paths.get("broker_multiday_output_dir", "data/output/broker_multiday"))
+        multiday_manifest_path = output_dir / "BROKER_MULTIDAY_MANIFEST.json"
+        multiday_manifest = read_json_safely(multiday_manifest_path)
+        multiday_quality = str(multiday_manifest.get("data_quality_status", "")).upper()
+        if multiday_quality == "VALID":
+            from modules.job_runner.report_validation import ReportSourceValidationError
+
+            try:
+                context_bridge = attach_broker_multiday_context(ctx, fusion_path=decision_source)
+            except ReportSourceValidationError:
+                raise
+            except Exception as exc:
+                raise ReportSourceValidationError(
+                    "final_watchlist",
+                    [f"CONTEXT_BRIDGE_FAILED:{type(exc).__name__}:{exc}"],
+                    input_paths=[
+                        multiday_manifest_path,
+                        output_dir / "BROKER_MULTIDAY_SUMMARY.csv",
+                        output_dir / "BROKER_MULTIDAY_DETAIL.csv",
+                        decision_source,
+                    ],
+                    source_of_truth=[output_dir / "BROKER_MULTIDAY_DETAIL.csv", decision_source],
+                ) from exc
+        else:
+            # Clear stale context from a reused fusion artifact.  Protected
+            # decision/status/score columns are untouched, and the decision
+            # engine proceeds using only valid one-day broker fusion data.
+            if decision_source.exists():
+                fusion_frame = pd.read_csv(decision_source, low_memory=False)
+                for column in CONTEXT_COLUMNS:
+                    if column in fusion_frame.columns:
+                        fusion_frame[column] = ""
+                fusion_frame.to_csv(decision_source, index=False, encoding="utf-8-sig")
+            context_bridge = {
+                "status": "SKIPPED_INSUFFICIENT_HISTORY" if multiday_quality else "SKIPPED_NOT_AVAILABLE",
+                "reason": str(multiday_manifest.get("data_quality_status") or "BROKER_MULTIDAY_MANIFEST_NOT_FOUND"),
+                "manifest": str(multiday_manifest_path),
+                "minimum_sessions": multiday_manifest.get("minimum_sessions", 20),
+                "session_count": multiday_manifest.get("session_count", 0),
+            }
+        manifest["Decision_Context_Bridge"] = context_bridge
+        if context_bridge.get("fusion_path"):
+            manifest["Output_Files"]["Decision_Context"] = context_bridge["fusion_path"]
+        write_json(run_manifest_path, manifest)
     decision_dir.mkdir(parents=True, exist_ok=True)
     run_command(ctx, "DECISION ENGINE", [
         sys.executable,
@@ -855,6 +1270,56 @@ def run_final_from_snapshot(ctx: RunnerContext) -> dict[str, Any]:
         manifest["Output_Files"]["Profile_Shadow"] = str(shadow_output)
         manifest["Shadow_Mode"] = "SHADOW_ONLY"
         manifest["Auto_Entry_Enabled"] = False
+    if cfg.get("database", {}).get("enabled", True):
+        database_path = resolve(paths.get("swing_database", "data/database/sde_swing_history.db"))
+        database_summary = manifest_dir / f"DATABASE_ARCHIVE_SUMMARY_{ctx.run_id}.json"
+        manifest["Finished_At"] = now_wib().isoformat(timespec="seconds")
+        manifest["Pipeline_Status"] = "SUCCESS"
+        write_json(run_manifest_path, manifest)
+        try:
+            run_command(ctx, "DATABASE ARCHIVE", [
+                sys.executable,
+                "-u",
+                str(resolve(paths.get("database_archiver", "modules/database/swing_history_db.py"))),
+                "--run-id",
+                ctx.run_id,
+                "--db",
+                str(database_path),
+                "--run-manifest",
+                str(run_manifest_path),
+                "--yahoo-manifest",
+                str(manifest_dir / f"YAHOO_REFRESH_MANIFEST_{ctx.run_id}.json"),
+                "--broker-manifest",
+                str(fusion_manifest_path),
+                "--historical-dir",
+                str(hist),
+                "--technical",
+                str(resolve(paths.get("technical_output_dir", "data/output/technical")) / "latest_technical_features.csv"),
+                "--candidates",
+                str(candidate),
+                "--broker-summary",
+                str(broker_summary),
+                "--fusion",
+                str(decision_source),
+                "--decision",
+                str(final),
+                "--exit-dir",
+                str(exit_dir),
+                "--multiday-dir",
+                str(resolve(paths.get("broker_multiday_output_dir", "data/output/broker_multiday"))),
+                "--data-quality-status",
+                str(manifest.get("Data_Quality_Status", "VALID")),
+                "--summary-output",
+                str(database_summary),
+            ])
+        except Exception as exc:
+            manifest["Pipeline_Status"] = "FAILED"
+            manifest["Finished_At"] = now_wib().isoformat(timespec="seconds")
+            manifest.setdefault("Errors", []).append(f"DATABASE_ARCHIVE_FAILED:{exc}")
+            write_json(run_manifest_path, manifest)
+            raise
+        manifest["Output_Files"]["Database"] = str(database_path)
+        manifest["Output_Files"]["Database_Summary"] = str(database_summary)
     manifest["Finished_At"] = now_wib().isoformat(timespec="seconds")
     manifest["Pipeline_Status"] = "SUCCESS"
     write_json(run_manifest_path, manifest)

@@ -9,7 +9,6 @@ from pathlib import Path
 import pandas as pd
 
 from modules.data_sources.yahoo_zapi_validator import validate_yahoo_against_zapi
-from modules.global_market.global_market_snapshot import build_global_market_snapshot
 from modules.job_runner.delivery import deliver
 from modules.job_runner.enhanced_runtime_bridge import (
     broker_multiday_payloads,
@@ -19,6 +18,7 @@ from modules.job_runner.enhanced_runtime_bridge import (
     post_market_payloads,
 )
 from modules.job_runner.reports import write_payloads
+from modules.job_runner.report_validation import ReportSourceValidationError, record_validation_error
 from modules.job_runner.runtime import (
     EXIT_DELIVERY_FAILED,
     EXIT_SUCCESS,
@@ -59,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _engine_command(args: argparse.Namespace) -> list[str]:
+def _engine_command(args: argparse.Namespace, run_id: str) -> list[str]:
     command = [
         sys.executable,
         "-u",
@@ -71,6 +71,9 @@ def _engine_command(args: argparse.Namespace) -> list[str]:
         "--scheduler-config",
         args.scheduler_config,
         "--no-telegram",
+        "--engine-only",
+        "--run-id",
+        run_id,
     ]
     if args.trade_date:
         command.extend(["--trade-date", args.trade_date])
@@ -90,25 +93,15 @@ def _engine_command(args: argparse.Namespace) -> list[str]:
 def _load_market_artifacts(ctx) -> tuple[dict, dict]:
     snapshot_path = resolve("data/output/global_market") / ctx.trade_date.isoformat() / "global_market_snapshot.json"
     global_snapshot = read_json(snapshot_path)
-    if not global_snapshot:
-        global_snapshot = build_global_market_snapshot(ctx, fallback_to_existing_on_failure=True)
     market_status = read_json(
         ctx.previews_root.parent / "market_regime" / ctx.trade_date.isoformat() / "market_outlook_regime.json"
     )
-    if not market_status:
-        market_status = read_json(resolve("data/output/decision/MARKET_STATUS.json"))
     return global_snapshot, market_status
 
 
 def _load_post_manifest(ctx) -> dict:
-    candidates = sorted(resolve("data/output/manifests").glob("SWING_RUN_MANIFEST_*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
-    for path in candidates:
-        payload = read_json(path)
-        technical_date = str(payload.get("Technical_Date") or payload.get("trade_date") or "")
-        if not technical_date or technical_date == ctx.trade_date.isoformat():
-            return payload
-    snapshot = read_json(resolve("data/output/technical/latest_technical_snapshot.json"))
-    return snapshot
+    path = ctx.path("manifest_dir", "data/output/manifests") / f"SWING_RUN_MANIFEST_{ctx.run_id}.json"
+    return read_json(path)
 
 
 def _watchlist_symbols(ctx) -> list[str]:
@@ -148,6 +141,15 @@ def _run_source_reconciliation(ctx, job: str) -> dict:
     if not symbols:
         result = {"status": "SKIPPED", "reason": "SYMBOL_UNIVERSE_NOT_FOUND"}
         append_job_log(ctx, "YAHOO_ZAPI_RECONCILIATION_SKIPPED", str(result))
+        if not bool(config.get("non_blocking", False)):
+            reconciliation_config = str(ctx.config.get("data_sources_config", "config/data_sources.json"))
+            raise ReportSourceValidationError(
+                "source_reconciliation",
+                [result["reason"]],
+                input_paths=[resolve(ctx.config.get("paths", {}).get("normalized_watchlist", "modules/historical_downloader/Stockbit_Watchlist_2026-07-19_normalized.csv"))],
+                source_of_truth=[reconciliation_config],
+                details=result,
+            )
         return result
     paths = ctx.config.get("paths", {})
     historical_dir = resolve(paths.get("historical_dir", "data/output/historical/by_symbol"))
@@ -170,10 +172,30 @@ def _run_source_reconciliation(ctx, job: str) -> dict:
             "conflicted": result.get("conflicted"),
             "coverage_ratio": result.get("coverage_ratio"),
         }))
+        if str(result.get("status", "")).upper().startswith("FAILED") and not bool(config.get("non_blocking", False)):
+            reconciliation_config = str(ctx.config.get("data_sources_config", "config/data_sources.json"))
+            raise ReportSourceValidationError(
+                "source_reconciliation",
+                [str(result.get("reason") or result.get("status"))],
+                input_paths=[historical_dir],
+                source_of_truth=[reconciliation_config],
+                details=result,
+            )
         return result
+    except ReportSourceValidationError:
+        raise
     except Exception as exc:
         result = {"status": "FAILED_NON_BLOCKING", "reason": f"{type(exc).__name__}: {exc}"}
         append_job_log(ctx, "YAHOO_ZAPI_RECONCILIATION_FAILED", str(result))
+        if not bool(config.get("non_blocking", False)):
+            reconciliation_config = str(ctx.config.get("data_sources_config", "config/data_sources.json"))
+            raise ReportSourceValidationError(
+                "source_reconciliation",
+                [result["reason"]],
+                input_paths=[historical_dir],
+                source_of_truth=[reconciliation_config],
+                details=result,
+            ) from exc
         return result
 
 
@@ -188,27 +210,48 @@ def _enhanced_payloads(ctx, job: str):
     if job == "broker_multi_day":
         return broker_multiday_payloads(ctx)
     if job == "final_watchlist":
-        return broker_summary_payloads(ctx) + broker_multiday_payloads(ctx) + final_watchlist_payloads(ctx)
+        return broker_summary_payloads(ctx) + _optional_broker_multiday_payloads(ctx) + final_watchlist_payloads(ctx)
     if job == "full_manual":
         global_snapshot, market_status = _load_market_artifacts(ctx)
         return (
             market_outlook_payloads(ctx, global_snapshot, market_status)
             + post_market_payloads(ctx, _load_post_manifest(ctx))
             + broker_summary_payloads(ctx)
-            + broker_multiday_payloads(ctx)
+            + _optional_broker_multiday_payloads(ctx)
             + final_watchlist_payloads(ctx)
         )
     return []
 
 
+def _optional_broker_multiday_payloads(ctx):
+    """Keep final/full reports usable when history is explicitly insufficient.
+
+    The standalone broker_multi_day report remains fail-closed and reports its
+    validation error.  Final Watchlist can still be generated from valid
+    one-day fusion; the skipped multi-day report is recorded in the audit log.
+    """
+    try:
+        return broker_multiday_payloads(ctx)
+    except ReportSourceValidationError as exc:
+        insufficient = any(
+            "DATA_QUALITY_NOT_VALID" in error and any(
+                marker in error.upper() for marker in ("INSUFFICIENT_HISTORY", "PARTIAL_COVERAGE")
+            )
+            for error in exc.errors
+        )
+        if not insufficient:
+            raise
+        record_validation_error(ctx, exc)
+        append_job_log(ctx, "BROKER_MULTI_DAY_REPORT_SKIPPED", str({
+            "errors": exc.errors,
+            "input_paths": exc.input_paths,
+            "source_of_truth": exc.source_of_truth,
+        }))
+        return []
+
+
 def main() -> int:
     args = parse_args()
-    engine = subprocess.run(_engine_command(args), cwd=Path(__file__).resolve().parent)
-    if engine.returncode != 0:
-        return int(engine.returncode)
-    if args.job not in ENHANCED_JOBS:
-        return int(engine.returncode)
-
     ctx = load_context(
         job=args.job,
         config_path=args.config,
@@ -221,16 +264,54 @@ def main() -> int:
         debug=args.debug,
         interactive_broker=args.interactive_broker,
     )
-    reconciliation = _run_source_reconciliation(ctx, args.job)
-    payloads = _enhanced_payloads(ctx, args.job)
-    preview_paths = write_payloads(ctx, payloads)
+    engine = subprocess.run(_engine_command(args, ctx.run_id), cwd=Path(__file__).resolve().parent)
+    if engine.returncode != 0:
+        return int(engine.returncode)
+    if args.job not in ENHANCED_JOBS:
+        return int(engine.returncode)
+
+    try:
+        reconciliation = _run_source_reconciliation(ctx, args.job)
+    except ReportSourceValidationError as exc:
+        record_validation_error(ctx, exc)
+        write_status(ctx, "FAILED", "SOURCE_RECONCILIATION", 1, {
+            "errors": exc.errors,
+            "report_type": exc.report_type,
+            "input_paths": exc.input_paths,
+            "source_of_truth": exc.source_of_truth,
+        })
+        return 1
+    try:
+        payloads = _enhanced_payloads(ctx, args.job)
+        preview_paths = write_payloads(ctx, payloads)
+    except ReportSourceValidationError as exc:
+        record_validation_error(ctx, exc)
+        write_status(ctx, "FAILED", "REPORT_SOURCE_VALIDATION", 1, {
+            "errors": exc.errors,
+            "report_type": exc.report_type,
+            "input_paths": exc.input_paths,
+            "source_of_truth": exc.source_of_truth,
+        })
+        return 1
+    except Exception as exc:
+        error = ReportSourceValidationError(
+            "report_generation",
+            [f"{type(exc).__name__}:{exc}"],
+            details={"job": args.job},
+        )
+        record_validation_error(ctx, error)
+        write_status(ctx, "FAILED", "REPORT_GENERATION", 1, {
+            "errors": error.errors,
+            "report_type": error.report_type,
+        })
+        return 1
     common_status = {
         "preview_paths": [str(path) for path in preview_paths],
         "enhanced_report_count": len(payloads),
         "ai_interpretation": "GEMINI_OR_DETERMINISTIC_FALLBACK",
         "source_reconciliation": reconciliation,
         "execution_source": "YAHOO_HISTORICAL",
-        "validation_source": reconciliation.get("validation_source", "NOT_CONFIGURED") if reconciliation else "NOT_APPLICABLE",
+        "validation_source": reconciliation.get("validation_source") or "NOT_APPLICABLE",
     }
     if args.no_telegram:
         write_status(ctx, "SUCCESS", "ENHANCED_REPORT_PREVIEW", EXIT_SUCCESS, common_status)
@@ -238,9 +319,11 @@ def main() -> int:
 
     delivery = deliver(ctx, payloads)
     failed = [item for item in delivery if item.get("status") == "FAILED"]
+    skipped_not_configured = any(item.get("status") == "SKIPPED_NOT_CONFIGURED" for item in delivery)
+    delivery_status = "DELIVERY_FAILED" if failed else ("SUCCESS_WITH_WARNING" if skipped_not_configured else "SUCCESS")
     write_status(
         ctx,
-        "DELIVERY_FAILED" if failed else "SUCCESS",
+        delivery_status,
         "ENHANCED_REPORT_DELIVERY",
         EXIT_DELIVERY_FAILED if failed else EXIT_SUCCESS,
         {**common_status, "delivery": delivery},

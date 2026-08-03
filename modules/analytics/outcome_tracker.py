@@ -29,7 +29,9 @@ except ImportError:  # live Telegram only
 
 ACTIVE_STATUSES = {"WAITING_TRIGGER", "OPEN"}
 FINAL_OUTCOMES = {"WIN", "LOSS", "AMBIGUOUS"}
-TRACKED_DECISIONS = {"STRONG BUY", "BUY", "BUY CANDIDATE"}
+TRACKED_DECISIONS = {"STRONG BUY", "BUY", "BUY CANDIDATE", "BUY READY", "BUY ON TRIGGER", "BUY CONFIRMED"}
+CURRENT_RECOMMENDATION_DECISIONS = set(TRACKED_DECISIONS)
+VALID_SIGNAL_QUALITY = {"VALID", "PARTIAL_COVERAGE", "SUCCESS_WITH_WARNING", "VALID_WITH_REFRESH_FALLBACK"}
 DEFAULT_DB = PROJECT_ROOT / "data/database/sde_swing_history.db"
 DEFAULT_HISTORICAL = PROJECT_ROOT / "data/output/historical/by_symbol"
 DEFAULT_OUTPUT = PROJECT_ROOT / "data/output/analytics/performance"
@@ -767,7 +769,9 @@ def safe_ratio(numerator: float, denominator: float) -> float | None:
 
 def performance_row(group: pd.DataFrame, label: str) -> dict[str, Any]:
     quality = group["data_quality_status"].astype(str).str.upper() if "data_quality_status" in group.columns else pd.Series("UNKNOWN", index=group.index)
-    valid = group[(group["current_status"] != "INVALID_DATA") & quality.eq("VALID")].copy()
+    raw_decisions = group["raw_decision"].astype(str).str.upper() if "raw_decision" in group.columns else pd.Series("", index=group.index)
+    current_recommendations = group[raw_decisions.isin(CURRENT_RECOMMENDATION_DECISIONS)].copy()
+    valid = group[(group["current_status"] != "INVALID_DATA") & quality.isin(VALID_SIGNAL_QUALITY)].copy()
     excluded = len(group) - len(valid)
     triggered = valid[valid["entry_date"].notna() & (valid["entry_date"].astype(str) != "")]
     closed = valid[valid["final_outcome"].isin(FINAL_OUTCOMES)]
@@ -780,14 +784,18 @@ def performance_row(group: pd.DataFrame, label: str) -> dict[str, Any]:
     return {
         "Group": label,
         "Signals": len(valid),
+        "Current_Recommendations": len(current_recommendations),
+        "Historical_Evaluated_Signals": len(valid),
         "Excluded_Invalid_Data": excluded,
         "Triggered": len(triggered),
+        "Triggered_Lifecycle": len(triggered),
         "Trigger_Rate_Pct": safe_ratio(len(triggered), len(valid)),
         "Waiting_Trigger": int((valid["current_status"] == "WAITING_TRIGGER").sum()),
         "Open": int((valid["current_status"] == "OPEN").sum()),
         "Expired": int((valid["current_status"] == "EXPIRED").sum()),
         "Cancelled": int((valid["current_status"] == "CANCELLED").sum()),
         "Closed": len(closed),
+        "Closed_Outcomes": len(closed),
         "Win": wins,
         "Loss": losses,
         "Ambiguous": ambiguous,
@@ -836,11 +844,12 @@ def telegram_report(overall: dict[str, Any], by_setup: pd.DataFrame, by_signal: 
         "📊 <b>SDE SWING — PERFORMANCE</b>",
         f"📅 {html.escape(str(start))} s.d. {html.escape(str(end))}",
         "━━━━━━━━━━━━━━━━━━━━",
-        f"Signals         : {overall['Signals']}",
+        f"Recommendations : {overall['Current_Recommendations']}",
+        f"Evaluated       : {overall['Historical_Evaluated_Signals']}",
         f"Excluded Data   : {overall['Excluded_Invalid_Data']}",
-        f"Triggered       : {overall['Triggered']}",
+        f"Triggered Life  : {overall['Triggered_Lifecycle']}",
         f"Trigger Rate    : {fmt(overall['Trigger_Rate_Pct'], 1, '%')}",
-        f"Closed          : {overall['Closed']}",
+        f"Closed Outcomes : {overall['Closed_Outcomes']}",
         f"Open            : {overall['Open']}",
         f"Waiting Trigger : {overall['Waiting_Trigger']}",
         f"Expired         : {overall['Expired']}",
@@ -921,14 +930,15 @@ def print_table(path: Path, title: str, section: str = "") -> None:
     if section == "overall":
         row = df.iloc[0].to_dict()
         print(f"Periode          : {row.get('Start_Date', '-')} s.d. {row.get('End_Date', '-')}")
-        print(f"Signals          : {int(row.get('Signals', 0))}")
+        print(f"Recommendations  : {int(row.get('Current_Recommendations', 0))}")
+        print(f"Evaluated Signals: {int(row.get('Historical_Evaluated_Signals', row.get('Signals', 0)))}")
         print(f"Excluded Data    : {int(row.get('Excluded_Invalid_Data', 0))}")
-        print(f"Triggered        : {int(row.get('Triggered', 0))} ({fmt(row.get('Trigger_Rate_Pct'), 1, '%')})")
+        print(f"Triggered Life   : {int(row.get('Triggered_Lifecycle', row.get('Triggered', 0)))} ({fmt(row.get('Trigger_Rate_Pct'), 1, '%')})")
         print(f"Waiting Trigger  : {int(row.get('Waiting_Trigger', 0))}")
         print(f"Open             : {int(row.get('Open', 0))}")
         print(f"Expired          : {int(row.get('Expired', 0))}")
         print(f"Cancelled        : {int(row.get('Cancelled', 0))}")
-        print(f"Closed           : {int(row.get('Closed', 0))}")
+        print(f"Closed Outcomes  : {int(row.get('Closed_Outcomes', row.get('Closed', 0)))}")
         print(f"Win / Loss       : {int(row.get('Win', 0))} / {int(row.get('Loss', 0))}")
         print(f"Ambiguous        : {int(row.get('Ambiguous', 0))}")
         print(f"Win Rate         : {fmt(row.get('Win_Rate_Pct'), 1, '%')}")

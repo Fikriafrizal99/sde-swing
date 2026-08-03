@@ -25,6 +25,7 @@ from modules.telegram.professional_ui import (
     select_final_watchlist_rows,
     unique_final_decisions,
 )
+from .report_validation import append_report_audit
 
 from .runtime import RunnerContext, latest_matching_file, resolve, write_json
 
@@ -39,6 +40,12 @@ class ReportPayload:
     signal_status: str = ""
     signal_version: str = ""
     material_signature: str = ""
+    # Lineage is attached by the validated report bridge.  Defaults preserve
+    # compatibility for legacy/system payloads that are not source-backed.
+    input_paths: tuple[str, ...] = ()
+    source_of_truth: tuple[str, ...] = ()
+    row_count: int | None = None
+    validation_details: dict[str, Any] | None = None
 
     @property
     def signature(self) -> str:
@@ -117,6 +124,20 @@ def write_payloads(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[Pa
         run_scoped = folder / f"{ctx.run_id}_{payload.filename}"
         run_scoped.write_text(text, encoding="utf-8")
         written.append(path)
+        audit_outputs = [path, run_scoped]
+        attachment = getattr(payload, "attachment_path", None)
+        if attachment:
+            audit_outputs.append(attachment)
+        append_report_audit(
+            ctx,
+            payload.report_type,
+            "SUCCESS",
+            input_paths=getattr(payload, "input_paths", ()),
+            source_of_truth=getattr(payload, "source_of_truth", ()),
+            rows=getattr(payload, "row_count", None),
+            details=getattr(payload, "validation_details", None) or {},
+            output_paths=audit_outputs,
+        )
     write_json(folder / f"{ctx.run_id}_preview_manifest.json", {
         "run_id": ctx.run_id,
         "job": ctx.job,

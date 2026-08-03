@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import datetime
 from typing import Any, Iterable
 
 SEPARATOR = "━━━━━━━━━━━━━━━━━━━━"
 
 
-def _label(value: Any, fallback: str = "DATA_NOT_AVAILABLE") -> str:
+def _label(value: Any, fallback: str = "") -> str:
     text = str(value or "").strip()
     return text.replace("_", " ").title() if text else fallback
 
@@ -15,7 +15,7 @@ def _pct(value: Any, decimals: int = 1) -> str:
     try:
         return f"{float(value):.{decimals}f}%".replace(".", ",")
     except Exception:
-        return "DATA_NOT_AVAILABLE"
+        return ""
 
 
 def _signed_pct(value: Any, decimals: int = 2) -> str:
@@ -23,21 +23,21 @@ def _signed_pct(value: Any, decimals: int = 2) -> str:
         number = float(value)
         return f"{number:+.{decimals}f}%".replace(".", ",")
     except Exception:
-        return "DATA_NOT_AVAILABLE"
+        return ""
 
 
 def _price(value: Any) -> str:
     try:
         return f"{float(value):,.0f}".replace(",", ".")
     except Exception:
-        return "DATA_NOT_AVAILABLE"
+        return ""
 
 
 def _date(value: Any) -> str:
     try:
         parsed = datetime.fromisoformat(str(value)).date()
     except Exception:
-        parsed = value if isinstance(value, date) else date.today()
+        return ""
     months = ["", "Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
     return f"{parsed.day:02d} {months[parsed.month]} {parsed.year}"
 
@@ -53,11 +53,11 @@ def format_market_outlook(data: dict[str, Any]) -> str:
         SEPARATOR,
         f"📅 {_date(data.get('trade_date'))} | POST MARKET",
         "",
-        f"{data.get('regime_icon', '🟡')} MARKET REGIME",
-        str(data.get("market_regime", "UNKNOWN")).replace("_", " "),
+        f"{data.get('regime_icon') or ''} MARKET REGIME",
+        str(data.get("market_regime", "")).replace("_", " "),
         "",
         "🎯 EXECUTION MODE",
-        str(data.get("execution_mode", "SELECTIVE")).replace("_", " "),
+        str(data.get("execution_mode", "")).replace("_", " "),
         "",
         "📊 IHSG",
         f"• Change    : {_signed_pct(data.get('ihsg_change'))}",
@@ -79,69 +79,75 @@ def format_market_outlook(data: dict[str, Any]) -> str:
             blocks.extend([title, _items(cleaned), ""])
     blocks.extend([
         "🎯 FOKUS BESOK",
-        str(data.get("focus_tomorrow") or "Prioritaskan saham dengan setup valid dan broker flow mendukung."),
+        str(data.get("focus_tomorrow") or ""),
         "",
         "⚠️ HINDARI",
-        str(data.get("avoid_guidance") or "Hindari mengejar harga di luar area entry."),
+        str(data.get("avoid_guidance") or ""),
         "",
-        f"📡 {data.get('provider', 'NOT_CONFIGURED')} | {data.get('source_mode', 'NOT_CONFIGURED')} | Coverage {_pct(data.get('coverage'))}",
+        f"📡 {data.get('provider', '')} | {data.get('source_mode', '')} | Coverage {_pct(data.get('coverage'))}",
     ])
     return "\n".join(blocks).strip()
 
 
 def format_post_market(data: dict[str, Any]) -> str:
-    status = str(data.get("process_status", "PARTIAL")).upper()
-    icon = {"SUCCESS": "✅", "PARTIAL": "🟡", "FAILED": "🔴"}.get(status, "🟡")
+    status = str(data.get("process_status") or "").upper()
+    icon = {"SUCCESS": "✅", "PARTIAL": "🟡", "FAILED": "🔴"}.get(status, "")
     return "\n".join([
         "📊 SDE POST MARKET",
         SEPARATOR,
-        f"📅 {_date(data.get('trade_date'))} | {data.get('finished_time', '--:-- WIB')}",
+        f"📅 {_date(data.get('trade_date'))} | {data.get('finished_time') or ''}",
         "",
         f"{icon} PROCESS STATUS",
         status,
         "",
         "📦 DATA COVERAGE",
-        f"• Universe   : {data.get('symbols_requested', 0)} saham",
-        f"• Loaded     : {data.get('symbols_loaded', 0)}",
-        f"• Valid      : {data.get('symbols_valid', 0)}",
-        f"• Failed     : {data.get('symbols_failed', 0)}",
-        f"• Skipped    : {data.get('symbols_skipped', 0)}",
+        f"• Universe   : {data.get('symbols_requested')} saham",
+        f"• Loaded     : {data.get('symbols_loaded')}",
+        f"• Valid      : {data.get('symbols_valid')}",
+        f"• Failed     : {data.get('symbols_failed')}",
+        f"• Skipped    : {data.get('symbols_skipped')}",
         f"• Coverage   : {_pct(data.get('coverage'))}",
         "",
         "📈 MARKET PROCESS",
-        f"• Technical Snapshot : {data.get('technical_status', 'READY')}",
-        f"• Universe Selection : {data.get('universe_status', 'READY')}",
-        f"• Candidate Screening: {data.get('candidate_status', 'READY')}",
-        f"• Broker Dependency  : {data.get('broker_status', 'READY')}",
+        f"• Technical Snapshot : {data.get('technical_status') or ''}",
+        f"• Universe Selection : {data.get('universe_status') or ''}",
+        f"• Candidate Screening: {data.get('candidate_status') or ''}",
+        f"• Broker Dependency  : {data.get('broker_status') or ''}",
         "",
         "⚠️ DATA NOTE",
-        str(data.get("data_note") or "Tidak ada catatan tambahan."),
+        str(data.get("data_note") or ""),
         "",
         "🎯 NEXT PROCESS",
-        str(data.get("next_process") or "Data siap digunakan untuk Final Watchlist."),
+        str(data.get("next_process") or ""),
         "",
-        f"📡 {data.get('provider', 'NOT_CONFIGURED')} | {data.get('source_mode', 'NOT_CONFIGURED')} | Coverage {_pct(data.get('coverage'))}",
+        f"📡 {data.get('provider', '')} | {data.get('source_mode', '')} | Coverage {_pct(data.get('coverage'))}",
     ])
 
 
 def format_broker_summary(data: dict[str, Any]) -> str:
     top_acc = data.get("top_accumulation", []) or []
     top_dist = data.get("top_distribution", []) or []
-    acc_lines = [f"{idx}. {row.get('symbol')} — {_label(row.get('state'))}" for idx, row in enumerate(top_acc[:3], 1)]
-    dist_lines = [f"{idx}. {row.get('symbol')} — {_label(row.get('state'))}" for idx, row in enumerate(top_dist[:3], 1)]
+    acc_lines = [
+        f"{idx}. {row.get('symbol')} — {_label(row.get('broker_state', row.get('state')))}"
+        for idx, row in enumerate(top_acc[:3], 1)
+    ]
+    dist_lines = [
+        f"{idx}. {row.get('symbol')} — {_label(row.get('broker_state', row.get('state')))}"
+        for idx, row in enumerate(top_dist[:3], 1)
+    ]
     return "\n".join([
         "🏦 SDE BROKER SUMMARY",
         SEPARATOR,
         f"📅 {_date(data.get('trade_date'))} | POST MARKET",
         "",
-        f"{'✅' if str(data.get('process_status')).upper() == 'SUCCESS' else '🟡'} PROCESS STATUS",
-        str(data.get("process_status", "PARTIAL")).upper(),
+        f"{'✅' if str(data.get('process_status') or '').upper() == 'SUCCESS' else ''} PROCESS STATUS",
+        str(data.get("process_status") or "").upper(),
         "",
         "📊 BROKER FLOW",
-        f"• Accumulation : {data.get('accumulation_count', 0)} saham",
-        f"• Neutral      : {data.get('neutral_count', 0)} saham",
-        f"• Distribution : {data.get('distribution_count', 0)} saham",
-        f"• No Data      : {data.get('no_data_count', 0)} saham",
+        f"• Accumulation : {data.get('accumulation_count')} saham",
+        f"• Neutral      : {data.get('neutral_count')} saham",
+        f"• Distribution : {data.get('distribution_count')} saham",
+        f"• No Data      : {data.get('no_data_count')} saham",
         "",
         "🔥 TOP ACCUMULATION",
         "\n".join(acc_lines) if acc_lines else "Tidak ada",
@@ -151,7 +157,7 @@ def format_broker_summary(data: dict[str, Any]) -> str:
         "",
         "📎 CSV ringkasan broker terlampir.",
         "",
-        f"📡 {data.get('provider', 'NOT_CONFIGURED')} | {data.get('source_mode', 'NOT_CONFIGURED')} | Coverage {_pct(data.get('coverage'))}",
+        f"📡 {data.get('provider', '')} | {data.get('source_mode', '')} | Coverage {_pct(data.get('coverage'))}",
     ])
 
 
@@ -165,13 +171,13 @@ def format_broker_multiday(data: dict[str, Any]) -> str:
             )
         return "\n".join(output) if output else "Tidak ada"
 
-    status = str(data.get("process_status", "PARTIAL")).upper()
+    status = str(data.get("process_status") or "").upper()
     return "\n".join([
         "📚 SDE BROKER MULTI-DAY",
         SEPARATOR,
         f"📅 {_date(data.get('trade_date'))} | POST MARKET",
         "",
-        f"{'✅' if status == 'SUCCESS' else '🟡'} {status}",
+        f"{'✅' if status == 'SUCCESS' else ''} {status}",
         "",
         "🔥 Akumulasi Konsisten",
         rows(data.get("top_accumulation", []) or []),
@@ -180,21 +186,21 @@ def format_broker_multiday(data: dict[str, Any]) -> str:
         rows(data.get("top_distribution", []) or []),
         "",
         "📎 CSV multi-day terlampir.",
-        f"📡 {data.get('provider', 'NOT_CONFIGURED')} | {data.get('source_mode', 'NOT_CONFIGURED')} | Coverage {_pct(data.get('coverage'))}",
+        f"📡 {data.get('provider', '')} | {data.get('source_mode', '')} | Coverage {_pct(data.get('coverage'))}",
     ])
 
 
 def format_watchlist_detail(data: dict[str, Any]) -> str:
-    decision = str(data.get("decision", "WATCH")).upper().replace("_", " ")
+    decision = str(data.get("decision", "")).upper().replace("_", " ")
     icon = {
-        "BUY": "🟢", "BUY CONFIRMED": "🟢", "BUY CANDIDATE": "🟠",
+        "BUY": "🟢", "BUY READY": "🟢", "BUY CONFIRMED": "🟢", "BUY ON TRIGGER": "🟠", "BUY CANDIDATE": "🟠",
         "WATCH HIGH": "🟡", "WATCH": "🔵", "WAIT": "🟠", "AVOID": "🔴",
-    }.get(decision, "🔵")
+    }.get(decision, "")
     entry = f"{_price(data.get('entry_low'))}–{_price(data.get('entry_high'))}"
     rr = data.get("risk_reward")
-    rr_text = f"1:{str(rr).replace('.', ',')}" if rr not in (None, "") else "DATA_NOT_AVAILABLE"
+    rr_text = f"1:{str(rr).replace('.', ',')}" if rr not in (None, "") else ""
     return "\n".join([
-        f"📌 {str(data.get('symbol', '?')).upper()} | {icon} {decision} | {int(float(data.get('confidence', 0)))}%",
+        f"📌 {str(data.get('symbol', '')).upper()} | {icon} {decision} | {data.get('confidence', '')}%",
         SEPARATOR,
         f"📅 {_date(data.get('trade_date'))} | POST MARKET",
         "",
@@ -215,10 +221,10 @@ def format_watchlist_detail(data: dict[str, Any]) -> str:
         f"• Market    : {_label(data.get('market_regime'))}",
         "",
         "🧠 ALASAN",
-        str(data.get("main_reason") or "Menunggu interpretasi data yang valid."),
+        str(data.get("main_reason") or ""),
         "",
         "⚠️ RISIKO",
-        str(data.get("main_risk") or "Disiplin terhadap level invalidasi dan stop loss."),
+        str(data.get("main_risk") or ""),
         "",
-        f"📡 {data.get('provider', 'NOT_CONFIGURED')} | Coverage {_pct(data.get('coverage'))}",
+        f"📡 {data.get('provider', '')} | Coverage {_pct(data.get('coverage'))}",
     ])

@@ -137,12 +137,28 @@ def normalize_telegram_text(text: str) -> str:
     return normalized.strip()
 
 
-def _credentials() -> tuple[str, str]:
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+def _credentials(ctx: RunnerContext | None = None) -> tuple[str, str]:
+    runtime_cfg: dict[str, Any] = {}
+    if ctx is not None:
+        try:
+            telegram_cfg = _telegram_config(ctx)
+            runtime_cfg = telegram_cfg.get("telegram", {}) if isinstance(telegram_cfg.get("telegram", {}), dict) else {}
+        except Exception:
+            runtime_cfg = {}
+    token = (os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or str(runtime_cfg.get("bot_token", "")).strip())
+    chat_id = (os.getenv("TELEGRAM_CHAT_ID", "").strip() or str(runtime_cfg.get("chat_id", "")).strip())
     if not token or not chat_id:
         raise RuntimeError("Telegram token/chat_id belum dikonfigurasi.")
     return token, chat_id
+
+
+def telegram_configured(ctx: RunnerContext) -> bool:
+    """Return whether runtime Telegram credentials are available."""
+    try:
+        _credentials(ctx)
+    except RuntimeError:
+        return False
+    return True
 
 
 def _response_json(response: Any) -> dict[str, Any]:
@@ -158,7 +174,7 @@ def _response_json(response: Any) -> dict[str, Any]:
 def _send_telegram(ctx: RunnerContext, payload: ReportPayload, text: str | None = None, part_index: int = 1, part_count: int = 1) -> dict[str, Any]:
     if requests is None:
         raise RuntimeError("Dependency requests belum terpasang. Jalankan maintenance\\INSTALL_REQUIREMENTS.bat.")
-    token, chat_id = _credentials()
+    token, chat_id = _credentials(ctx)
     message_text = text if text is not None else payload.text
     cfg = _telegram_config(ctx)
     ui_cfg = cfg.get("telegram_ui", {})
@@ -184,7 +200,7 @@ def _send_document(ctx: RunnerContext, payload: ReportPayload) -> dict[str, Any]
         raise RuntimeError("Attachment path tidak tersedia.")
     if not path.exists() or not path.is_file():
         raise RuntimeError(f"Attachment tidak ditemukan: {path}")
-    token, chat_id = _credentials()
+    token, chat_id = _credentials(ctx)
     data: dict[str, Any] = {"chat_id": chat_id}
     caption = _attachment_caption(payload)
     if caption:
@@ -208,6 +224,9 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
     results: list[dict[str, Any]] = []
     failed_root = resolve(ctx.scheduler_config.get("delivery", {}).get("failed_root", "data/output/failed_delivery"))
     delivery_total = len(payloads)
+    credentials_ready = telegram_configured(ctx)
+    provenance = getattr(ctx, "config_provenance", {}) or {}
+    official_runtime = str(provenance.get("config_version", "")) == "1.7.0-multisource"
     for delivery_sequence, payload in enumerate(payloads, start=1):
         allowed, reason = should_send(ctx, payload)
         key = _idempotency_key(ctx, payload)
@@ -233,6 +252,11 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
         }
         if not allowed:
             event = {**base, "status": reason}
+            append_jsonl(log_path, event)
+            results.append(event)
+            continue
+        if not credentials_ready and official_runtime:
+            event = {**base, "status": "SKIPPED_NOT_CONFIGURED", "reason": "TELEGRAM_CREDENTIALS_EMPTY"}
             append_jsonl(log_path, event)
             results.append(event)
             continue

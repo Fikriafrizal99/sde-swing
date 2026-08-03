@@ -285,6 +285,30 @@ def calculate_market_outlook_regime(
         "macd_hist": round(macd_hist, 4),
         "return_5d_pct": round(return5, 2),
         "return_20d_pct": round(return20, 2),
+        # These labels are presentation facts derived from the same IHSG
+        # measurements above.  They do not feed Decision Engine scoring.
+        "ihsg_change_pct": round(_pct_change(close, float(frame["Close"].iloc[-2])) or 0.0, 3),
+        "trend": (
+            "BULLISH" if close > ma20 > ma50
+            else "BEARISH" if close < ma20 < ma50
+            else "MIXED"
+        ),
+        "momentum": (
+            "POSITIVE" if slope20 > 0 and rsi14 >= 52 and macd_hist >= 0
+            else "NEGATIVE" if slope20 < 0 and rsi14 <= 48 and macd_hist <= 0
+            else "MIXED"
+        ),
+        "breadth": (
+            "BULLISH" if breadth20 is not None and breadth20 >= 60
+            else "BEARISH" if breadth20 is not None and breadth20 <= 40
+            else "MIXED" if breadth20 is not None
+            else "INSUFFICIENT_DATA"
+        ),
+        "execution_mode": (
+            "SELECTIVE AGGRESSIVE" if regime in {"STRONG BULLISH", "BULLISH"}
+            else "DEFENSIVE" if regime in {"STRONG BEARISH", "BEARISH"}
+            else "SELECTIVE"
+        ),
         "breadth_above_sma20_pct": round(breadth20, 1) if breadth20 is not None else None,
         "breadth_above_sma50_pct": round(breadth50, 1) if breadth50 is not None else None,
         "breadth_macd_bullish_pct": round(float(breadth["macd_bullish_pct"]), 1) if breadth.get("macd_bullish_pct") is not None else None,

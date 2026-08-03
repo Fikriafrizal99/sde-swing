@@ -25,6 +25,9 @@ def write_multiday_outputs(
     run_id: str = "",
     shadow_summary: dict[str, Any] | None = None,
     data_quality_status: str = "VALID",
+    market_dates: list[str] | None = None,
+    source_files: list[str] | None = None,
+    minimum_sessions: int = 20,
 ) -> dict[str, Path]:
     out_dir = Path(output_dir)
     detail_rows: list[dict[str, Any]] = []
@@ -91,6 +94,15 @@ def write_multiday_outputs(
         "run_id": run_id,
         "data_quality_status": data_quality_status,
         "symbol_count": len(contexts),
+        "market_dates": sorted({str(value) for value in (market_dates or []) if value}),
+        "session_count": len(set(market_dates or [])),
+        "minimum_sessions": int(minimum_sessions),
+        "coverage_ratio": round(min(len(set(market_dates or [])) / max(int(minimum_sessions), 1), 1.0), 4),
+        "date_range": {
+            "start": min(market_dates) if market_dates else "",
+            "end": max(market_dates) if market_dates else "",
+        },
+        "source_files": list(source_files or []),
         "windows": list(WINDOWS.keys()),
         "files": {name: str(path) for name, path in paths.items()},
         "shadow_summary": shadow_summary or {},

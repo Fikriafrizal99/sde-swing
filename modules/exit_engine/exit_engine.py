@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -378,6 +378,8 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
     warnings: list[str] = []
     conditional_reasons: list[str] = []
 
+    # Default untuk kandidat yang ditolak sebelum pemeriksaan volume.
+    volume_confirmed: bool | None = None
     if risk <= 0:
         setup_quality, rejection_reason = "REJECT", "INVALID_STOP"
     elif risk_pct > max_risk_pct:

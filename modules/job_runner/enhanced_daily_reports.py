@@ -23,6 +23,13 @@ class DailyReportArtifact:
     symbol: str = ""
     attachment_path: Path | None = None
     caption: str = ""
+    # Lineage metadata is carried with the artifact so the Telegram layer can
+    # remain a pure formatter and the runtime can write an audit event without
+    # reconstructing the source graph.
+    input_paths: tuple[str, ...] = ()
+    source_of_truth: tuple[str, ...] = ()
+    row_count: int | None = None
+    validation_details: dict[str, Any] | None = None
 
 
 FINAL_WATCHLIST_COLUMNS = [
@@ -101,7 +108,7 @@ class EnhancedDailyReportBuilder:
 
     def build_broker_summary(self, data: dict[str, Any]) -> tuple[DailyReportArtifact, DailyReportArtifact]:
         rows = [dict(row) for row in data.get("rows", [])]
-        trade_date = str(data.get("trade_date", "unknown"))
+        trade_date = str(data.get("trade_date", ""))
         path = self.output_root / "broker_summary" / f"broker_summary_{trade_date}.csv"
         self._write_csv(path, rows, BROKER_SUMMARY_COLUMNS)
         return (
@@ -127,7 +134,7 @@ class EnhancedDailyReportBuilder:
             current["interpretation_source"] = result.source
             interpreted_rows.append(current)
         data["rows"] = interpreted_rows
-        trade_date = str(data.get("trade_date", "unknown"))
+        trade_date = str(data.get("trade_date", ""))
         path = self.output_root / "broker_multiday" / f"broker_multiday_{trade_date}.csv"
         self._write_csv(path, interpreted_rows, BROKER_MULTIDAY_COLUMNS + ["interpretation", "interpretation_source"])
         return (
@@ -144,9 +151,9 @@ class EnhancedDailyReportBuilder:
         for row in rows:
             current = dict(row)
             current.setdefault("trade_date", data.get("trade_date"))
-            current.setdefault("provider", data.get("provider", "NOT_CONFIGURED"))
-            current.setdefault("source_mode", data.get("source_mode", "NOT_CONFIGURED"))
-            current.setdefault("coverage", data.get("coverage", 0))
+            current.setdefault("provider", data.get("provider", ""))
+            current.setdefault("source_mode", data.get("source_mode", ""))
+            current.setdefault("coverage", data.get("coverage"))
             fallback = {
                 "main_reason": str(current.get("main_reason") or self._watchlist_reason(current)),
                 "main_risk": str(current.get("main_risk") or self._watchlist_risk(current)),
@@ -160,7 +167,7 @@ class EnhancedDailyReportBuilder:
             current["interpretation_status"] = result.status
             interpreted.append(current)
 
-        trade_date = str(data.get("trade_date", "unknown"))
+        trade_date = str(data.get("trade_date", ""))
         csv_path = self.output_root / "final_watchlist" / f"final_watchlist_{trade_date}.csv"
         self._write_csv(
             csv_path,
@@ -168,9 +175,9 @@ class EnhancedDailyReportBuilder:
             FINAL_WATCHLIST_COLUMNS + ["interpretation_source", "interpretation_status", "execution_note"],
         )
 
-        allowed = {"BUY", "BUY CONFIRMED", "BUY_CANDIDATE", "BUY CANDIDATE", "WATCH_HIGH", "WATCH HIGH", "WATCH"}
+        allowed = {"BUY", "BUY READY", "BUY_READY", "BUY CONFIRMED", "BUY_CANDIDATE", "BUY CANDIDATE", "BUY ON TRIGGER", "WATCH_HIGH", "WATCH HIGH", "WATCH"}
         priority = {
-            "BUY": 0, "BUY CONFIRMED": 0, "BUY_CANDIDATE": 1, "BUY CANDIDATE": 1,
+            "BUY": 0, "BUY READY": 0, "BUY_READY": 0, "BUY CONFIRMED": 0, "BUY ON TRIGGER": 0, "BUY_CANDIDATE": 1, "BUY CANDIDATE": 1,
             "WATCH_HIGH": 2, "WATCH HIGH": 2, "WATCH": 3,
         }
         selected = [row for row in interpreted if str(row.get("decision", "")).upper() in allowed]

@@ -874,6 +874,7 @@ def main() -> int:
     parser.add_argument("--fusion", default="data/input/FINAL_DECISION_V2.csv")
     parser.add_argument("--decision", default="data/output/decision/FINAL_DECISION_V3.csv")
     parser.add_argument("--exit-dir", default="data/output/exit")
+    parser.add_argument("--multiday-dir", default="data/output/broker_multiday")
     parser.add_argument("--data-quality-status", default="VALID")
     parser.add_argument("--summary-output", default="")
     args = parser.parse_args()
@@ -918,6 +919,8 @@ def main() -> int:
         "decision_results": args.decision,
         "entry_plans": Path(args.exit_dir) / "ENTRY_PLANS.csv",
         "exit_alerts": Path(args.exit_dir) / "EXIT_ALERTS.csv",
+        "broker_multiday_summary": Path(args.multiday_dir) / "BROKER_MULTIDAY_SUMMARY.csv",
+        "broker_multiday_detail": Path(args.multiday_dir) / "BROKER_MULTIDAY_DETAIL.csv",
     }.items():
         add_snapshot(conn, args.run_id, dataset_type, Path(path))
 

@@ -353,7 +353,10 @@ def fuse(
     coverage = len(matched_symbols) / max(1, len(expected_symbols))
     missing_symbols = sorted(expected_symbols - broker_symbols)
     unexpected_symbols = sorted(broker_symbols - expected_symbols)
-    if coverage < min_coverage and not allow_partial_broker:
+    # The configured floor is an operational readiness gate.  The
+    # allow-partial flag permits 80-99% output to be marked PARTIAL_COVERAGE;
+    # it must never turn a below-floor export into a successful fusion.
+    if coverage < min_coverage:
         raise RuntimeError(
             f"Broker coverage {len(matched_symbols)}/{len(expected_symbols)} ({coverage:.0%}) "
             f"di bawah minimum {min_coverage:.0%}. Missing: {', '.join(missing_symbols) or '-'}"
@@ -403,6 +406,11 @@ def fuse(
     merged["Broker_Data_Available"] = merged["_merge"].eq("both")
     merged = merged.drop(columns=["_merge"])
     for col, default in {
+        # A missing symbol is still an explicit zero-flow/NO DATA record so a
+        # 39/40 operational fusion remains reportable without inventing a
+        # broker observation.
+        "NET_FLOW": 0.0,
+        "NET_FLOW_BROKER": 0.0,
         "Broker_Score": 0.0,
         "Broker_Confirmation": "NO DATA",
         "Broker_Direction": "NEUTRAL",

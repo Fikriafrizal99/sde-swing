@@ -12,6 +12,10 @@ import pandas as pd
 
 DECISION_ORDER = ["BUY READY", "BUY ON TRIGGER", "WATCH", "AVOID", "STRONG BUY", "BUY", "BUY CANDIDATE", "WATCH HIGH", "SPECULATIVE"]
 ENTRY_DECISIONS = {"BUY READY", "STRONG BUY", "BUY"}
+# Recommendation labels are intentionally broader than executable entry
+# decisions.  BUY ON TRIGGER is a live recommendation, but not a triggered
+# trade until the entry condition is met.
+CURRENT_RECOMMENDATION_DECISIONS = ENTRY_DECISIONS | {"BUY ON TRIGGER", "BUY CANDIDATE", "BUY CONFIRMED"}
 
 
 def norm_col(value: str) -> str:
@@ -281,6 +285,8 @@ def aggregate(detail: pd.DataFrame, horizons: list[int]) -> pd.DataFrame:
         record = {
             "Decision": decision,
             "Signals": len(group),
+            "Historical_Evaluated_Signals": len(group),
+            "Current_Recommendations": int(group["Gated_Decision"].isin(CURRENT_RECOMMENDATION_DECISIONS).sum()),
             "Trade_Eligible": int(group["Trade_Eligible"].fillna(False).sum()),
             "Symbols": group["Symbol"].nunique()
         }
@@ -371,6 +377,15 @@ def main():
 
     evaluated = detail[detail["Status"] == "OK"].copy()
     summary = aggregate(evaluated, horizons)
+    current_recommendations = int(signals["Gated_Decision"].isin(CURRENT_RECOMMENDATION_DECISIONS).sum())
+    historical_evaluated = int(len(evaluated))
+    triggered_lifecycle = int(evaluated["Gated_Decision"].isin(ENTRY_DECISIONS).sum()) if not evaluated.empty else 0
+    closed_outcomes = int(evaluated.get("Final_Outcome_D7", pd.Series(dtype=object)).isin({"WIN", "LOSS", "AMBIGUOUS"}).sum()) if not evaluated.empty else 0
+    if not summary.empty:
+        decision_counts = signals.groupby("Gated_Decision").size().to_dict() if "Gated_Decision" in signals.columns else {}
+        summary["Current_Recommendations"] = summary["Decision"].map(decision_counts).fillna(0).astype(int)
+        summary.loc[summary["Decision"].eq("ALL"), "Current_Recommendations"] = current_recommendations
+        summary.loc[summary["Decision"].eq("ALL"), "Historical_Evaluated_Signals"] = historical_evaluated
     summary.to_csv(output / "BACKTEST_SUMMARY.csv", index=False)
     outcome_cols = [
         "Symbol", "Signal_Date", "Decision", "Gated_Decision", "Signal_Score",
@@ -416,11 +431,19 @@ def main():
         "entry_mode": args.entry_mode,
         "rows_input": len(signals),
         "rows_evaluated": len(evaluated),
+        "Current_Recommendations": current_recommendations,
+        "Historical_Evaluated_Signals": historical_evaluated,
+        "Triggered_Lifecycle": triggered_lifecycle,
+        "Closed_Outcomes": closed_outcomes,
         "suppressed_repeats": len(repeats),
         "missing_symbols": len(set(missing))
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print("Backtest Stage 2 moderate calibration selesai")
+    print(f"Current recommendations : {current_recommendations}")
+    print(f"Historical evaluated    : {historical_evaluated}")
+    print(f"Triggered lifecycle     : {triggered_lifecycle}")
+    print(f"Closed outcomes         : {closed_outcomes}")
     print(summary.to_string(index=False))
 
 

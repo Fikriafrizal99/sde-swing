@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -19,6 +20,63 @@ from modules.telegram.professional_ui import effective_public_status
 
 
 class SignalQualityV160Tests(unittest.TestCase):
+    @staticmethod
+    def _exit_regression_inputs() -> tuple[pd.Series, pd.DataFrame]:
+        dates = pd.date_range("2026-05-01", periods=40, freq="B")
+        px = pd.DataFrame({
+            "Date": dates,
+            "Open": [99.0] * 40,
+            "High": [102.0] * 40,
+            "Low": [98.0] * 40,
+            "Close": [100.0] * 40,
+            "ATR14": [2.0] * 40,
+            "EMA20": [100.0] * 40,
+        })
+        row = pd.Series({
+            "Symbol": "TEST",
+            "Decision": "BUY ON TRIGGER",
+            "Setup_Type": "DEVELOPING",
+            "Entry_Readiness_PreScore": 75,
+            "Technical_Quality_Score": 80,
+            "Liquidity_Class": "LIQUID",
+            "Market_Regime": "SIDEWAYS",
+        })
+        return row, px
+
+    def test_hard_blocker_paths_keep_volume_confirmation_none(self) -> None:
+        cases = {
+            "LIQUIDITY_VERY_POOR": {"Liquidity_Execution_Class": "VERY_POOR"},
+            "ENTRY_HARD_BLOCKER": {"Entry_Hard_Blocker": True},
+            "PRICE_EXTENDED_HARD": {"Extension_Class_PrePlan": "HARD_EXTENDED"},
+        }
+        for expected_reason, overrides in cases.items():
+            with self.subTest(expected_reason=expected_reason):
+                row, px = self._exit_regression_inputs()
+                for key, value in overrides.items():
+                    row[key] = value
+                plan = build_entry_plan(row, px, 1.0, 2.0, 7.0, 20)
+                self.assertEqual(plan["Rejection_Reason"], expected_reason)
+                self.assertIsNone(plan["Volume_Confirmation_Pass"])
+
+    def test_invalid_stop_and_maximum_risk_paths_keep_volume_confirmation_none(self) -> None:
+        row, px = self._exit_regression_inputs()
+        with patch("modules.exit_engine.exit_engine.determine_stop", return_value=(100.0, "TEST")):
+            invalid = build_entry_plan(row, px, 1.0, 2.0, 7.0, 20)
+        self.assertEqual(invalid["Rejection_Reason"], "INVALID_STOP")
+        self.assertIsNone(invalid["Volume_Confirmation_Pass"])
+
+        with patch("modules.exit_engine.exit_engine.determine_stop", return_value=(80.0, "TEST")):
+            excessive = build_entry_plan(row, px, 1.0, 2.0, 7.0, 20)
+        self.assertEqual(excessive["Rejection_Reason"], "MAXIMUM_RISK_EXCEEDED")
+        self.assertIsNone(excessive["Volume_Confirmation_Pass"])
+
+    def test_no_valid_resistance_path_keeps_volume_confirmation_none(self) -> None:
+        row, px = self._exit_regression_inputs()
+        with patch("modules.exit_engine.exit_engine.resistance_levels", return_value=[101.0]):
+            plan = build_entry_plan(row, px, 1.0, 2.0, 7.0, 20)
+        self.assertEqual(plan["Rejection_Reason"], "NO_VALID_RESISTANCE_PATH")
+        self.assertIsNone(plan["Volume_Confirmation_Pass"])
+
     def test_extended_stock_keeps_quality_but_loses_entry_readiness(self) -> None:
         frame = pd.DataFrame([{
             "Symbol": "TEST",
