@@ -4,6 +4,7 @@
   "trading_days_only": true,
   "trading_calendar": "config/trading_calendar.json",
   "data_sources_config": "config/data_sources.json",
+  "runner_entrypoint": "run_sde_job_integrated.py",
   "paths": {
     "preview_root": "data/output/previews",
     "job_status_root": "data/output/job_status",
@@ -22,6 +23,20 @@
     "previews": "data/output/previews",
     "reports": "data/output/reports",
     "audits": "data/output/audits"
+  },
+  "enhanced_reporting": {
+    "enabled": true,
+    "output_root": "data/output",
+    "max_watchlist_messages": 5,
+    "send_broker_summary_csv": true,
+    "send_broker_multiday_csv": true,
+    "send_final_watchlist_csv": true,
+    "ai_interpretation": {
+      "enabled": true,
+      "provider": "GEMINI",
+      "fallback_to_deterministic": true,
+      "immutable_engine_fields": true
+    }
   },
   "market_outlook": {
     "enabled": true,
@@ -52,7 +67,9 @@
     "strict_trade_date_match": true,
     "detail_statuses": [
       "BUY CONFIRMED",
-      "BUY CANDIDATE"
+      "BUY CANDIDATE",
+      "WATCH HIGH",
+      "WATCH"
     ]
   },
   "broker_readiness": {
@@ -92,10 +109,17 @@
     "topic_routing": {
       "market_outlook": "9",
       "post_market": "9",
-      "final_watchlist": "6",
+      "broker_summary": "9",
+      "broker_summary_csv": "9",
+      "broker_multiday": "9",
+      "broker_multiday_csv": "9",
+      "final_watchlist_detail": "9",
+      "final_watchlist_csv": "9",
+      "final_watchlist": "9",
       "signal_detail": "6",
       "evaluation": "5",
-      "system": "5"
+      "system": "5",
+      "report": "9"
     }
   }
 }
