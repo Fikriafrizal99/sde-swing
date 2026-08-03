@@ -1,12 +1,27 @@
 {
+  "config_version": "1.7.0-multisource",
   "timezone": "Asia/Jakarta",
   "trading_days_only": true,
   "trading_calendar": "config/trading_calendar.json",
+  "data_sources_config": "config/data_sources.json",
   "paths": {
     "preview_root": "data/output/previews",
     "job_status_root": "data/output/job_status",
     "state_root": "data/state/scheduler",
     "job_log": "logs/sde_job_runner.log"
+  },
+  "output_roots": {
+    "job_status": "data/output/job_status",
+    "snapshots": "data/output/snapshots",
+    "market_snapshots": "data/output/snapshots/market",
+    "technical_snapshots": "data/output/snapshots/technical",
+    "broker_snapshots": "data/output/snapshots/broker",
+    "broker_multi_day_snapshots": "data/output/snapshots/broker_multi_day",
+    "watchlists": "data/output/watchlists",
+    "decisions": "data/output/decisions",
+    "previews": "data/output/previews",
+    "reports": "data/output/reports",
+    "audits": "data/output/audits"
   },
   "market_outlook": {
     "enabled": true,
@@ -84,4 +99,3 @@
     }
   }
 }
-

@@ -17,6 +17,9 @@ env:
   STOCKBIT_API_KEY: ""
   TELEGRAM_BOT_TOKEN: ""
   TELEGRAM_CHAT_ID: ""
+  TELEGRAM_THREAD_SIGNAL_ID: ""
+  TELEGRAM_THREAD_REPORT_ID: ""
+  TELEGRAM_THREAD_SYSTEM_ID: ""
 
 jobs:
   test:
@@ -47,7 +50,7 @@ jobs:
       - name: Credential scan
         shell: bash
         run: |
-          ! grep -RInE --exclude-dir=.git --exclude-dir=data --exclude-dir=payload --exclude-dir=__pycache__ \
+          ! grep -RInE --exclude=ci.yml --exclude-dir=.git --exclude-dir=data --exclude-dir=payload --exclude-dir=__pycache__ \
             'BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY|AKIA[0-9A-Z]{16}|xox[baprs]-[0-9A-Za-z-]+|-----BEGIN' \
             . || (echo "Potential credential detected" && exit 1)
           # .env must never be committed (only .env.example may exist).

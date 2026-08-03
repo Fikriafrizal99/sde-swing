@@ -12,6 +12,7 @@ except ImportError:  # pragma: no cover - handled at runtime for live send
     requests = None
 
 from swing_utils import file_sha256
+from modules.telegram.router import TelegramRouter
 
 from .reports import ReportPayload
 from .runtime import RunnerContext, append_jsonl, now_wib, read_json, resolve, write_json
@@ -54,9 +55,19 @@ def _telegram_config(ctx: RunnerContext) -> dict[str, Any]:
 
 
 def _topic_id(ctx: RunnerContext, payload: ReportPayload) -> str:
-    routing = ctx.scheduler_config.get("delivery", {}).get("topic_routing", {})
-    value = routing.get(payload.topic) or routing.get(payload.report_type) or ""
-    return str(value).strip()
+    return str(telegram_route(ctx, payload)["message_thread_id"] or "").strip()
+
+
+def telegram_route(ctx: RunnerContext, payload: ReportPayload) -> dict[str, Any]:
+    """Resolve one of SIGNAL/REPORT/SYSTEM topics with env-first semantics."""
+    cfg = _telegram_config(ctx)
+    route = TelegramRouter(cfg, os.environ).resolve(payload.report_type, payload.topic)
+    if route.fallback_to_main_chat:
+        scheduler_routing = ctx.scheduler_config.get("delivery", {}).get("topic_routing", {})
+        configured = scheduler_routing.get(payload.report_type) or scheduler_routing.get(payload.topic) or ""
+        if configured:
+            route = type(route)(route.category, route.target_thread, str(configured).strip(), False)
+    return {**route.to_dict(), "env_var": f"TELEGRAM_THREAD_{route.category}_ID"}
 
 
 def split_telegram_text(text: str, max_len: int = 4000) -> list[str]:
@@ -122,8 +133,8 @@ def _send_telegram(ctx: RunnerContext, payload: ReportPayload, text: str | None 
         raise RuntimeError("Dependency requests belum terpasang. Jalankan maintenance\\INSTALL_REQUIREMENTS.bat.")
     cfg = _telegram_config(ctx)
     telegram = cfg.get("telegram", {})
-    token = os.getenv("TELEGRAM_BOT_TOKEN") or str(telegram.get("bot_token", "")).strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID") or str(telegram.get("chat_id", "")).strip()
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     if not token or not chat_id:
         raise RuntimeError("Telegram token/chat_id belum dikonfigurasi.")
     message_text = text if text is not None else payload.text
@@ -172,6 +183,8 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
             "delivery_sequence": delivery_sequence,
             "delivery_total": delivery_total,
             "force_resend": bool(ctx.force),
+            **telegram_route(ctx, payload),
+            "telegram_message_id": "",
         }
         if not allowed:
             event = {**base, "status": reason}

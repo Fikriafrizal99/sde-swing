@@ -166,3 +166,7 @@ class SourceRouter:
             resolution=resolution,
             routed_at=now.isoformat(),
         )
+
+
+# Public V1.7 terminology; retain SourceRouter for Stage 3 compatibility.
+MultiSourceRouter = SourceRouter

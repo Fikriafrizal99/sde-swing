@@ -19,9 +19,9 @@ from typing import Any, Iterable
 import pandas as pd
 
 
-PACKAGE_VERSION = "1.6.2-stage2-gapfix"
-PIPELINE_VERSION = "SDE_SWING_V1_6_2_STAGE2_GAP_CLOSURE"
-DISPLAY_VERSION = "SDE Swing V1.6.2 Stage 2 Moderate Calibration"
+PACKAGE_VERSION = "1.7.0-multisource"
+PIPELINE_VERSION = "1.7.0-multisource"
+DISPLAY_VERSION = "SDE Swing V1.7.0 Multi-Source Runtime"
 STRATEGY_TYPE = "SWING"
 VALID_DATA_QUALITY = {
     "VALID",

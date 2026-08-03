@@ -79,6 +79,7 @@ class RecordOwnership:
 
 @dataclass
 class DataSourceConfig:
+    config_version: str = "1.7.0-multisource"
     schema_version: str = "1.0.0"
     resolver_mode: str = MODE_PRIMARY_WITH_FALLBACK
     primary_broker_window: str = "5D"
@@ -171,6 +172,7 @@ def parse_config(payload: dict[str, Any]) -> DataSourceConfig:
                 )
 
     return DataSourceConfig(
+        config_version=str(payload.get("config_version", "1.7.0-multisource")),
         schema_version=str(payload.get("schema_version", "1.0.0")),
         resolver_mode=resolver_mode,
         primary_broker_window=str(payload.get("primary_broker_window", "5D")).strip().upper(),

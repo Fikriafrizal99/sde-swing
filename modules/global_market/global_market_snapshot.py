@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import time
+import hashlib
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -8,6 +10,7 @@ from typing import Any
 import pandas as pd
 
 from swing_utils import dataframe_hash
+from swing_utils import PACKAGE_VERSION
 
 from modules.job_runner.runtime import RunnerContext, now_wib, resolve, write_json, read_json
 
@@ -163,6 +166,8 @@ def build_global_market_snapshot(
     coverage = float(sentiment.get("coverage_ratio", 0.0))
     minimum_coverage = float(registry.get("minimum_sentiment_coverage_ratio", 0.5))
     snapshot = {
+        "schema_version": "1.7.0-multisource",
+        "config_version": PACKAGE_VERSION,
         "snapshot_id": snapshot_id,
         "job_run_id": ctx.run_id,
         "trade_date": ctx.trade_date.isoformat(),
@@ -177,7 +182,14 @@ def build_global_market_snapshot(
         "warnings": warnings,
         "errors": errors,
         "cache": {"enabled": cache_enabled, "used_count": cache_used, "saved_count": cache_saved, "max_age_minutes": cache_age},
+        "source_metadata": {
+            "provider": "YAHOO",
+            "provider_status": "READY" if coverage >= minimum_coverage else "PARTIAL",
+            "data_source_mode": str(registry.get("source_mode", "LIVE")).upper() or "LIVE",
+            "source_coverage_ratio": coverage,
+        },
     }
+    snapshot["content_hash"] = hashlib.sha256(json.dumps(snapshot, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     out_dir = resolve("data/output/global_market") / ctx.trade_date.isoformat()
     write_json(out_dir / f"{snapshot_id}.json", snapshot)
     if coverage >= minimum_coverage:

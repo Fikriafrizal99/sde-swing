@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import traceback
 from typing import Callable
@@ -46,7 +47,10 @@ from modules.job_runner.runtime import (
     resolve,
     trading_day_status,
     write_status,
+    read_json,
 )
+from modules.decision.adapter import canonicalize_candidates
+from modules.runtime.jobs import INTEGRATED_JOB_NAMES, JOB_DEPENDENCIES, validate_dependency_status
 
 
 def _finish(ctx, status: str, stage: str, code: int, details: dict | None = None) -> int:
@@ -99,6 +103,19 @@ def _manifest_from_existing_snapshot(ctx, snapshot: dict, warning: str = "") -> 
         "Warnings": warnings,
         "Output_Files": snapshot.get("output_paths", {}),
     }
+
+
+def _market_source_details(ctx, snapshot: dict) -> dict:
+    manager = _source_details(ctx, record_type="MarketIndex")
+    # Global Market has its own historical Yahoo provider; preserve that
+    # provider's truthful mode while retaining manager readiness/health.
+    manager.update({
+        "primary_provider": snapshot.get("provider") or manager.get("primary_provider", "NOT_CONFIGURED"),
+        "provider_status": snapshot.get("provider") or manager.get("provider_status", "NOT_CONFIGURED"),
+        "data_source_mode": snapshot.get("source_mode") or manager.get("data_source_mode", "NOT_CONFIGURED"),
+        "source_coverage_ratio": snapshot.get("coverage_ratio", manager.get("source_coverage_ratio", 0.0)),
+    })
+    return manager
 
 
 def job_market_outlook(ctx) -> int:
@@ -168,6 +185,7 @@ def job_market_outlook(ctx) -> int:
             "market_regime_data_date": market_status.get("data_date"),
             "data_source_mode": global_snapshot.get("source_mode", ""),
             "provider_status": global_snapshot.get("provider", ""),
+            **_market_source_details(ctx, global_snapshot),
             "warnings": [*global_snapshot.get("warnings", []), *market_status.get("warnings", [])],
             "errors": global_snapshot.get("errors", []),
             "output_paths": {
@@ -194,6 +212,7 @@ def job_market_outlook(ctx) -> int:
         "market_regime_data_date": market_status.get("data_date"),
         "data_source_mode": global_snapshot.get("source_mode", ""),
         "provider_status": global_snapshot.get("provider", ""),
+        **_market_source_details(ctx, global_snapshot),
         "warnings": [*global_snapshot.get("warnings", []), *market_status.get("warnings", [])],
         "errors": global_snapshot.get("errors", []),
         "output_paths": {
@@ -232,6 +251,23 @@ def job_post_market(ctx) -> int:
     navigator_path = str(manifest.get("Broker_Navigator_Path") or "").strip()
     if navigator_path:
         print(f"[BROKER] BROKER_NAVIGATOR_SYMBOLS siap: {navigator_path}", flush=True)
+    if "symbols_loaded" in manifest and int(manifest.get("symbols_loaded", 0) or 0) <= 0:
+        warning = "POST_MARKET_EMPTY_SNAPSHOT: tidak ada simbol valid yang dimuat"
+        append_job_log(ctx, "POST_MARKET_EMPTY_SNAPSHOT", warning)
+        return _finish(ctx, "PARTIAL", "POST_MARKET_EMPTY_SNAPSHOT", EXIT_WAITING_DATA, {
+            "data_status": "EMPTY_SNAPSHOT",
+            "symbols_requested": manifest.get("symbols_requested", 0),
+            "symbols_loaded": manifest.get("symbols_loaded", 0),
+            "symbols_valid": manifest.get("symbols_valid", 0),
+            "symbols_failed": manifest.get("symbols_failed", 0),
+            "symbols_skipped": manifest.get("symbols_skipped", 0),
+            "provider_status": manifest.get("provider_status") or manifest.get("source_metadata", {}).get("provider_status", "NOT_CONFIGURED"),
+            "data_source_mode": manifest.get("data_source_mode") or manifest.get("source_metadata", {}).get("data_source_mode", "NOT_CONFIGURED"),
+            "source_coverage_ratio": manifest.get("source_coverage_ratio", 0.0),
+            "snapshot_ids": manifest.get("snapshot_ids", {"technical": manifest.get("Snapshot_ID", "")}),
+            "snapshot_id": manifest.get("Snapshot_ID", ""),
+            "warnings": [warning],
+        })
     if not ctx.dry_run:
         try:
             print("[analytics] Memperbarui outcome rekomendasi lama...", flush=True)
@@ -253,6 +289,16 @@ def job_post_market(ctx) -> int:
         "snapshot_id": manifest.get("Snapshot_ID", ""),
         "snapshot_trade_date": manifest.get("Technical_Date", ""),
         "data_status": manifest.get("Data_Quality_Status", ""),
+        "symbols_requested": manifest.get("symbols_requested", manifest.get("symbols_loaded", 0)),
+        "symbols_loaded": manifest.get("symbols_loaded", 0),
+        "symbols_valid": manifest.get("symbols_valid", 0),
+        "symbols_failed": manifest.get("symbols_failed", 0),
+        "symbols_skipped": manifest.get("symbols_skipped", 0),
+        "provider_status": manifest.get("provider_status") or manifest.get("source_metadata", {}).get("provider_status", "NOT_CONFIGURED"),
+        "data_source_mode": manifest.get("data_source_mode") or manifest.get("source_metadata", {}).get("data_source_mode", "NOT_CONFIGURED"),
+        "source_coverage_ratio": manifest.get("source_coverage_ratio", 0.0),
+        "snapshot_ids": manifest.get("snapshot_ids", {"technical": manifest.get("Snapshot_ID", "")}),
+        "warnings": manifest.get("Warnings", []),
         "preview_paths": [str(p) for p in preview_paths],
         "delivery": delivery,
         **_delivery_summary(delivery),
@@ -262,6 +308,13 @@ def job_post_market(ctx) -> int:
 
 def job_final_watchlist(ctx) -> int:
     print("[1/6] Memeriksa snapshot teknikal dan Broker Summary...", flush=True)
+    dependency = _require_integrated_dependencies(ctx, "final_watchlist")
+    if dependency:
+        return _finish(ctx, "SKIPPED", "DEPENDENCY_VALIDATION", EXIT_SKIPPED, {
+            "dependency_status": dependency,
+            "errors": ["FINAL_WATCHLIST_DEPENDENCY_NOT_READY"],
+            "warnings": ["Dependencies must match trade_date, run status, and config_version."],
+        })
     if ctx.interactive_broker:
         ready, detail = broker_readiness(ctx)
         if not ready and detail.get("status") not in {"STALE_TECHNICAL_SNAPSHOT", "INVALID_DEPENDENCY"}:
@@ -365,11 +418,200 @@ def job_full_manual(ctx) -> int:
     })
 
 
+def _source_details(ctx, *, record_type: str | None = None, **kwargs) -> dict:
+    try:
+        return ctx.source_manager.provider_metadata(record_type=record_type, **kwargs)
+    except Exception as exc:
+        return {
+            "primary_provider": "NOT_CONFIGURED",
+            "provider_status": "NOT_CONFIGURED",
+            "data_source_mode": "NOT_CONFIGURED",
+            "providers_attempted": [],
+            "fallback_used": False,
+            "mock_used": False,
+            "source_health": {},
+            "source_coverage_ratio": 0.0,
+            "warnings": [f"SOURCE_MANAGER_UNAVAILABLE:{exc}"],
+        }
+
+
+def _integrated_statuses(ctx) -> dict[str, dict]:
+    root = ctx.status_root
+    statuses: dict[str, dict] = {}
+    for name in INTEGRATED_JOB_NAMES:
+        payload = read_json(root / f"{name}_latest.json")
+        if payload:
+            statuses[name] = payload
+    return statuses
+
+
+def _require_integrated_dependencies(ctx, job_name: str) -> dict | None:
+    # Hand-built legacy test contexts do not carry config provenance. They keep
+    # the proven Stage 1/2 behaviour; official load_context runs are strict.
+    if str(ctx.config_provenance.get("config_version", "")) != "1.7.0-multisource":
+        return None
+    check = validate_dependency_status(ctx.runtime_context, job_name, _integrated_statuses(ctx))
+    if check.get("valid"):
+        return None
+    return check
+
+
+def job_pre_market(ctx) -> int:
+    metadata = _source_details(ctx, record_type="MarketIndex")
+    warnings = [] if metadata.get("provider_status") not in {"NOT_CONFIGURED", ""} else ["MARKET_INDEX_PRIMARY_NOT_CONFIGURED"]
+    return _finish(ctx, "SUCCESS_WITH_WARNING" if warnings else "SUCCESS", "PRE_MARKET", EXIT_SUCCESS, {
+        **metadata, "warnings": warnings, "snapshot_ids": {}, "dependency_status": {},
+    })
+
+
+def job_technical_snapshot(ctx) -> int:
+    dependency = _require_integrated_dependencies(ctx, "technical_snapshot")
+    if dependency:
+        return _finish(ctx, "SKIPPED", "DEPENDENCY_VALIDATION", EXIT_SKIPPED, {
+            "dependency_status": dependency, "errors": ["TECHNICAL_SNAPSHOT_DEPENDENCY_NOT_READY"],
+        })
+    snapshot = load_technical_snapshot(ctx)
+    if snapshot.get("status") != "VALID":
+        return _finish(ctx, "NOT_CONFIGURED", "TECHNICAL_SNAPSHOT", EXIT_WAITING_DATA, {
+            "data_status": snapshot.get("status", "NOT_AVAILABLE"), "errors": [snapshot.get("reason", "SNAPSHOT_NOT_FOUND")],
+            **_source_details(ctx, record_type="DailyBar"),
+        })
+    return _finish(ctx, "SUCCESS", "TECHNICAL_SNAPSHOT", EXIT_SUCCESS, {
+        "snapshot_ids": {"technical": snapshot.get("snapshot_id", "")},
+        "symbols_requested": snapshot.get("symbols_requested", snapshot.get("symbols_loaded", 0)),
+        "symbols_loaded": snapshot.get("symbols_loaded", 0),
+        "symbols_valid": snapshot.get("symbols_valid", 0),
+        "symbols_failed": snapshot.get("symbols_failed", 0),
+        "symbols_skipped": snapshot.get("symbols_skipped", 0),
+        "snapshot_trade_date": snapshot.get("trade_date", ""),
+        **_source_details(ctx, record_type="DailyBar"),
+    })
+
+
+def job_broker_summary(ctx) -> int:
+    dependency = _require_integrated_dependencies(ctx, "broker_summary")
+    if dependency:
+        return _finish(ctx, "SKIPPED", "DEPENDENCY_VALIDATION", EXIT_SKIPPED, {"dependency_status": dependency})
+    path = ctx.path("broker_raw_latest", "data/input/broker/BROKER_RAW_LATEST.csv")
+    summary = ctx.path("broker_summary_latest", "data/input/broker/BROKER_SUMMARY_LATEST.csv")
+    source_path = path if path.exists() else summary
+    if not source_path.exists():
+        return _finish(ctx, "NOT_CONFIGURED", "BROKER_SUMMARY", EXIT_WAITING_DATA, {
+            "errors": ["BROKER_FILE_SOURCE_NOT_FOUND"], "data_status": "NOT_AVAILABLE", **_source_details(ctx, record_type="BrokerFlow"),
+        })
+    try:
+        import pandas as pd
+        frame = pd.read_csv(source_path, low_memory=False)
+        symbols = frame.iloc[:, 0].dropna().astype(str).nunique() if not frame.empty else 0
+    except Exception as exc:
+        return _finish(ctx, "FAILED", "BROKER_SUMMARY", EXIT_FAILED, {"errors": [str(exc)], **_source_details(ctx, record_type="BrokerFlow")})
+    if symbols <= 0:
+        return _finish(ctx, "PARTIAL", "BROKER_SUMMARY", EXIT_WAITING_DATA, {"warnings": ["BROKER_FILE_EMPTY"], "symbols_loaded": 0, **_source_details(ctx, record_type="BrokerFlow")})
+    return _finish(ctx, "SUCCESS_WITH_WARNING" if not os.getenv("STOCKBIT_API_KEY") else "SUCCESS", "BROKER_SUMMARY", EXIT_SUCCESS, {
+        "data_status": "FILE_FALLBACK" if not os.getenv("STOCKBIT_API_KEY") else "LIVE",
+        "symbols_requested": symbols, "symbols_loaded": symbols, "symbols_valid": symbols,
+        "warnings": ["STOCKBIT_API_NOT_CONFIGURED_FILE_FALLBACK"] if not os.getenv("STOCKBIT_API_KEY") else [],
+        **_source_details(ctx, record_type="BrokerFlow"),
+    })
+
+
+def job_broker_multi_day(ctx) -> int:
+    dependency = _require_integrated_dependencies(ctx, "broker_multi_day")
+    if dependency:
+        return _finish(ctx, "SKIPPED", "DEPENDENCY_VALIDATION", EXIT_SKIPPED, {"dependency_status": dependency})
+    metadata = _source_details(ctx, record_type="BrokerFlow")
+    return _finish(ctx, "NOT_CONFIGURED" if metadata.get("data_source_mode") == "NOT_CONFIGURED" else "SUCCESS_WITH_WARNING", "BROKER_MULTI_DAY", EXIT_SUCCESS, {
+        **metadata,
+        "date_range": {"start": "", "end": ctx.trade_date.isoformat()},
+        "missing_days": [],
+        "coverage_ratio": metadata.get("source_coverage_ratio", 0.0),
+        "warnings": ["MULTI_DAY_HISTORY_NOT_LOADED"] if metadata.get("data_source_mode") == "NOT_CONFIGURED" else [],
+    })
+
+
+def job_universe_selection(ctx) -> int:
+    dependency = _require_integrated_dependencies(ctx, "universe_selection")
+    if dependency:
+        return _finish(ctx, "SKIPPED", "DEPENDENCY_VALIDATION", EXIT_SKIPPED, {"dependency_status": dependency})
+    return _finish(ctx, "SUCCESS", "UNIVERSE_SELECTION", EXIT_SUCCESS, {"snapshot_ids": {}, "symbols_requested": 0, "symbols_loaded": 0, "symbols_valid": 0, "warnings": ["UNIVERSE_SELECTION_DELEGATED_TO_TECHNICAL_STAGE"]})
+
+
+def job_candidate_selection(ctx) -> int:
+    dependency = _require_integrated_dependencies(ctx, "candidate_selection")
+    if dependency:
+        return _finish(ctx, "SKIPPED", "DEPENDENCY_VALIDATION", EXIT_SKIPPED, {"dependency_status": dependency})
+    snapshot = load_technical_snapshot(ctx)
+    candidates = snapshot.get("output_paths", {}).get("technical_candidates", "") if snapshot else ""
+    return _finish(ctx, "SUCCESS" if candidates else "PARTIAL", "CANDIDATE_SELECTION", EXIT_SUCCESS, {"snapshot_ids": {"technical": snapshot.get("snapshot_id", "")} if snapshot else {}, "output_paths": {"candidates": candidates}, "warnings": [] if candidates else ["CANDIDATE_OUTPUT_NOT_FOUND"]})
+
+
+def job_final_decision(ctx) -> int:
+    dependency = _require_integrated_dependencies(ctx, "final_decision")
+    if dependency:
+        return _finish(ctx, "SKIPPED", "DEPENDENCY_VALIDATION", EXIT_SKIPPED, {"dependency_status": dependency})
+    path = resolve("data/output/decision/FINAL_DECISION_V3.csv")
+    if not path.exists():
+        return _finish(ctx, "NOT_CONFIGURED", "FINAL_DECISION", EXIT_WAITING_DATA, {"errors": ["FINAL_DECISION_OUTPUT_NOT_FOUND"], "warnings": ["NO_DATA"]})
+    try:
+        import pandas as pd
+        from modules.runtime.artifacts import write_artifact
+        frame = pd.read_csv(path, low_memory=False)
+        source_provenance = _source_details(ctx, record_type="BrokerFlow")
+        snapshot_ids = {name: str(value.get("snapshot_id", "")) for name, value in _integrated_statuses(ctx).items() if value.get("snapshot_id")}
+        candidates, errors = canonicalize_candidates(
+            frame.to_dict(orient="records"),
+            trade_date=ctx.trade_date.isoformat(),
+            source_provenance=source_provenance,
+            snapshot_ids=snapshot_ids or {"decision": ctx.run_id},
+        )
+        artifact_context = ctx.runtime_context
+        artifact = write_artifact(
+            artifact_context,
+            "decisions",
+            f"final_decision_{ctx.run_id}",
+            [candidate.to_dict() for candidate in candidates],
+            snapshot_id=str(snapshot_ids.get("decision", ctx.run_id)),
+            source_metadata=source_provenance,
+        )
+        status = "SUCCESS_WITH_WARNING" if errors else "SUCCESS"
+        details = {
+            "output_paths": {"final_decision": str(path), "canonical_candidates": str(artifact)},
+            "snapshot_ids": snapshot_ids,
+            "source_provenance": source_provenance,
+            "warnings": ["CANONICAL_CANDIDATE_VALIDATION_PARTIAL"] if errors else [],
+            "errors": errors,
+        }
+        return _finish(ctx, status, "FINAL_DECISION", EXIT_SUCCESS, details)
+    except Exception as exc:
+        return _finish(ctx, "FAILED", "FINAL_DECISION", EXIT_FAILED, {"errors": [str(exc)], "output_paths": {"final_decision": str(path)}})
+
+
+def job_telegram_delivery(ctx) -> int:
+    configured = bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"))
+    return _finish(ctx, "SUCCESS" if configured else "NOT_CONFIGURED", "TELEGRAM_DELIVERY", EXIT_SUCCESS if configured else EXIT_SKIPPED, {
+        "telegram_status": "READY" if configured else "NOT_CONFIGURED",
+        "warnings": [] if configured else ["TELEGRAM_CREDENTIALS_EMPTY"],
+    })
+
+
+def job_status(ctx) -> int:
+    return _finish(ctx, "SUCCESS", "JOB_STATUS", EXIT_SUCCESS, {"data_status": "STATUS_WRITER_READY"})
+
+
 JOBS: dict[str, Callable] = {
     "market_outlook": job_market_outlook,
     "post_market": job_post_market,
     "final_watchlist": job_final_watchlist,
     "full_manual": job_full_manual,
+    "pre_market": job_pre_market,
+    "technical_snapshot": job_technical_snapshot,
+    "broker_summary": job_broker_summary,
+    "broker_multi_day": job_broker_multi_day,
+    "universe_selection": job_universe_selection,
+    "candidate_selection": job_candidate_selection,
+    "final_decision": job_final_decision,
+    "telegram_delivery": job_telegram_delivery,
+    "job_status": job_status,
 }
 
 

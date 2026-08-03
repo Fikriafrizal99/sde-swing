@@ -1,4 +1,4 @@
-# SDE Swing V1.6.2 Stage 2 — Moderate Calibration
+# SDE Swing V1.7.0 Multi-Source Runtime
 
 Branch ini melanjutkan Stage 1 dengan satu Final Decision Engine, Entry Plan Validator yang hanya menilai kesiapan eksekusi, dan tiga profile shadow moderat. Produksi tetap `MODERATE_BASELINE`; auto-entry tetap nonaktif.
 

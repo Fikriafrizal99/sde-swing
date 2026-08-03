@@ -10,3 +10,13 @@ record.  The flow is intentionally linear:
 Nothing in this package makes trading decisions.  It only produces typed,
 provenance-tagged canonical records plus quality and health telemetry.
 """
+
+__all__ = ["DataSourceManager", "ProviderMetadata"]
+
+
+def __getattr__(name: str):
+    if name in __all__:
+        from modules.runtime.data_source_manager import DataSourceManager, ProviderMetadata
+
+        return {"DataSourceManager": DataSourceManager, "ProviderMetadata": ProviderMetadata}[name]
+    raise AttributeError(name)

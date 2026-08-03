@@ -1,4 +1,5 @@
 {
+  "config_version": "1.7.0-multisource",
   "schema_version": "1.0.0",
   "resolver_mode": "PRIMARY_WITH_FALLBACK",
   "primary_broker_window": "5D",

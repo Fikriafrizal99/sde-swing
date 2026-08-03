@@ -167,6 +167,13 @@ def _stage_paths(ctx: RunnerContext) -> dict[str, Path]:
 
 
 def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
+    # Provider readiness is centralized even while the legacy downloader
+    # remains the compatibility execution engine for Stage 1/2.
+    source_metadata = ctx.source_manager.provider_metadata(record_type="DailyBar")
+    append_job_log(ctx, "POST_MARKET_SOURCE_MANAGER_READY", str({
+        "provider_status": source_metadata.get("provider_status"),
+        "data_source_mode": source_metadata.get("data_source_mode"),
+    }))
     cfg = ctx.config
     paths = cfg.get("paths", {})
     freshness = cfg.get("data_freshness", {})
@@ -295,9 +302,20 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
         "Snapshot_ID": snapshot["snapshot_id"],
         "Snapshot_Manifest": snapshot["manifest_path"],
         "Candidate_Count": candidate_manifest.get("Candidate_Count", 0),
+        "symbols_requested": snapshot.get("symbols_requested", 0),
+        "symbols_loaded": snapshot.get("symbols_loaded", 0),
+        "symbols_valid": snapshot.get("symbols_valid", 0),
+        "symbols_failed": snapshot.get("symbols_failed", 0),
+        "symbols_skipped": snapshot.get("symbols_skipped", 0),
+        "provider_status": source_metadata.get("provider_status", "NOT_CONFIGURED"),
+        "data_source_mode": source_metadata.get("data_source_mode", "NOT_CONFIGURED"),
+        "source_coverage_ratio": (snapshot.get("symbols_valid", 0) / snapshot.get("symbols_requested", 1)) if snapshot.get("symbols_requested", 0) else 0.0,
+        "snapshot_ids": {"technical": snapshot.get("snapshot_id", "")},
+        "Config_Version": ctx.runtime_version,
         "Broker_Navigator_Path": str(navigator_path),
         "Warnings": [x for x in [yahoo_manifest.get("Warning"), candidate_manifest.get("Reason")] if x],
         "Output_Files": snapshot.get("output_paths", {}),
+        "source_metadata": source_metadata,
     }
 
 
@@ -370,6 +388,14 @@ def create_technical_snapshot(
     status_df = _read_csv(feature_status)
     symbols_loaded = int(tech_manifest.get("symbols_total", 0) or tech_manifest.get("Technical_Symbol_Count", 0) or len(status_df))
     symbols_failed = int(tech_manifest.get("symbols_failed", 0) or (len(_read_csv(failed_symbols)) if failed_symbols.exists() else 0))
+    symbols_requested = int(
+        tech_manifest.get("symbols_requested", 0)
+        or tech_manifest.get("symbols_total_requested", 0)
+        or candidate_manifest.get("Universe_Count", 0)
+        or symbols_loaded + symbols_failed
+    )
+    symbols_valid = max(symbols_loaded - symbols_failed, 0)
+    symbols_skipped = max(symbols_requested - symbols_loaded - symbols_failed, 0)
     payload = {
         "snapshot_id": snapshot_id,
         "run_id": ctx.run_id,
@@ -383,15 +409,27 @@ def create_technical_snapshot(
         "technical_feature_date": technical_date,
         "candidate_date": candidate_manifest.get("Technical_Data_Date", technical_date),
         "symbols_loaded": symbols_loaded,
-        "symbols_valid": max(symbols_loaded - symbols_failed, 0),
+        "symbols_requested": symbols_requested,
+        "symbols_valid": symbols_valid,
         "symbols_failed": symbols_failed,
+        "symbols_skipped": symbols_skipped,
         "data_quality_status": tech_manifest.get("Data_Quality_Status", yahoo_manifest.get("Data_Quality_Status", "VALID")),
+        "config_version": ctx.runtime_version,
+        "source_metadata": {
+            "provider": yahoo_manifest.get("Data_Source", "HISTORICAL_PROVIDER"),
+            "provider_status": yahoo_manifest.get("Provider_Status", "FILE" if str(yahoo_manifest.get("Data_Source", "")).upper() != "LIVE_YAHOO" else "LIVE"),
+            "data_source_mode": yahoo_manifest.get("Data_Source_Mode", "FILE" if str(yahoo_manifest.get("Data_Source", "")).upper() != "LIVE_YAHOO" else "LIVE"),
+        },
         "broker_navigator_path": str(navigator_path) if navigator_path else "",
         "output_paths": copied,
         "file_hashes": {label: file_sha256(path) for label, path in copied.items()},
     }
     manifest_path = root / "snapshot_manifest.json"
     payload["manifest_path"] = str(manifest_path)
+    import hashlib
+    payload["content_hash"] = hashlib.sha256(
+        __import__("json").dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
     write_json(manifest_path, payload)
     index_root = resolve("data/output/snapshots") / ctx.trade_date.isoformat()
     if not ctx.dry_run:

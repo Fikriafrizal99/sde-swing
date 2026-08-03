@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from modules.runtime_config import load_runtime_config, RuntimeConfigError  # noqa: E402
+from swing_utils import PACKAGE_VERSION, PIPELINE_VERSION  # noqa: E402
 
 
 def main() -> int:
@@ -30,6 +31,17 @@ def main() -> int:
     calibration = decision.get("calibration", {}) if isinstance(decision, dict) else {}
     if calibration.get("auto_entry_enabled", False):
         print("FAIL: auto_entry_enabled is True — must remain False")
+        return 1
+
+    package = payload.get("package", {})
+    if str(package.get("version", "")) != "1.7.0-multisource" or str(package.get("pipeline_version", "")) != "1.7.0-multisource":
+        print("FAIL: package and pipeline version must be 1.7.0-multisource")
+        return 1
+    if PACKAGE_VERSION != "1.7.0-multisource" or PIPELINE_VERSION != "1.7.0-multisource":
+        print("FAIL: runtime version constants are not 1.7.0-multisource")
+        return 1
+    if str(payload.get("config_version", PACKAGE_VERSION)) != "1.7.0-multisource":
+        print("FAIL: config_version must be 1.7.0-multisource")
         return 1
 
     print(f"OK runtime_config: {provenance['validation_status']}")

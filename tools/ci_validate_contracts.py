@@ -29,6 +29,9 @@ from modules.data_sources.decision_bridge import (  # noqa: E402
     PROTECTED_COLUMNS,
     attach_multiday_context,
 )
+from modules.runtime.data_source_manager import DataSourceManager  # noqa: E402
+from modules.runtime.jobs import INTEGRATED_JOB_NAMES, JOB_DEPENDENCIES  # noqa: E402
+from modules.decision.candidate import FINAL_ACTIONS, CanonicalCandidate, validate_candidate  # noqa: E402
 
 FORBIDDEN_TOKENS = {"BUY READY", "BUY ON TRIGGER", "WATCH", "AVOID", "BUY", "SELL"}
 
@@ -124,12 +127,61 @@ def check_zapi_not_configured() -> int:
     return 0
 
 
+def check_integrated_runtime_contract() -> int:
+    missing = set(INTEGRATED_JOB_NAMES) - set(JOB_DEPENDENCIES)
+    if missing:
+        return _fail(f"integrated job dependency graph missing: {sorted(missing)}")
+    manager = DataSourceManager(ROOT / "config/data_sources.json", root=ROOT, mode="MOCK", force_mock=True)
+    metadata = manager.provider_metadata(record_type="DailyBar")
+    if metadata.get("data_source_mode") == "LIVE" or not metadata.get("mock_used"):
+        return _fail("forced mock source was labelled LIVE or mock_used=false")
+    for key in ("provider_status", "data_source_mode", "source_health"):
+        if key not in metadata:
+            return _fail(f"source manager metadata missing {key}")
+    candidate = CanonicalCandidate(
+        symbol="BBCA", trade_date="2026-01-02", final_action="WAIT",
+        source_provenance={"provider_status": "FILE"}, snapshot_ids={"technical": "S"},
+    )
+    if validate_candidate(candidate):
+        return _fail("canonical candidate contract rejected valid provenance")
+    if not FINAL_ACTIONS.issuperset({"BUY", "WATCH", "WAIT", "AVOID", "NO_DATA"}):
+        return _fail("final action contract incomplete")
+    print(f"OK runtime: {len(INTEGRATED_JOB_NAMES)} jobs, manager metadata, candidate provenance")
+    return 0
+
+
+def check_structure_and_security() -> int:
+    required_docs = {
+        "README.md", "ARCHITECTURE.md", "RUNTIME_JOBS.md", "DATA_SOURCES.md",
+        "TELEGRAM_ROUTING.md", "CONFIGURATION.md", "MIGRATION_V1_6_TO_V1_7.md",
+        "TROUBLESHOOTING.md", "LEGACY_FILE_MANIFEST.md",
+    }
+    missing_docs = [name for name in required_docs if not (ROOT / "docs" / name).exists()]
+    if missing_docs:
+        return _fail(f"required runtime docs missing: {missing_docs}")
+    entrypoint = (ROOT / "run_sde_job.py").read_text(encoding="utf-8")
+    legacy = (ROOT / "master_pipeline.py").read_text(encoding="utf-8")
+    if "JOBS" not in entrypoint or "DEPRECATED_COMPATIBILITY_ENTRYPOINT" not in legacy:
+        return _fail("official entry point/legacy marker missing")
+    # Use Git's index rather than the working tree: runtime artifacts can exist
+    # locally but must never enter the release commit.
+    import subprocess
+    result = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True)
+    forbidden = [line for line in result.stdout.splitlines() if line == ".env" or line.endswith("/.env") or "__pycache__" in line or line.endswith((".db", ".sqlite", ".sqlite3", ".pyc"))]
+    if forbidden:
+        return _fail(f"runtime/secret artifacts tracked: {forbidden}")
+    print("OK structure: docs, official entry point, and Git runtime-artifact policy")
+    return 0
+
+
 def main() -> int:
     rc = 0
     rc |= check_record_types()
     rc |= check_multiday_context_only()
     rc |= check_bridge_protects_decisions()
     rc |= check_zapi_not_configured()
+    rc |= check_integrated_runtime_contract()
+    rc |= check_structure_and_security()
     return 1 if rc else 0
 
 

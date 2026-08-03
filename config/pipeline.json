@@ -1,4 +1,5 @@
 {
+  "config_version": "1.7.0-multisource",
   "paths": {
     "normalized_watchlist": "modules/historical_downloader/Stockbit_Watchlist_2026-07-19_normalized.csv",
     "ihsg_csv": "data/input/IHSG.csv",
@@ -125,8 +126,8 @@
   },
   "package": {
     "name": "SDE Swing",
-    "version": "1.6.2-stage2-gapfix",
-    "pipeline_version": "SDE_SWING_V1_6_2_STAGE2_GAP_CLOSURE"
+    "version": "1.7.0-multisource",
+    "pipeline_version": "1.7.0-multisource"
   },
   "decision": {
     "policy": "MODERATE_SINGLE_DECISION_V1_6_2",

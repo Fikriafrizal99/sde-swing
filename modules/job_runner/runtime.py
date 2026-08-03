@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import socket
 from dataclasses import dataclass, field
@@ -23,6 +24,7 @@ EXIT_WAITING_DATA = 20
 EXIT_DUPLICATE = 30
 EXIT_RESOURCE_LOCKED = 40
 EXIT_DELIVERY_FAILED = 50
+RUNTIME_CONFIG_VERSION = "1.7.0-multisource"
 
 
 class JobAlreadyRunning(RuntimeError):
@@ -100,6 +102,8 @@ class RunnerContext:
     scheduler_config: dict[str, Any] = field(default_factory=dict)
     calendar_config: dict[str, Any] = field(default_factory=dict)
     config_provenance: dict[str, Any] = field(default_factory=dict)
+    data_source_config_path: Path = field(default_factory=lambda: ROOT / "config/data_sources.json")
+    _data_source_manager: Any = field(default=None, init=False, repr=False)
 
     @property
     def previews_root(self) -> Path:
@@ -124,6 +128,36 @@ class RunnerContext:
     def path(self, name: str, default: str = "") -> Path:
         value = self.config.get("paths", {}).get(name, default)
         return resolve(value)
+
+    @property
+    def runtime_version(self) -> str:
+        return str(self.config_provenance.get("config_version") or RUNTIME_CONFIG_VERSION)
+
+    @property
+    def source_manager(self):
+        """Return the single DataSourceManager shared by integrated jobs."""
+        if self._data_source_manager is None:
+            from modules.runtime.data_source_manager import DataSourceManager
+
+            self._data_source_manager = DataSourceManager(
+                self.data_source_config_path,
+                root=ROOT,
+                mode=self.mode,
+                run_id=self.run_id,
+                force_mock=self.dry_run,
+                file_roots={
+                    "broker_summary": self.path("broker_summary_latest", "data/input/broker/BROKER_SUMMARY_LATEST.csv"),
+                    "broker_raw": self.path("broker_raw_latest", "data/input/broker/BROKER_RAW_LATEST.csv"),
+                    "historical": self.path("historical_dir", "data/output/historical/by_symbol"),
+                },
+            )
+        return self._data_source_manager
+
+    @property
+    def runtime_context(self):
+        from modules.runtime.context import RuntimeContext
+
+        return RuntimeContext.from_runner_context(self)
 
     @property
     def mode(self) -> str:
@@ -173,6 +207,7 @@ def load_context(
         scheduler_config=scheduler_cfg,
         calendar_config=read_json(calendar_path),
         config_provenance=config_provenance,
+        data_source_config_path=resolve(scheduler_cfg.get("data_sources_config", "config/data_sources.json")),
     )
     return ctx
 
@@ -190,6 +225,17 @@ def append_job_log(ctx: RunnerContext, event: str, detail: str = "") -> None:
         handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
 
 
+def _normalized_runtime_status(status: str) -> str:
+    value = str(status or "FAILED").strip().upper()
+    if value in {"SUCCESS", "SUCCESS_WITH_WARNING", "PARTIAL", "SKIPPED", "FAILED", "NOT_CONFIGURED"}:
+        return value
+    if value.startswith("SKIP") or value in {"DUPLICATE_SUPPRESSED", "WAITING_DATA", "WAITING_DATA_TIMEOUT"}:
+        return "SKIPPED"
+    if value.startswith("PARTIAL"):
+        return "PARTIAL"
+    return "FAILED"
+
+
 def write_status(
     ctx: RunnerContext,
     status: str,
@@ -201,12 +247,26 @@ def write_status(
     final_status = status != "RUNNING"
     duration = (finished_at - ctx.started_at).total_seconds() if final_status else None
     detail_payload = details or {}
+    source_meta: dict[str, Any] = {}
+    try:
+        source_meta = ctx.source_manager.provider_metadata()
+    except Exception as exc:
+        source_meta = {
+            "provider_status": "NOT_CONFIGURED",
+            "data_source_mode": "NOT_CONFIGURED",
+            "source_health": {},
+            "source_manager_warning": str(exc),
+        }
     payload = {
         "run_id": ctx.run_id,
         "job": ctx.job,
         "job_name": ctx.job,
         "job_mode": ctx.mode,
-        "status": status,
+        # Legacy hand-built contexts retain the historical status string for
+        # regression compatibility; official 1.7 contexts expose the unified
+        # finite status vocabulary and keep the old value in legacy_status.
+        "status": _normalized_runtime_status(status) if ctx.config_provenance.get("config_version") == RUNTIME_CONFIG_VERSION else status,
+        "status_v1_7": _normalized_runtime_status(status),
         "current_stage": stage,
         "exit_code": exit_code,
         "trade_date": ctx.trade_date.isoformat(),
@@ -222,7 +282,7 @@ def write_status(
         "duration_seconds": duration,
         "updated_at": now_wib().isoformat(timespec="seconds"),
         "data_status": detail_payload.get("data_status", detail_payload.get("Data_Quality_Status", "")),
-        "provider_status": detail_payload.get("provider_status", ""),
+        "provider_status": detail_payload.get("provider_status") or source_meta.get("provider_status", "NOT_CONFIGURED"),
         "snapshot_id": detail_payload.get("snapshot_id", ""),
         "snapshot_trade_date": detail_payload.get("snapshot_trade_date", ""),
         "global_market_snapshot_id": detail_payload.get("global_market_snapshot_id", ""),
@@ -247,7 +307,7 @@ def write_status(
         "warnings": detail_payload.get("warnings", []),
         "errors": detail_payload.get("errors", []),
         "traceback_path": detail_payload.get("traceback_path", ""),
-        "data_source_mode": detail_payload.get("data_source_mode", ""),
+        "data_source_mode": detail_payload.get("data_source_mode") or source_meta.get("data_source_mode", "NOT_CONFIGURED"),
         "hostname": socket.gethostname(),
         "process_id": os.getpid(),
         "lock_status": detail_payload.get("lock_status", ""),
@@ -258,8 +318,21 @@ def write_status(
         "config_loaded_at": ctx.config_provenance.get("loaded_at", ""),
         "config_validation_status": ctx.config_provenance.get("validation_status", ""),
         "config_override_mode": ctx.config_provenance.get("override_mode", "NONE"),
+        "primary_provider": detail_payload.get("primary_provider") or source_meta.get("primary_provider", "NOT_CONFIGURED"),
+        "providers_attempted": detail_payload.get("providers_attempted", source_meta.get("providers_attempted", [])),
+        "fallback_used": bool(detail_payload.get("fallback_used", source_meta.get("fallback_used", False))),
+        "mock_used": bool(detail_payload.get("mock_used", source_meta.get("mock_used", False))),
+        "source_health": detail_payload.get("source_health", source_meta.get("source_health", {})),
+        "source_coverage_ratio": float(detail_payload.get("source_coverage_ratio", source_meta.get("source_coverage_ratio", 0.0)) or 0.0),
+        "symbols_requested": detail_payload.get("symbols_requested", detail_payload.get("symbols_loaded", 0)),
+        "job_name_v1_7": ctx.job,
+        "config_version_v1_7": ctx.runtime_version,
+        "dependency_status_v1_7": detail_payload.get("dependency_status", {}),
         "details": detail_payload,
     }
+    payload["content_hash"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+    ).hexdigest()
     dated = ctx.status_root / ctx.trade_date.isoformat()
     target = dated / f"{ctx.job}_{ctx.run_id}.json"
     latest = ctx.status_root / f"{ctx.job}_latest.json"

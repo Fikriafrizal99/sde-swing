@@ -14,16 +14,26 @@ venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
 htmlcov/
+coverage.xml
 
 # Runtime dan output
 data/input/
 data/output/
 data/state/
 data/database/
+data/runtime/
+data/cache/
 logs/
 runtime/
+**/*.lock
+!modules/runtime/
+!modules/runtime/**
+modules/runtime/__pycache__/
+modules/runtime/**/*.pyc
 
 # Database
 *.db
@@ -53,6 +63,14 @@ Thumbs.db
 # Generated cache and machine-specific files
 data/cache/
 scheduler/windows/generated/
+data/output/job_status/
+data/output/snapshots/
+data/output/previews/
+data/output/watchlists/
+data/output/decisions/
+data/output/reports/
+data/output/audits/
+data/output/failed_delivery/
 
 # Unrelated/release payload
 payload/
