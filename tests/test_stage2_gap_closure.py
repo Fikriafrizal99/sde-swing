@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import copy
 import json
 from datetime import date
 from pathlib import Path
 
 import pandas as pd
 
+from modules.broker_bridge.wait_for_broker_export import inspect as inspect_broker_export
 from modules.decision_engine.moderate_profiles import assess_liquidity
 from modules.decision_engine.smart_selective_v162 import smart_decision
 from modules.market_calendar.idx_calendar import is_idx_trading_day, validate_market_date
-from modules.runtime_config import RuntimeConfigError, validate_config
+from modules.runtime_config import validate_config
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,16 +28,48 @@ def test_idx_calendar_holiday_and_weekend():
     assert validate_market_date("2026-08-03", holidays=holidays) == date(2026, 8, 3)
 
 
-def test_strict_config_requires_full_top40_broker_coverage():
+def test_operational_broker_policy_replaces_old_full_coverage_gate():
     cfg = load_cfg()
-    broken = copy.deepcopy(cfg)
-    broken["broker"]["min_coverage"] = 0.8
-    try:
-        validate_config(broken, strict=True)
-    except RuntimeConfigError as exc:
-        assert "100_PERCENT" in str(exc)
-    else:
-        raise AssertionError("coverage below 100% must fail")
+    warnings = validate_config(cfg, strict=True)
+    broker = cfg["broker"]
+
+    assert broker["min_coverage"] == 0.8
+    assert broker["allow_partial_broker"] is True
+    assert broker["required_matched_count"] == 32
+    assert broker["ideal_coverage"] == 1.0
+    assert broker["coverage_policy"] == "OPERATIONAL_PARTIAL_ALLOWED"
+    assert "BROKER_100_PERCENT_SHADOW_GATE_REPLACED_BY_OPERATIONAL_80_PERCENT" in warnings
+    assert "BROKER_PARTIAL_COVERAGE_ALLOWED:32/40:80%" in warnings
+
+
+def test_broker_export_39_of_40_is_operationally_ready(tmp_path: Path):
+    expected = [f"S{index:03d}" for index in range(40)]
+    rows = [
+        {
+            "FROM_DATE": "2026-07-30",
+            "TO_DATE": "2026-08-03",
+            "EMITEN": symbol,
+            "TOTAL_BUY": 1_000_000,
+            "TOTAL_SELL": 900_000,
+            "NET_FLOW": 100_000,
+            "TOP_BUYER_1": "YP",
+            "TOP_SELLER_1": "CC",
+            "BUYER_CONCENTRATION": 0.25,
+            "SELLER_CONCENTRATION": 0.20,
+        }
+        for symbol in expected[:39]
+    ]
+    path = tmp_path / "BROKER_SUMMARY_COMBINED_2026-08-03.csv"
+    pd.DataFrame(rows).to_csv(path, index=False)
+
+    ready, message, info = inspect_broker_export(path, expected, min_coverage=0.8)
+
+    assert ready is True
+    assert message == "OK"
+    assert info["matched"] == 39
+    assert info["expected"] == 40
+    assert info["coverage"] == 39 / 40
+    assert info["missing_symbols"] == [expected[-1]]
 
 
 def test_missing_microstructure_is_not_normal():
