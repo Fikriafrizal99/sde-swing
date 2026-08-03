@@ -221,7 +221,7 @@ The official Full Manual stage graph remains the same ordered handlers as indivi
 
 ## Commit SHA
 
-`5149752` (current branch HEAD/base audit commit). Continuation changes are intentionally uncommitted; the working tree also contains pre-existing audit/user modifications and the staged `.env.example` deletion.
+`b702a3a` (`fix: stabilize multisource pipeline runtime`). The working tree still contains the pre-existing staged `.env.example` deletion and local `.ua/` audit graph; neither is part of this commit.
 
 ## Final Stage Status
 
