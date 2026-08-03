@@ -1,0 +1,27 @@
+name: SDE Swing CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, "agent/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt pytest
+      - run: python -m compileall -q .
+      - run: python -m pytest -q
+      - run: git diff --check
+      - name: Source integrity
+        shell: bash
+        run: |
+          ! grep -RIn --exclude-dir=.git --exclude-dir=data --exclude-dir=payload '<REDACTED>' README.md config modules tests tools master_pipeline.py swing_utils.py
