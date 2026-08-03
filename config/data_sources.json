@@ -1,0 +1,96 @@
+{
+  "schema_version": "1.0.0",
+  "resolver_mode": "PRIMARY_WITH_FALLBACK",
+  "primary_broker_window": "5D",
+  "record_ownership": {
+    "DailyBar": {
+      "primary": "ZAPI_IDX",
+      "fallback": ["HISTORICAL_PROVIDER"]
+    },
+    "IntradayQuote": {
+      "primary": "ZAPI_IDX",
+      "fallback": []
+    },
+    "OrderBookSnapshot": {
+      "primary": "ZAPI_IDX",
+      "fallback": ["STOCKBIT"]
+    },
+    "BrokerFlow": {
+      "primary": "STOCKBIT",
+      "fallback": []
+    },
+    "ForeignFlow": {
+      "primary": "STOCKBIT",
+      "fallback": []
+    },
+    "TradingStatus": {
+      "primary": "ZAPI_IDX",
+      "fallback": [],
+      "fail_open_or_closed": "FAIL_CLOSED"
+    },
+    "MarketIndex": {
+      "primary": "ZAPI_IDX",
+      "fallback": ["HISTORICAL_PROVIDER"]
+    },
+    "CorporateAction": {
+      "primary": "ZAPI_IDX",
+      "fallback": []
+    },
+    "SymbolMetadata": {
+      "primary": "ZAPI_IDX",
+      "fallback": ["STOCKBIT"]
+    },
+    "TechnicalIndicator": {
+      "primary": "INTERNAL",
+      "fallback": [],
+      "note": "Technical indicators are always computed internally, never sourced."
+    }
+  },
+  "sources": {
+    "ZAPI_IDX": {
+      "enabled": false,
+      "priority": 10,
+      "timeout": 15,
+      "retry": 3,
+      "maximum_stale_seconds": 90,
+      "fallback_policy": "ALLOW",
+      "conflict_tolerance": 0.0,
+      "required_fields": ["symbol", "market_date", "event_timestamp"],
+      "fail_open_or_closed": "FAIL_CLOSED",
+      "api_key_env": "ZAPI_IDX_API_KEY",
+      "base_url_env": "ZAPI_IDX_BASE_URL",
+      "documentation_configured": false,
+      "note": "ZAPI IDX is NOT_CONFIGURED until documentation + credentials are supplied. It is never treated as live while disabled."
+    },
+    "STOCKBIT": {
+      "enabled": true,
+      "priority": 20,
+      "timeout": 30,
+      "retry": 2,
+      "maximum_stale_seconds": 172800,
+      "fallback_policy": "DENY",
+      "conflict_tolerance": 0.0,
+      "required_fields": ["symbol", "market_date"],
+      "fail_open_or_closed": "FAIL_CLOSED",
+      "api_key_env": "STOCKBIT_API_KEY",
+      "note": "Broker Summary / Broker Raw exports. Foreign flow uses a single primary source; foreign brokers are not summed with the aggregate foreign feed."
+    },
+    "HISTORICAL_PROVIDER": {
+      "enabled": true,
+      "priority": 30,
+      "timeout": 30,
+      "retry": 2,
+      "maximum_stale_seconds": 259200,
+      "fallback_policy": "ALLOW",
+      "conflict_tolerance": 0.02,
+      "required_fields": ["symbol", "market_date"],
+      "fail_open_or_closed": "FAIL_OPEN",
+      "note": "Existing yfinance / historical downloader path. Fallback only."
+    }
+  },
+  "conflict_defaults": {
+    "numeric_tolerance_pct": 0.005,
+    "suspend_conflict_policy": "FAIL_CLOSED",
+    "check_corporate_action_before_ohlc_conflict": true
+  }
+}

@@ -286,6 +286,25 @@ def trading_day_status(ctx: RunnerContext) -> tuple[bool, str]:
 def is_process_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        # ``os.kill(pid, 0)`` does not provide the POSIX existence probe on
+        # Windows. Querying a process handle avoids misclassifying a live lock
+        # owner as stale (and then trying to unlink its open lock file).
+        try:
+            import ctypes
+
+            process_query_limited_information = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(
+                process_query_limited_information, False, pid
+            )
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+                return True
+            return ctypes.get_last_error() == 5  # Access denied: process exists.
+        except Exception:
+            return False
     try:
         os.kill(pid, 0)
         return True

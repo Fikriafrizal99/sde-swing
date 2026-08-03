@@ -8,6 +8,16 @@ on:
 permissions:
   contents: read
 
+# No live-API secrets are ever exposed to CI. ZAPI stays NOT_CONFIGURED and the
+# adapters fall back to their mock transports, so no outbound market-data call
+# can be made from a CI run.
+env:
+  ZAPI_IDX_API_KEY: ""
+  ZAPI_IDX_BASE_URL: ""
+  STOCKBIT_API_KEY: ""
+  TELEGRAM_BOT_TOKEN: ""
+  TELEGRAM_CHAT_ID: ""
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -21,7 +31,24 @@ jobs:
       - run: python -m compileall -q .
       - run: python -m pytest -q
       - run: git diff --check
+
+      - name: Runtime config invariants
+        run: python tools/ci_validate_runtime_config.py
+
+      - name: Canonical + multi-day contract
+        run: python tools/ci_validate_contracts.py
+
       - name: Source integrity
         shell: bash
         run: |
-          ! grep -RIn --exclude-dir=.git --exclude-dir=data --exclude-dir=payload '<REDACTED>' README.md config modules tests tools master_pipeline.py swing_utils.py
+          REDACTION_MARKER='<RED'"ACTED>"
+          ! grep -RIn --exclude-dir=.git --exclude-dir=data --exclude-dir=payload "$REDACTION_MARKER" README.md config modules tests tools master_pipeline.py swing_utils.py
+
+      - name: Credential scan
+        shell: bash
+        run: |
+          ! grep -RInE --exclude-dir=.git --exclude-dir=data --exclude-dir=payload --exclude-dir=__pycache__ \
+            'BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY|AKIA[0-9A-Z]{16}|xox[baprs]-[0-9A-Za-z-]+|-----BEGIN' \
+            . || (echo "Potential credential detected" && exit 1)
+          # .env must never be committed (only .env.example may exist).
+          ! git ls-files | grep -E '(^|/)\.env($|\.)' | grep -vE '(^|/)\.env\.example$' || (echo ".env committed" && exit 1)

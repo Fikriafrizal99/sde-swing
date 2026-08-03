@@ -46,6 +46,7 @@ temp/
 # Editor
 .vscode/
 .idea/
+.claude/
 Thumbs.db
 .DS_Store
 

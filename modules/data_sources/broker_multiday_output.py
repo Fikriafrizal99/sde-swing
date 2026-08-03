@@ -1,0 +1,130 @@
+from __future__ import annotations
+
+"""Broker multi-day output writer (section U).
+
+Writes the detail/summary/rotation/divergence/window-comparison CSVs plus a
+manifest into ``data/output/broker_multiday/``.  Each record carries provenance
+and quality status.  Also builds the compact Telegram summary — never a long
+broker table.
+"""
+
+from pathlib import Path
+from typing import Any
+
+from swing_utils import iso_now, write_dict_rows_csv, write_json, PIPELINE_VERSION
+from modules.data_sources.broker_multiday_engine import MultiDayContext
+from modules.data_sources.broker_windows import WINDOWS
+
+DEFAULT_OUTPUT_DIR = Path("data/output/broker_multiday")
+
+
+def write_multiday_outputs(
+    contexts: dict[str, MultiDayContext],
+    *,
+    output_dir: Path | str = DEFAULT_OUTPUT_DIR,
+    run_id: str = "",
+    shadow_summary: dict[str, Any] | None = None,
+    data_quality_status: str = "VALID",
+) -> dict[str, Path]:
+    out_dir = Path(output_dir)
+    detail_rows: list[dict[str, Any]] = []
+    summary_rows: list[dict[str, Any]] = []
+    rotation_rows: list[dict[str, Any]] = []
+    divergence_rows: list[dict[str, Any]] = []
+    window_rows: list[dict[str, Any]] = []
+
+    for symbol, ctx in sorted(contexts.items()):
+        ctx_dict = ctx.to_context_dict()
+        provenance = {
+            "Symbol": symbol,
+            "Market_Date": ctx.market_date,
+            "Data_Quality_Status": data_quality_status,
+            "Source": "STOCKBIT",
+            "Primary_Window": ctx.primary_window,
+        }
+        # Detail: one row per symbol with the full context bundle.
+        detail_rows.append({**provenance, **ctx_dict})
+
+        # Summary: compact per-symbol view.
+        summary_rows.append({
+            **provenance,
+            "Context": ctx.broker_multiday_context,
+            "Score": round(ctx.broker_multiday_score, 2),
+            "Confidence": round(ctx.broker_multiday_confidence, 1),
+            "Penalty": round(ctx.broker_multiday_penalty, 1),
+            "Blocker": ctx.broker_multiday_blocker,
+            "Alignment": ctx.alignment.alignment,
+        })
+
+        # Rotation.
+        rotation_rows.append({**provenance, **ctx.persistence})
+
+        # Divergence.
+        divergence_rows.append({**provenance, **ctx.divergence})
+
+        # Window comparison: one row per (symbol, window).
+        for window, wf in ctx.windows.items():
+            cls = ctx.classifications.get(window)
+            window_rows.append({
+                **provenance,
+                "Window": window,
+                "Classification": cls.classification if cls else "INSUFFICIENT_DATA",
+                **wf.to_dict(),
+            })
+
+    paths: dict[str, Path] = {}
+    paths["detail"] = out_dir / "BROKER_MULTIDAY_DETAIL.csv"
+    paths["summary"] = out_dir / "BROKER_MULTIDAY_SUMMARY.csv"
+    paths["rotation"] = out_dir / "BROKER_ROTATION.csv"
+    paths["divergence"] = out_dir / "BROKER_DIVERGENCE.csv"
+    paths["window_comparison"] = out_dir / "BROKER_WINDOW_COMPARISON.csv"
+
+    write_dict_rows_csv(detail_rows, paths["detail"])
+    write_dict_rows_csv(summary_rows, paths["summary"])
+    write_dict_rows_csv(rotation_rows, paths["rotation"])
+    write_dict_rows_csv(divergence_rows, paths["divergence"])
+    write_dict_rows_csv(window_rows, paths["window_comparison"])
+
+    manifest = {
+        "generated_at": iso_now(),
+        "pipeline_version": PIPELINE_VERSION,
+        "run_id": run_id,
+        "data_quality_status": data_quality_status,
+        "symbol_count": len(contexts),
+        "windows": list(WINDOWS.keys()),
+        "files": {name: str(path) for name, path in paths.items()},
+        "shadow_summary": shadow_summary or {},
+        "contract": "MULTI_DAY_ENGINE_PRODUCES_CONTEXT_ONLY_NO_BUY_WATCH_AVOID",
+    }
+    manifest_path = out_dir / "BROKER_MULTIDAY_MANIFEST.json"
+    write_json(manifest_path, manifest)
+    paths["manifest"] = manifest_path
+    return paths
+
+
+def build_telegram_summary(ctx: MultiDayContext, *, use_emoji: bool = False) -> str:
+    """Compact per-symbol broker summary for Telegram (never a long table)."""
+    def _label(window: str) -> str:
+        cls = ctx.classifications.get(window)
+        return _humanize(cls.classification) if cls else "-"
+
+    top_buyers = ctx.windows.get(ctx.primary_window)
+    buyers = ", ".join(top_buyers.persistent_top_buyers[:3]) if top_buyers else "-"
+    cost = None
+    if top_buyers and top_buyers.weighted_broker_buy_cost:
+        cost = top_buyers.weighted_broker_buy_cost
+
+    lines = [
+        f"Broker 1D : {_label('1D')}",
+        f"Broker 5D : {_label('5D')}",
+        f"Broker 10D: {_label('10D')}",
+        f"Alignment : {_humanize(ctx.alignment.alignment)}",
+        f"Top buyer : {buyers or '-'}",
+    ]
+    if cost is not None:
+        lines.append(f"Cost {ctx.primary_window}   : Rp{cost:,.0f}".replace(",", "."))
+    return "\n".join(lines)
+
+
+def _humanize(label: str) -> str:
+    return label.replace("_", " ").title()
