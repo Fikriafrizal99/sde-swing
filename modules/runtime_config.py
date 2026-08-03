@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from swing_utils import PACKAGE_VERSION, PIPELINE_VERSION, file_sha256
+from modules.market_calendar.idx_calendar import normalized_holidays
 
 EXPECTED_STATUSES = ["BUY READY", "BUY ON TRIGGER", "WATCH", "AVOID"]
 LEGACY_OVERRIDE_KEYS = {
@@ -71,6 +72,24 @@ def validate_config(payload: dict[str, Any], *, strict: bool = True) -> list[str
         if not 0 <= min_score <= 100:
             raise RuntimeConfigError("candidate.min_score harus berada pada rentang 0..100")
 
+    freshness = payload.get("data_freshness", {})
+    holidays = freshness.get("market_holidays", []) if isinstance(freshness, dict) else []
+    if strict and not holidays:
+        raise RuntimeConfigError("data_freshness.market_holidays wajib tersedia")
+    try:
+        normalized_holidays(holidays)
+    except Exception as exc:
+        raise RuntimeConfigError(f"MARKET_HOLIDAY_INVALID: {exc}") from exc
+
+    broker = payload.get("broker", {})
+    if isinstance(broker, dict) and isinstance(candidate, dict):
+        coverage = float(broker.get("min_coverage", 0.0) or 0.0)
+        required = int(broker.get("required_matched_count", 0) or 0)
+        if strict and coverage < 1.0:
+            raise RuntimeConfigError("BROKER_COVERAGE_MUST_BE_100_PERCENT_FOR_SHADOW")
+        if strict and required < int(candidate.get("top", 0) or 0):
+            raise RuntimeConfigError("BROKER_REQUIRED_MATCHED_COUNT_BELOW_CANDIDATE_TOP")
+
     if not isinstance(decision, dict):
         if strict:
             raise RuntimeConfigError("config.decision wajib tersedia")
@@ -107,6 +126,16 @@ def validate_config(payload: dict[str, Any], *, strict: bool = True) -> list[str
         calibration = decision.get("calibration", {})
         if calibration and bool(calibration.get("auto_entry_enabled", False)):
             raise RuntimeConfigError("AUTO_ENTRY_MUST_REMAIN_DISABLED_DURING_CALIBRATION")
+        portfolio = decision.get("portfolio", {})
+        if not isinstance(portfolio, dict) or float(portfolio.get("reference_capital", 0) or 0) <= 0:
+            raise RuntimeConfigError("DECISION_PORTFOLIO_REFERENCE_CAPITAL_INVALID")
+        if not 0 < float(portfolio.get("max_position_pct", 0) or 0) <= 1:
+            raise RuntimeConfigError("DECISION_MAX_POSITION_PCT_INVALID")
+        if not 0 < float(portfolio.get("max_market_participation_pct", 0) or 0) <= 1:
+            raise RuntimeConfigError("DECISION_MARKET_PARTICIPATION_INVALID")
+        micro = decision.get("microstructure", {})
+        if int(micro.get("minimum_required_metrics", 0) or 0) < 1:
+            raise RuntimeConfigError("MICROSTRUCTURE_MINIMUM_REQUIRED_METRICS_INVALID")
 
     legacy_keys = _find_legacy_override_keys(payload)
     if legacy_keys:

@@ -328,6 +328,9 @@ def assess_liquidity(
     liquidity_score: float | None = None,
     reference_capital: float = 100_000_000.0,
     max_position_pct: float = 0.20,
+    max_market_participation_pct: float = 0.02,
+    minimum_required_metrics: int = 2,
+    missing_data_position_multiplier: float = 0.35,
 ) -> dict[str, Any]:
     """Classify execution liquidity without relying on a single absolute threshold.
 
@@ -354,6 +357,7 @@ def assess_liquidity(
     score = float(liquidity_score if liquidity_score is not None else number(row.get("Liquidity_Score"), 0.0))
     planned_position = max(0.0, reference_capital * max_position_pct)
     participation = planned_position / average_value if average_value > 0 else math.inf
+    participation_limit = max(float(max_market_participation_pct), 0.0001)
     estimated_slippage = 0.0
     if math.isfinite(spread_pct):
         estimated_slippage += max(spread_pct, 0.0) * 0.50
@@ -396,6 +400,10 @@ def assess_liquidity(
         thin_flags.append("DEPTH_THIN_FOR_POSITION")
     elif depth_value <= 0:
         missing.append("DEPTH")
+    if math.isfinite(participation) and participation > participation_limit * 2.0:
+        poor_flags.append("MARKET_PARTICIPATION_TOO_HIGH")
+    elif math.isfinite(participation) and participation > participation_limit:
+        thin_flags.append("MARKET_PARTICIPATION_ELEVATED")
     if estimated_slippage > 1.25:
         poor_flags.append("ESTIMATED_SLIPPAGE_HIGH")
     elif estimated_slippage > 0.50:
@@ -405,16 +413,26 @@ def assess_liquidity(
     elif score and score < 55:
         thin_flags.append("LIQUIDITY_SCORE_LOW")
 
+    available_metrics = 5 - len(set(missing).intersection({"AVERAGE_VALUE", "DAILY_VALUE", "FREQUENCY", "SPREAD", "DEPTH"}))
     if average_value > 0 and average_value < 500_000_000:
         classification = "VERY_POOR"
     elif len(set(poor_flags)) >= 2:
         classification = "VERY_POOR"
+    elif available_metrics < int(minimum_required_metrics):
+        classification = "INSUFFICIENT_MICROSTRUCTURE_DATA"
     elif poor_flags or thin_flags:
         classification = "THIN_BUT_TRADEABLE"
     else:
         classification = "NORMAL"
 
-    multiplier = 1.0 if classification == "NORMAL" else 0.55 if classification == "THIN_BUT_TRADEABLE" else 0.0
+    if classification == "NORMAL":
+        multiplier = 1.0
+    elif classification == "THIN_BUT_TRADEABLE":
+        multiplier = 0.55
+    elif classification == "INSUFFICIENT_MICROSTRUCTURE_DATA":
+        multiplier = max(0.0, min(float(missing_data_position_multiplier), 1.0))
+    else:
+        multiplier = 0.0
     return {
         "classification": classification,
         "average_value": average_value,
@@ -424,6 +442,10 @@ def assess_liquidity(
         "depth_value": depth_value,
         "estimated_slippage_pct": estimated_slippage,
         "position_size_multiplier": multiplier,
+        "available_metric_count": available_metrics,
+        "minimum_required_metrics": int(minimum_required_metrics),
+        "market_participation": participation if math.isfinite(participation) else None,
+        "market_participation_limit": participation_limit,
         "poor_flags": list(dict.fromkeys(poor_flags)),
         "thin_flags": list(dict.fromkeys(thin_flags)),
         "missing_metrics": list(dict.fromkeys(missing)),

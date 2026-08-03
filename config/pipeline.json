@@ -46,8 +46,33 @@
     "yahoo_max_retries": 3,
     "market_close": "16:15",
     "after_midnight_cutoff": "06:00",
-    "market_holidays": [],
-    "technical_refresh_mode": "FULL"
+    "market_holidays": [
+      "2026-01-01",
+      "2026-01-16",
+      "2026-02-16",
+      "2026-02-17",
+      "2026-03-18",
+      "2026-03-19",
+      "2026-03-20",
+      "2026-03-23",
+      "2026-03-24",
+      "2026-04-03",
+      "2026-05-01",
+      "2026-05-14",
+      "2026-05-15",
+      "2026-05-27",
+      "2026-05-28",
+      "2026-06-01",
+      "2026-06-16",
+      "2026-08-17",
+      "2026-08-25",
+      "2026-12-24",
+      "2026-12-25",
+      "2026-12-31"
+    ],
+    "technical_refresh_mode": "FULL",
+    "special_trading_days": [],
+    "calendar_source": "KSEI_PENG-0002/DIR/KSEI/0126"
   },
   "download": {
     "period": "2y",
@@ -69,12 +94,13 @@
     "downloads_dir": "%USERPROFILE%/Downloads",
     "timeout_seconds": 1200,
     "poll_seconds": 2,
-    "min_coverage": 0.8,
+    "min_coverage": 1.0,
     "allow_old_date": false,
     "broker_date_policy": "ask",
     "scheduler_broker_date_policy": "exact",
     "manual_broker_file": "",
-    "allow_partial_broker": false
+    "allow_partial_broker": false,
+    "required_matched_count": 40
   },
   "analytics": {
     "enabled": true,
@@ -99,8 +125,8 @@
   },
   "package": {
     "name": "SDE Swing",
-    "version": "1.6.2-stage2",
-    "pipeline_version": "SDE_SWING_V1_6_2_STAGE2_MODERATE_CALIBRATION"
+    "version": "1.6.2-stage2-gapfix",
+    "pipeline_version": "SDE_SWING_V1_6_2_STAGE2_GAP_CLOSURE"
   },
   "decision": {
     "policy": "MODERATE_SINGLE_DECISION_V1_6_2",
@@ -247,6 +273,22 @@
       "preferred_shadow_sessions": 40,
       "auto_entry_enabled": false,
       "selection_metric": "EXPECTANCY_R_WITH_RISK_GUARDRAILS"
+    },
+    "portfolio": {
+      "reference_capital": 10000000,
+      "risk_per_trade_pct": 1.0,
+      "max_position_pct": 0.2,
+      "max_market_participation_pct": 0.02
+    },
+    "microstructure": {
+      "minimum_required_metrics": 2,
+      "buy_ready_required_metrics": [
+        "SPREAD",
+        "DEPTH",
+        "FREQUENCY"
+      ],
+      "missing_data_position_multiplier": 0.35,
+      "missing_data_class": "INSUFFICIENT_MICROSTRUCTURE_DATA"
     }
   },
   "runtime": {

@@ -88,7 +88,17 @@ def smart_decision(
 
     # Liquidity classification is shared with the Entry Plan Validator.  The
     # class affects confidence/size once, while VERY_POOR remains a hard blocker.
-    liq = assess_liquidity(data, liquidity_score=liquidity_score)
+    portfolio_cfg = decision_config.get("portfolio", {}) if isinstance(decision_config.get("portfolio", {}), Mapping) else {}
+    micro_cfg = decision_config.get("microstructure", {}) if isinstance(decision_config.get("microstructure", {}), Mapping) else {}
+    liq = assess_liquidity(
+        data,
+        liquidity_score=liquidity_score,
+        reference_capital=number(portfolio_cfg.get("reference_capital"), 10_000_000.0),
+        max_position_pct=number(portfolio_cfg.get("max_position_pct"), 0.20),
+        max_market_participation_pct=number(portfolio_cfg.get("max_market_participation_pct"), 0.02),
+        minimum_required_metrics=int(number(micro_cfg.get("minimum_required_metrics"), 2)),
+        missing_data_position_multiplier=number(micro_cfg.get("missing_data_position_multiplier"), 0.35),
+    )
     supplied_class = str(liquidity_class or "").upper().replace(" ", "_")
     if supplied_class in {"ILLIQUID", "VERY_POOR"} and liq["classification"] == "NORMAL":
         liq["classification"] = "THIN_BUT_TRADEABLE"
@@ -158,6 +168,9 @@ def smart_decision(
         composite -= 4.0
     if liq["classification"] == "VERY_POOR":
         hard.append("LIQUIDITY_VERY_POOR")
+    elif liq["classification"] == "INSUFFICIENT_MICROSTRUCTURE_DATA":
+        soft.append("INSUFFICIENT_MICROSTRUCTURE_DATA")
+        conditions.extend(["MICROSTRUCTURE_CONFIRMATION_REQUIRED", "CHECK_SPREAD_SLIPPAGE", "REDUCE_POSITION_SIZE"])
     elif liq["classification"] == "THIN_BUT_TRADEABLE":
         soft.append("THIN_BUT_TRADEABLE")
         conditions.extend(["CHECK_SPREAD_SLIPPAGE", "REDUCE_POSITION_SIZE"])
@@ -189,7 +202,7 @@ def smart_decision(
         trigger_threshold -= float(profile.get("strong_setup_trigger_relief", 0.0))
     if regime == "BEAR":
         trigger_threshold = max(trigger_threshold, float(profile.get("minimum_bear_confidence", 70.0)))
-    if extension_class == "SOFT_EXTENDED" or liq["classification"] == "THIN_BUT_TRADEABLE" or regime in {"SIDEWAYS", "BEAR"}:
+    if extension_class == "SOFT_EXTENDED" or liq["classification"] in {"THIN_BUT_TRADEABLE", "INSUFFICIENT_MICROSTRUCTURE_DATA"} or regime in {"SIDEWAYS", "BEAR"}:
         conditions.append("ENTRY_TRIGGER_REQUIRED")
 
     if hard:
@@ -216,6 +229,8 @@ def smart_decision(
     position_multiplier = float(liq["position_size_multiplier"])
     if liq["classification"] == "THIN_BUT_TRADEABLE":
         position_multiplier = min(position_multiplier, float(profile["thin_position_multiplier"]))
+    elif liq["classification"] == "INSUFFICIENT_MICROSTRUCTURE_DATA":
+        position_multiplier = min(position_multiplier, number(micro_cfg.get("missing_data_position_multiplier"), 0.35))
     if regime == "BEAR":
         position_multiplier = min(position_multiplier, float(profile["bear_position_multiplier"]))
 
@@ -253,6 +268,9 @@ def smart_decision(
         "Foreign_Context": foreign["state"],
         "Liquidity_Execution_Class": liq["classification"],
         "Liquidity_Estimated_Slippage_Pct": round(float(liq["estimated_slippage_pct"]), 4),
+        "Liquidity_Available_Metric_Count": int(liq.get("available_metric_count", 0)),
+        "Liquidity_Missing_Metrics": json.dumps(liq.get("missing_metrics", []), ensure_ascii=False),
+        "Market_Participation": liq.get("market_participation"),
         "Extension_Class": extension_class,
         "Volume_Confirmation_Pass": volume_confirmation_pass,
         "Position_Size_Multiplier": round(max(0.0, min(position_multiplier, 1.0)), 4),

@@ -348,7 +348,17 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
     extension_class = str(row.get("Extension_Class_PrePlan", "") or "").upper()
     if not extension_class:
         extension_class = classify_extension(atr_extension, setup_cfg)
-    liquidity_facts = assess_liquidity(row, liquidity_score=to_num(row.get("Liquidity_Score"), 0.0))
+    portfolio_cfg = (decision_config or {}).get("portfolio", {})
+    micro_cfg = (decision_config or {}).get("microstructure", {})
+    liquidity_facts = assess_liquidity(
+        row,
+        liquidity_score=to_num(row.get("Liquidity_Score"), 0.0),
+        reference_capital=to_num(portfolio_cfg.get("reference_capital"), 10_000_000.0),
+        max_position_pct=to_num(portfolio_cfg.get("max_position_pct"), 0.20),
+        max_market_participation_pct=to_num(portfolio_cfg.get("max_market_participation_pct"), 0.02),
+        minimum_required_metrics=int(to_num(micro_cfg.get("minimum_required_metrics"), 2)),
+        missing_data_position_multiplier=to_num(micro_cfg.get("missing_data_position_multiplier"), 0.35),
+    )
     explicit_liquidity = str(row.get("Liquidity_Execution_Class", "") or "").upper()
     legacy_liquidity = str(row.get("Liquidity_Class", "") or "").upper().replace(" ", "_")
     if explicit_liquidity:
@@ -408,7 +418,10 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
                 conditional_reasons.append("BEAR_MARKET_TRIGGER_REQUIRED")
         elif market == "SIDEWAYS" and not strict_trigger_confirmed:
             conditional_reasons.append("SIDEWAYS_TRIGGER_CONFIRMATION")
-        if liquidity_class == "THIN_BUT_TRADEABLE":
+        if liquidity_class == "INSUFFICIENT_MICROSTRUCTURE_DATA":
+            position_multiplier = min(position_multiplier, to_num(micro_cfg.get("missing_data_position_multiplier"), 0.35))
+            conditional_reasons.extend(["MICROSTRUCTURE_CONFIRMATION_REQUIRED", "CHECK_SPREAD_SLIPPAGE"])
+        elif liquidity_class == "THIN_BUT_TRADEABLE":
             position_multiplier = min(position_multiplier, float(profile_cfg["thin_position_multiplier"]))
             execution_evidence_ok = (
                 float(liquidity_facts["estimated_slippage_pct"]) <= 0.75
@@ -711,7 +724,7 @@ def main() -> int:
             missing.append(row["Symbol"])
             continue
         px = load_price(path)
-        plans.append(build_entry_plan(row, px, args.min_rr, args.preferred_rr, args.max_risk_pct, args.max_hold_days))
+        plans.append(build_entry_plan(row, px, args.min_rr, args.preferred_rr, args.max_risk_pct, args.max_hold_days, decision_config=decision_config, profile_name=profile_name))
 
     plans_df = pd.DataFrame(plans)
     if not plans_df.empty:
@@ -726,12 +739,14 @@ def main() -> int:
     if args.open_approved and not plans_df.empty:
         existing_active = set(active.loc[active.get("Status", pd.Series(dtype=str)).astype(str).eq("ACTIVE"), "Symbol"]) if not active.empty else set()
         new_rows = []
+        blocked_open_rows = []
         active_count = len(existing_active)
         bear_limit = int(resolve_profile(decision_config, profile_name).get("bear_max_active_positions", 2))
         for _, plan in plans_df[plans_df["Decision_Status_Final"] == "BUY READY"].iterrows():
             if plan["Symbol"] in existing_active:
                 continue
             if str(plan.get("Market_Regime", "")).upper() in {"BEAR", "BEARISH"} and active_count >= bear_limit:
+                blocked_open_rows.append({**plan.to_dict(), "Open_Blocker": "BEAR_ACTIVE_POSITION_LIMIT", "Active_Count": active_count, "Active_Limit": bear_limit})
                 continue
             new_rows.append({
                 "Symbol": plan["Symbol"],
@@ -753,6 +768,8 @@ def main() -> int:
                 "Market_Regime_At_Entry": plan.get("Market_Regime", "UNKNOWN"),
             })
             active_count += 1
+        if blocked_open_rows:
+            pd.DataFrame(blocked_open_rows).to_csv(output / "ACTIVE_TRADE_BLOCKED.csv", index=False, encoding="utf-8-sig")
         if new_rows:
             active = pd.concat([active, pd.DataFrame(new_rows)], ignore_index=True)
 

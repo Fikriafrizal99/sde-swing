@@ -162,11 +162,18 @@ def comparison_metrics(shadow: pd.DataFrame, outcomes: pd.DataFrame | None = Non
             "BUY_ON_TRIGGER": trigger,
             "WATCH": int(statuses.get("WATCH", 0)),
             "AVOID": int(statuses.get("AVOID", 0)),
-            "Trigger_Rate": ready / max(ready + trigger, 1),
+            "Ready_Conversion_Ratio": ready / max(ready + trigger, 1),
             "Average_Score": float(group["Final_Score"].mean()),
             "Average_Estimated_Slippage_Pct": float(group.loc[actionable, "Estimated_Slippage_Pct"].mean()) if actionable.any() else np.nan,
             "Average_Position_Multiplier": float(group.loc[actionable, "Position_Size_Multiplier"].mean()) if actionable.any() else np.nan,
         }
+        trigger_observed_col = next((c for c in group.columns if str(c).lower() in {"trigger_observed", "trigger_hit", "triggered"}), None)
+        if trigger_observed_col:
+            eligible = group["Decision_Status_PrePlan"].eq("BUY ON TRIGGER")
+            observed = group.loc[eligible, trigger_observed_col].astype(str).str.lower().isin({"1", "true", "yes", "hit"})
+            record["Actual_Trigger_Rate"] = float(observed.mean()) if len(observed) else np.nan
+        else:
+            record["Actual_Trigger_Rate"] = np.nan
         if columns.get("r"):
             r = pd.to_numeric(group.loc[actionable, columns["r"]], errors="coerce")
             record["Win_Rate"] = float((r > 0).mean()) if r.notna().any() else np.nan
