@@ -6,6 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pandas as pd
+
+from modules.data_sources.yahoo_zapi_validator import validate_yahoo_against_zapi
 from modules.global_market.global_market_snapshot import build_global_market_snapshot
 from modules.job_runner.delivery import deliver
 from modules.job_runner.enhanced_runtime_bridge import (
@@ -19,6 +22,7 @@ from modules.job_runner.reports import write_payloads
 from modules.job_runner.runtime import (
     EXIT_DELIVERY_FAILED,
     EXIT_SUCCESS,
+    append_job_log,
     load_context,
     read_json,
     resolve,
@@ -35,10 +39,12 @@ ENHANCED_JOBS = {
     "full_manual",
 }
 
+RECONCILIATION_JOBS = {"post_market", "final_watchlist", "full_manual"}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="SDE Swing V1.7 integrated runner: deterministic engine + Gemini interpretation + enhanced Telegram UI"
+        description="SDE Swing V1.7 integrated runner: deterministic engine + source validation + Gemini interpretation + Telegram UI"
     )
     parser.add_argument("--job", required=True)
     parser.add_argument("--config", default="config/pipeline.json")
@@ -105,6 +111,72 @@ def _load_post_manifest(ctx) -> dict:
     return snapshot
 
 
+def _watchlist_symbols(ctx) -> list[str]:
+    paths = ctx.config.get("paths", {})
+    candidate_paths = [
+        resolve(paths.get("normalized_watchlist", "modules/historical_downloader/Stockbit_Watchlist_2026-07-19_normalized.csv")),
+        resolve(paths.get("broker_navigator_symbols", "data/output/candidates/BROKER_NAVIGATOR_SYMBOLS.csv")),
+        resolve("data/output/candidates/broker_symbols.csv"),
+    ]
+    aliases = {"symbol", "emiten", "ticker", "code", "stockcode"}
+    for path in candidate_paths:
+        if not path.exists() or path.stat().st_size == 0:
+            continue
+        try:
+            frame = pd.read_csv(path, low_memory=False)
+        except Exception:
+            continue
+        column = next((col for col in frame.columns if str(col).strip().lower().replace("_", "") in aliases), None)
+        if column is None and len(frame.columns):
+            column = frame.columns[0]
+        if column is None:
+            continue
+        symbols = [str(item).strip().upper().replace(".JK", "") for item in frame[column].dropna().tolist()]
+        symbols = [item for item in dict.fromkeys(symbols) if item]
+        if symbols:
+            return symbols
+    return []
+
+
+def _run_source_reconciliation(ctx, job: str) -> dict:
+    if job not in RECONCILIATION_JOBS:
+        return {}
+    config = ctx.scheduler_config.get("source_validation", {})
+    if not bool(config.get("enabled", True)):
+        return {"status": "DISABLED"}
+    symbols = _watchlist_symbols(ctx)
+    if not symbols:
+        result = {"status": "SKIPPED", "reason": "SYMBOL_UNIVERSE_NOT_FOUND"}
+        append_job_log(ctx, "YAHOO_ZAPI_RECONCILIATION_SKIPPED", str(result))
+        return result
+    paths = ctx.config.get("paths", {})
+    historical_dir = resolve(paths.get("historical_dir", "data/output/historical/by_symbol"))
+    output_dir = resolve(config.get("output_dir", "data/output/source_validation"))
+    try:
+        result = validate_yahoo_against_zapi(
+            historical_dir=historical_dir,
+            symbols=symbols,
+            market_date=ctx.trade_date.isoformat(),
+            output_dir=output_dir,
+            config_path=ctx.config.get("data_sources_config", "config/data_sources.json"),
+            price_tolerance_pct=float(config.get("price_tolerance_pct", 0.005)),
+            volume_tolerance_pct=float(config.get("volume_tolerance_pct", 0.20)),
+            max_symbols=int(config.get("max_symbols", 0) or 0),
+        )
+        append_job_log(ctx, "YAHOO_ZAPI_RECONCILIATION", str({
+            "status": result.get("status"),
+            "validated": result.get("validated"),
+            "matched": result.get("matched"),
+            "conflicted": result.get("conflicted"),
+            "coverage_ratio": result.get("coverage_ratio"),
+        }))
+        return result
+    except Exception as exc:
+        result = {"status": "FAILED_NON_BLOCKING", "reason": f"{type(exc).__name__}: {exc}"}
+        append_job_log(ctx, "YAHOO_ZAPI_RECONCILIATION_FAILED", str(result))
+        return result
+
+
 def _enhanced_payloads(ctx, job: str):
     if job == "market_outlook":
         global_snapshot, market_status = _load_market_artifacts(ctx)
@@ -149,24 +221,30 @@ def main() -> int:
         debug=args.debug,
         interactive_broker=args.interactive_broker,
     )
+    reconciliation = _run_source_reconciliation(ctx, args.job)
     payloads = _enhanced_payloads(ctx, args.job)
     preview_paths = write_payloads(ctx, payloads)
+    common_status = {
+        "preview_paths": [str(path) for path in preview_paths],
+        "enhanced_report_count": len(payloads),
+        "ai_interpretation": "GEMINI_OR_DETERMINISTIC_FALLBACK",
+        "source_reconciliation": reconciliation,
+        "execution_source": "YAHOO_HISTORICAL",
+        "validation_source": reconciliation.get("validation_source", "NOT_CONFIGURED") if reconciliation else "NOT_APPLICABLE",
+    }
     if args.no_telegram:
-        write_status(ctx, "SUCCESS", "ENHANCED_REPORT_PREVIEW", EXIT_SUCCESS, {
-            "preview_paths": [str(path) for path in preview_paths],
-            "enhanced_report_count": len(payloads),
-            "ai_interpretation": "ENABLED_WITH_DETERMINISTIC_FALLBACK",
-        })
+        write_status(ctx, "SUCCESS", "ENHANCED_REPORT_PREVIEW", EXIT_SUCCESS, common_status)
         return EXIT_SUCCESS
 
     delivery = deliver(ctx, payloads)
     failed = [item for item in delivery if item.get("status") == "FAILED"]
-    write_status(ctx, "DELIVERY_FAILED" if failed else "SUCCESS", "ENHANCED_REPORT_DELIVERY", EXIT_DELIVERY_FAILED if failed else EXIT_SUCCESS, {
-        "preview_paths": [str(path) for path in preview_paths],
-        "enhanced_report_count": len(payloads),
-        "delivery": delivery,
-        "ai_interpretation": "GEMINI_OR_DETERMINISTIC_FALLBACK",
-    })
+    write_status(
+        ctx,
+        "DELIVERY_FAILED" if failed else "SUCCESS",
+        "ENHANCED_REPORT_DELIVERY",
+        EXIT_DELIVERY_FAILED if failed else EXIT_SUCCESS,
+        {**common_status, "delivery": delivery},
+    )
     return EXIT_DELIVERY_FAILED if failed else EXIT_SUCCESS
 
 
