@@ -1,3 +1,12 @@
+# SDE Swing V1.6.2 Stage 1 Stabilized
+
+Branch release: `SDE_SWING_V1_6_2_STAGE1_STABILIZED`  
+Baseline: V1.6.1 remains preserved on `main`.
+
+Stage 1 stabilizes runtime configuration, Stockbit number parsing, decision ownership, telemetry, active-trade guards, and Telegram compatibility. Validation completed with **116/116 tests passing**. See `STAGE1_STABILIZATION_REPORT_20260803.md` for evidence and limitations.
+
+---
+
 # SDE Swing V1.6.1 Telegram Broker Detail & Control Panel
 
 Versi paket: `1.6.1`  

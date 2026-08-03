@@ -10,6 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from swing_utils import make_run_id
+from modules.runtime_config import load_runtime_config
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -98,6 +99,7 @@ class RunnerContext:
     config: dict[str, Any] = field(default_factory=dict)
     scheduler_config: dict[str, Any] = field(default_factory=dict)
     calendar_config: dict[str, Any] = field(default_factory=dict)
+    config_provenance: dict[str, Any] = field(default_factory=dict)
 
     @property
     def previews_root(self) -> Path:
@@ -152,6 +154,8 @@ def load_context(
     cfg_path = resolve(config_path)
     sched_path = resolve(scheduler_config_path)
     scheduler_cfg = read_json(sched_path)
+    strict_config = cfg_path.name.lower() == "pipeline.json"
+    pipeline_cfg, config_provenance = load_runtime_config(cfg_path, strict=strict_config)
     calendar_path = resolve(scheduler_cfg.get("trading_calendar", "config/trading_calendar.json"))
     ctx = RunnerContext(
         job=job,
@@ -165,9 +169,10 @@ def load_context(
         no_telegram=no_telegram,
         force=force,
         debug=debug,
-        config=read_json(cfg_path),
+        config=pipeline_cfg,
         scheduler_config=scheduler_cfg,
         calendar_config=read_json(calendar_path),
+        config_provenance=config_provenance,
     )
     return ctx
 
@@ -247,6 +252,12 @@ def write_status(
         "process_id": os.getpid(),
         "lock_status": detail_payload.get("lock_status", ""),
         "global_resource_lock_status": detail_payload.get("global_resource_lock_status", ""),
+        "config_source": ctx.config_provenance.get("config_source", str(ctx.config_path)),
+        "config_hash": ctx.config_provenance.get("config_hash", ""),
+        "config_version": ctx.config_provenance.get("config_version", ""),
+        "config_loaded_at": ctx.config_provenance.get("loaded_at", ""),
+        "config_validation_status": ctx.config_provenance.get("validation_status", ""),
+        "config_override_mode": ctx.config_provenance.get("override_mode", "NONE"),
         "details": detail_payload,
     }
     dated = ctx.status_root / ctx.trade_date.isoformat()

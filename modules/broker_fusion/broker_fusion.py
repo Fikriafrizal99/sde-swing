@@ -25,6 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from swing_utils import file_sha256, make_run_id, write_json
+from modules.broker_fusion.foreign_flow import attach_foreign_flow
 
 REQUIRED_BROKER_COLUMNS = {
     "TOTAL_BUY",
@@ -78,8 +79,9 @@ def safe_ratio(a: pd.Series, b: pd.Series) -> pd.Series:
 
 def newest_candidate_file(folder: Path) -> Path:
     priorities = (
-        "technical_candidates_top30.csv",
+        "technical_candidates_top40.csv",
         "technical_candidates_top50.csv",
+        "technical_candidates_top30.csv",
         "technical_candidates_top20.csv",
         "technical_candidates_top10.csv",
         "broker_symbols.csv",
@@ -346,6 +348,7 @@ def fuse(
     expected_broker_date: str = "",
     allow_partial_broker: bool = False,
     allow_date_mismatch: bool = False,
+    broker_raw_path: Path | None = None,
 ) -> pd.DataFrame:
     technical = pd.read_csv(technical_path, low_memory=False)
     if technical.empty:
@@ -400,6 +403,7 @@ def fuse(
         effective_quality = "BROKER_DATE_OVERRIDE"
 
     broker = broker_score_frame(broker)
+    broker = attach_foreign_flow(broker, broker_raw_path)
 
     duplicate_cols = [c for c in broker.columns if c in technical.columns and c != "Symbol"]
     broker = broker.rename(columns={c: f"{c}_BROKER" for c in duplicate_cols})
@@ -480,6 +484,9 @@ def fuse(
         "technical_source_hash": file_sha256(technical_path),
         "broker_source": str(broker_path.resolve()),
         "broker_source_hash": file_sha256(broker_path),
+        "broker_raw_source": str(broker_raw_path.resolve()) if broker_raw_path and broker_raw_path.exists() else "",
+        "broker_raw_source_hash": file_sha256(broker_raw_path),
+        "foreign_flow_available": bool(broker_raw_path and broker_raw_path.exists()),
         "output": str(output_path.resolve()),
         "output_hash": file_sha256(output_path),
         "technical_rows": int(len(technical)),
@@ -515,6 +522,7 @@ def main() -> int:
     parser.add_argument("--expected-broker-date", default="")
     parser.add_argument("--allow-partial-broker", action="store_true")
     parser.add_argument("--allow-date-mismatch", action="store_true")
+    parser.add_argument("--broker-raw", type=Path, default=None, help="Stockbit BROKER_RAW CSV for foreign/domestic flow")
     args = parser.parse_args()
     args.run_id = args.run_id or make_run_id()
 
@@ -531,6 +539,7 @@ def main() -> int:
         expected_broker_date=args.expected_broker_date,
         allow_partial_broker=args.allow_partial_broker,
         allow_date_mismatch=args.allow_date_mismatch,
+        broker_raw_path=args.broker_raw,
     )
     print(f"TECHNICAL : {technical_path}")
     print(f"BROKER    : {broker_path}")

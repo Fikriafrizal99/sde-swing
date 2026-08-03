@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from swing_utils import dataframe_hash, file_sha256, make_run_id, write_json
+from modules.runtime_config import load_runtime_config
 
 
 EXCLUDED = {"IHSG", "BRENT", "OIL", "XAU", "JECX", "JELI"}
@@ -282,12 +283,23 @@ def score_candidates(df: pd.DataFrame, min_avg_value: float) -> pd.DataFrame:
         & hist.gt(0)
         & dist_ema20.between(0, 6, inclusive="both")
     )
+    early_accumulation_valid = (
+        ~breakout_valid
+        & ~pullback_valid
+        & ~continuation_valid
+        & close.ge(sma50)
+        & dist_ema20.abs().le(4.5)
+        & rsi.between(42, 64, inclusive="both")
+        & hist.ge(-0.15 * atr.abs())
+        & ret20.ge(-2)
+        & volume_ratio.between(0.65, 2.2, inclusive="both")
+    )
     bullish_close = (close > open_price) | close_location.ge(0.65)
 
     setup_type = pd.Series(
         np.select(
-            [breakout_valid, pullback_valid, continuation_valid],
-            ["BREAKOUT", "PULLBACK", "TREND_CONTINUATION"],
+            [breakout_valid, pullback_valid, continuation_valid, early_accumulation_valid],
+            ["BREAKOUT", "PULLBACK", "TREND_CONTINUATION", "EARLY_ACCUMULATION"],
             default="DEVELOPING",
         ),
         index=out.index,
@@ -359,10 +371,10 @@ def score_candidates(df: pd.DataFrame, min_avg_value: float) -> pd.DataFrame:
         - readiness_penalty
     ).clip(0, 100).round(2)
 
-    hard_blocker = close.le(0) | rsi.gt(80) | atr_pct.gt(8)
+    hard_blocker = close.le(0) | rsi.gt(82) | atr_pct.gt(10)
     hard_reason = pd.Series(
         np.select(
-            [close.le(0), rsi.gt(80), atr_pct.gt(8)],
+            [close.le(0), rsi.gt(82), atr_pct.gt(10)],
             ["INVALID_PRICE", "RSI_ABOVE_HARD_LIMIT", "ATR_ABOVE_HARD_LIMIT"],
             default="",
         ),
@@ -402,13 +414,30 @@ def score_candidates(df: pd.DataFrame, min_avg_value: float) -> pd.DataFrame:
         ~out["Symbol"].isin(EXCLUDED)
         & out["Symbol"].str.fullmatch(r"[A-Z0-9]{2,12}", na=False)
         & close.gt(0)
-        & rsi.between(35, 80, inclusive="both")
-        & atr_pct.le(8)
+        & rsi.between(30, 82, inclusive="both")
+        & atr_pct.le(10)
     )
     if avg_value.notna().any():
         hard_pass &= avg_value.ge(min_avg_value)
 
     out["Candidate_Status"] = np.where(hard_pass, "PASS", "FILTERED")
+    rejection_lists: list[str] = []
+    for idx in out.index:
+        rejected: list[str] = []
+        if out.loc[idx, "Symbol"] in EXCLUDED:
+            rejected.append("EXCLUDED_SYMBOL")
+        if not bool(pd.Series([out.loc[idx, "Symbol"]]).str.fullmatch(r"[A-Z0-9]{2,12}", na=False).iloc[0]):
+            rejected.append("INVALID_SYMBOL")
+        if close.loc[idx] <= 0 or pd.isna(close.loc[idx]):
+            rejected.append("INVALID_PRICE")
+        if not (30 <= rsi.loc[idx] <= 82):
+            rejected.append("RSI_OUTSIDE_CANDIDATE_RANGE")
+        if atr_pct.loc[idx] > 10:
+            rejected.append("ATR_ABOVE_CANDIDATE_LIMIT")
+        if avg_value.notna().any() and avg_value.loc[idx] < min_avg_value:
+            rejected.append("LIQUIDITY_BELOW_MINIMUM")
+        rejection_lists.append(json.dumps(rejected, ensure_ascii=False))
+    out["Candidate_Rejected_By"] = rejection_lists
     out["Setup_Label"] = np.select(
         [technical_quality >= 82, technical_quality >= 72, technical_quality >= 60],
         ["PRIORITY", "STRONG", "WATCH"],
@@ -437,7 +466,7 @@ def score_candidates(df: pd.DataFrame, min_avg_value: float) -> pd.DataFrame:
     preferred = [
         "Symbol", "Technical_Quality_Score", "Entry_Readiness_PreScore", "Entry_Readiness_Class",
         "Setup_Type", "Entry_Hard_Blocker", "Entry_Hard_Blocker_Reason", "Entry_Soft_Warning",
-        "Technical_Score", "Setup_Label", "Candidate_Status", "Candidate_Reason",
+        "Technical_Score", "Setup_Label", "Candidate_Status", "Candidate_Rejected_By", "Candidate_Reason",
         "Score_Trend", "Score_Momentum", "Score_Volume", "Score_Price_Position",
         "Score_Risk", "Score_Liquidity", "Distance_EMA20_Pct", "ATR_Extension",
     ]
@@ -448,6 +477,19 @@ def score_candidates(df: pd.DataFrame, min_avg_value: float) -> pd.DataFrame:
         ["_candidate_order", "Technical_Quality_Score", "Entry_Readiness_PreScore"],
         ascending=[True, False, False],
     )
+    result["Relative_Rank_Pct"] = (
+        result["Technical_Quality_Score"].rank(method="min", ascending=False, pct=True) * 100
+    ).round(2)
+    result["Candidate_Decision_Trace"] = result.apply(
+        lambda row: json.dumps([
+            f"STATUS={row['Candidate_Status']}",
+            f"SETUP={row['Setup_Type']}",
+            f"TECH={float(row['Technical_Quality_Score']):.1f}",
+            f"READINESS={float(row['Entry_Readiness_PreScore']):.1f}",
+            f"RANK_PCT={float(row['Relative_Rank_Pct']):.1f}",
+        ], ensure_ascii=False),
+        axis=1,
+    )
     return result.drop(columns="_candidate_order")
 
 
@@ -456,21 +498,31 @@ def main() -> int:
         description="Pilih kandidat saham Indonesia dari latest_technical_features.csv"
     )
     parser.add_argument("input", help="Path latest_technical_features.csv")
-    parser.add_argument("--top", type=int, default=30, help="Jumlah kandidat untuk Broker Summary")
+    parser.add_argument("--top", type=int, default=None, help="Jumlah kandidat untuk Broker Summary")
     parser.add_argument(
-        "--min-score", type=float, default=60,
+        "--min-score", type=float, default=None,
         help="Technical score minimum untuk kandidat"
     )
     parser.add_argument(
         "--min-avg-value", type=float, default=1_000_000_000,
         help="Minimum rata-rata nilai transaksi; diterapkan bila kolom tersedia"
     )
+    parser.add_argument("--config", default="config/pipeline.json")
     parser.add_argument("--output-dir", default="candidate_output")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--manifest-dir", default=None)
     parser.add_argument("--data-quality-status", default="VALID")
     args = parser.parse_args()
     args.run_id = args.run_id or make_run_id()
+    config_path = Path(args.config)
+    if not config_path.is_absolute():
+        config_path = PROJECT_ROOT / config_path
+    cfg, config_provenance = load_runtime_config(config_path, strict=config_path.name.lower() == "pipeline.json")
+    candidate_cfg = cfg.get("candidate", {})
+    args.top = int(args.top if args.top is not None else candidate_cfg.get("top", 40))
+    args.min_score = float(args.min_score if args.min_score is not None else candidate_cfg.get("min_score", 58))
+    max_relative_rank_pct = float(candidate_cfg.get("max_relative_rank_pct", 15.0))
+    setup_min_scores = candidate_cfg.get("setup_min_scores", {})
 
     input_path = Path(args.input)
     if not input_path.exists():
@@ -503,13 +555,29 @@ def main() -> int:
         "Technical_Data_Date": technical_date_text,
         "Candidate_Generated_At": generated_at,
         "Data_Quality_Status": args.data_quality_status,
+        "Config_Source": config_provenance.get("config_source", ""),
+        "Config_Hash": config_provenance.get("config_hash", ""),
+        "Config_Version": config_provenance.get("config_version", ""),
     }
     for col, value in lineage_cols.items():
         ranking[col] = value
 
+    setup_defaults = {
+        "BREAKOUT": 60,
+        "PULLBACK": 58,
+        "TREND_CONTINUATION": 60,
+        "EARLY_ACCUMULATION": 56,
+        "DEVELOPING": 62,
+    }
+    effective_setup_min = {
+        key: max(args.min_score, float(setup_min_scores.get(key, default)))
+        for key, default in setup_defaults.items()
+    }
+    setup_minimum = ranking["Setup_Type"].map(effective_setup_min).fillna(effective_setup_min["DEVELOPING"])
     eligible = ranking[
         (ranking["Candidate_Status"] == "PASS")
-        & (ranking["Technical_Quality_Score"] >= args.min_score)
+        & (ranking["Technical_Quality_Score"] >= setup_minimum)
+        & (ranking["Relative_Rank_Pct"] <= max_relative_rank_pct)
     ].head(args.top).copy()
 
     if eligible.empty:
@@ -562,6 +630,12 @@ def main() -> int:
         "Broker_Navigator_Path": "",
         "Broker_Navigator_Hash": "",
         "Data_Quality_Status": args.data_quality_status,
+        "Config_Source": config_provenance.get("config_source", ""),
+        "Config_Hash": config_provenance.get("config_hash", ""),
+        "Config_Version": config_provenance.get("config_version", ""),
+        "Config_Override_Mode": config_provenance.get("override_mode", "NONE"),
+        "Effective_Max_Relative_Rank_Pct": max_relative_rank_pct,
+        "Effective_Setup_Min_Scores": effective_setup_min,
         "Status": "OK",
         "Warning": "",
         "Reason": reason,

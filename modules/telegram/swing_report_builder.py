@@ -3,10 +3,15 @@ from __future__ import annotations
 
 import math
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import pandas as pd
 
@@ -42,8 +47,8 @@ except ModuleNotFoundError:  # direct script execution via modules/telegram/tele
     )
 
 
-DECISION_ORDER = ["STRONG BUY", "BUY", "BUY CANDIDATE", "WATCH HIGH", "WATCH", "SPECULATIVE", "AVOID"]
-WATCHLIST_DECISIONS = {"STRONG BUY", "BUY", "BUY CANDIDATE", "WATCH HIGH", "WATCH"}
+DECISION_ORDER = ["BUY READY", "BUY ON TRIGGER", "WATCH", "AVOID"]
+WATCHLIST_DECISIONS = {"BUY READY", "BUY ON TRIGGER", "WATCH"}
 EMOJI = {
     "success": "✅",
     "warning": "⚠️",
@@ -185,15 +190,21 @@ def fmt_bool(v: Any) -> str:
 def decision_counts(decisions: pd.DataFrame) -> dict[str, int]:
     if decisions.empty:
         return {d: 0 for d in DECISION_ORDER}
-    col = find_col(decisions, "Decision_V3", "Decision")
+    col = find_col(decisions, "Decision_Status", "Decision_Status_Final", "Decision_V3", "Decision")
     if not col:
         return {d: 0 for d in DECISION_ORDER}
-    counts = decisions[col].astype(str).str.upper().str.strip().value_counts().to_dict()
+    values = decisions[col].astype(str).str.upper().str.strip().replace({
+        "STRONG BUY": "BUY READY", "BUY": "BUY READY", "BUY CANDIDATE": "BUY ON TRIGGER",
+        "WATCH HIGH": "WATCH", "SPECULATIVE": "WATCH",
+    })
+    counts = values.value_counts().to_dict()
     return {d: int(counts.get(d, 0)) for d in DECISION_ORDER}
 
 
 def decision_icon(decision: str, use_emoji: bool) -> str:
     return {
+        "BUY READY": e("strong_buy", use_emoji),
+        "BUY ON TRIGGER": e("buy", use_emoji),
         "STRONG BUY": e("strong_buy", use_emoji),
         "BUY": e("buy", use_emoji),
         "WATCH": e("watch", use_emoji),
@@ -240,10 +251,9 @@ def build_pipeline_status(run_manifest: dict[str, Any], decisions: pd.DataFrame,
         f"Date Override       : {fmt_bool(run_manifest.get('Broker_Date_Override', False))}",
     ], e("broker", use_emoji))
     lines += section("KEPUTUSAN", [
-        f"{decision_icon('STRONG BUY', use_emoji)} STRONG BUY       : {counts['STRONG BUY']}",
-        f"{decision_icon('BUY', use_emoji)} BUY              : {counts['BUY']}",
+        f"{decision_icon('BUY READY', use_emoji)} BUY READY        : {counts['BUY READY']}",
+        f"{decision_icon('BUY ON TRIGGER', use_emoji)} BUY ON TRIGGER   : {counts['BUY ON TRIGGER']}",
         f"{decision_icon('WATCH', use_emoji)} WATCH            : {counts['WATCH']}",
-        f"{decision_icon('SPECULATIVE', use_emoji)} SPECULATIVE     : {counts['SPECULATIVE']}",
         f"{decision_icon('AVOID', use_emoji)} AVOID            : {counts['AVOID']}",
         f"{e('exit', use_emoji)} Exit Alert       : {0 if exit_alerts.empty else len(exit_alerts)}",
     ], e("market", use_emoji))
@@ -275,10 +285,9 @@ def build_market_recap(run_manifest: dict[str, Any], market_status: dict[str, An
         f"Saham Diproses     : {len(decisions) if not decisions.empty else 'Belum tersedia'}",
         f"Kandidat Teknikal  : {run_manifest.get('Candidate_Count', 'Belum tersedia')}",
         f"Broker Confirm     : {broker_confirm_count(decisions)}",
-        f"{decision_icon('STRONG BUY', use_emoji)} STRONG BUY      : {counts['STRONG BUY']}",
-        f"{decision_icon('BUY', use_emoji)} BUY             : {counts['BUY']}",
+        f"{decision_icon('BUY READY', use_emoji)} BUY READY       : {counts['BUY READY']}",
+        f"{decision_icon('BUY ON TRIGGER', use_emoji)} BUY ON TRIGGER  : {counts['BUY ON TRIGGER']}",
         f"{decision_icon('WATCH', use_emoji)} WATCH           : {counts['WATCH']}",
-        f"{decision_icon('SPECULATIVE', use_emoji)} SPECULATIVE    : {counts['SPECULATIVE']}",
         f"{decision_icon('AVOID', use_emoji)} AVOID           : {counts['AVOID']}",
     ], "🔎" if use_emoji else "")
     lines += section("RINGKASAN", ["Data pembanding run sebelumnya belum tersedia."], "💡" if use_emoji else "")
@@ -297,12 +306,12 @@ def broker_confirm_count(decisions: pd.DataFrame) -> int:
 def current_watchlist(decisions: pd.DataFrame) -> pd.DataFrame:
     if decisions.empty:
         return pd.DataFrame()
-    decision_col = find_col(decisions, "Decision_V3", "Decision")
+    decision_col = find_col(decisions, "Decision_Status", "Decision_Status_Final", "Decision_V3", "Decision")
     symbol_col = find_col(decisions, "Symbol", "EMITEN", "Ticker")
     if not decision_col or not symbol_col:
         return pd.DataFrame()
     out = decisions.copy()
-    out["_Decision"] = out[decision_col].astype(str).str.upper().str.strip()
+    out["_Decision"] = out[decision_col].astype(str).str.upper().str.strip().replace({"STRONG BUY": "BUY READY", "BUY": "BUY READY", "BUY CANDIDATE": "BUY ON TRIGGER", "WATCH HIGH": "WATCH", "SPECULATIVE": "WATCH"})
     out["_Symbol"] = out[symbol_col].astype(str).str.upper().str.strip().str.replace(".JK", "", regex=False)
     return out[out["_Decision"].isin(WATCHLIST_DECISIONS)].copy()
 
@@ -318,7 +327,7 @@ def sort_by_score(df: pd.DataFrame) -> pd.DataFrame:
 
 def stock_block(row: pd.Series, entry_plans: pd.DataFrame, use_emoji: bool) -> str:
     symbol = value(row, "Symbol", "EMITEN", "Ticker", default="?")
-    decision = str(value(row, "Decision_V3", "Decision", default="WATCH")).upper()
+    decision = str(value(row, "Decision_Status", "Decision_V3", "Decision", default="WATCH")).upper()
     plan = pd.Series(dtype=object)
     if not entry_plans.empty:
         sym_col = find_col(entry_plans, "Symbol")
@@ -326,9 +335,8 @@ def stock_block(row: pd.Series, entry_plans: pd.DataFrame, use_emoji: bool) -> s
             found = entry_plans[entry_plans[sym_col].astype(str).str.upper().str.replace(".JK", "", regex=False) == str(symbol).upper()]
             if not found.empty:
                 candidate_plan = found.iloc[0]
-                plan_status = str(value(candidate_plan, "Plan_Status", default="ACCEPT")).upper().strip()
-                if plan_status == "ACCEPT":
-                    plan = candidate_plan
+                plan = candidate_plan
+                decision = str(value(candidate_plan, "Decision_Status_Final", default=decision)).upper()
     lines = [
         f"{decision_icon(decision, use_emoji)} {symbol} - {decision}",
         f"Final Score  : {fmt_score(value(row, 'Final_Score_V3', 'Final_Score'))}",
@@ -341,7 +349,7 @@ def stock_block(row: pd.Series, entry_plans: pd.DataFrame, use_emoji: bool) -> s
         f"{e('tp', use_emoji)} TP2       : {fmt_money(value(plan, 'Target_2', 'Take_Profit_2')) if not plan.empty else 'Belum tersedia'}",
         f"💧 Liquidity : {value(row, 'Liquidity_Class', default='Belum tersedia')}",
     ]
-    reason = value(row, "Decision_Reasons", "Candidate_Reason", default="")
+    reason = value(row, "Rejected_By", "Decision_Reasons", "Candidate_Reason", default="")
     if reason:
         lines.append(f"Reason    : {reason}")
     return "\n".join(lines)
@@ -400,9 +408,9 @@ def build_watchlist_recap(decisions: pd.DataFrame, entry_plans: pd.DataFrame, ma
         f"{e('new', use_emoji)} New          : {total}",
         f"{e('continuing', use_emoji)} Continuing   : 0",
         f"{e('removed', use_emoji)} Removed      : 0",
-        f"{decision_icon('STRONG BUY', use_emoji)} STRONG BUY   : {counts['STRONG BUY']}",
-        f"{decision_icon('BUY', use_emoji)} BUY          : {counts['BUY']}",
-        f"{decision_icon('WATCH', use_emoji)} WATCH        : {counts['WATCH']}",
+        f"{decision_icon('BUY READY', use_emoji)} BUY READY      : {counts['BUY READY']}",
+        f"{decision_icon('BUY ON TRIGGER', use_emoji)} BUY ON TRIGGER : {counts['BUY ON TRIGGER']}",
+        f"{decision_icon('WATCH', use_emoji)} WATCH          : {counts['WATCH']}",
         "",
         f"{e('best', use_emoji)} HIGHEST SCORE",
         highest,
@@ -560,7 +568,7 @@ def build_all_reports(
         ReportMessage(
             "pipeline_status",
             "01_pipeline_status.txt",
-            finish(professional_pipeline_status(run_manifest, decisions, exit_alerts, cfg)),
+            finish(professional_pipeline_status(run_manifest, decisions, exit_alerts, cfg, entry_plans=entry_plans)),
         ),
     ]
 
@@ -595,7 +603,7 @@ def build_all_reports(
     messages.append(ReportMessage(
         "daily_signal_recap",
         "03_daily_signal_recap.txt",
-        finish(professional_daily_signal_recap(trade_date, decisions, market_status, technical, config=cfg)),
+        finish(professional_daily_signal_recap(trade_date, decisions, market_status, technical, config=cfg, entry_plans=entry_plans)),
     ))
     messages.append(ReportMessage(
         "closing_bell",

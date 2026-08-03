@@ -672,7 +672,7 @@ class SwingV12Tests(unittest.TestCase):
             self.assertEqual(float(loaded.loc[0, "Final_Score"]), 88.5)
             self.assertEqual(float(loaded.loc[0, "Technical_Score"]), 86)
 
-    def test_exit_plan_rejects_bear_market_regime(self) -> None:
+    def test_exit_plan_marks_bear_market_as_conditional_trigger(self) -> None:
         dates = pd.date_range("2026-06-01", periods=30, freq="B")
         px = pd.DataFrame({
             "Date": dates,
@@ -685,8 +685,10 @@ class SwingV12Tests(unittest.TestCase):
         })
         row = pd.Series({"Symbol": "BBCA", "Decision": "BUY", "Market_Regime": "BEAR", "Liquidity_Class": "LIQUID"})
         plan = build_entry_plan(row, px, 1.0, 2.0, 7.0, 20)
-        self.assertEqual(plan["Plan_Status"], "REJECT")
-        self.assertEqual(plan["Rejection_Reason"], "BEARISH_MARKET_REGIME")
+        self.assertEqual(plan["Plan_Status"], "CONDITIONAL")
+        self.assertEqual(plan["Decision_Status_Final"], "BUY ON TRIGGER")
+        self.assertEqual(plan["Rejection_Reason"], "BEAR_MARKET_TRIGGER_REQUIRED")
+        self.assertEqual(plan["Final_Decision_Owner"], "DECISION_ENGINE")
         self.assertEqual(plan["Max_Hold_Days"], 20)
 
     def test_decision_downgrade_closes_active_trade(self) -> None:

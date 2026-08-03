@@ -13,6 +13,7 @@ from typing import Any
 import pandas as pd
 
 from swing_utils import DISPLAY_VERSION, PIPELINE_VERSION, file_sha256, make_run_id, read_json, write_json
+from modules.runtime_config import load_runtime_config, write_runtime_config_audit
 
 ROOT = Path(__file__).resolve().parent
 
@@ -155,19 +156,29 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    cfg = load_json(resolve(args.config))
+    config_path = resolve(args.config)
+    cfg, config_provenance = load_runtime_config(config_path, strict=True)
     paths = cfg["paths"]
     run_id = args.run_id or make_run_id()
     log = resolve(cfg.get("logging", {}).get("pipeline_log", "logs/master_pipeline.log"))
     manifest_dir = resolve(paths.get("manifest_dir", "data/output/manifests"))
     manifest_dir.mkdir(parents=True, exist_ok=True)
     run_manifest_path = manifest_dir / f"SWING_RUN_MANIFEST_{run_id}.json"
+    config_audit_path = manifest_dir / f"RUNTIME_CONFIG_{run_id}.json"
+    write_runtime_config_audit(config_audit_path, config_provenance, cfg)
+    config_provenance["audit_path"] = str(config_audit_path.resolve())
 
     started_at = datetime.now().isoformat(timespec="seconds")
     run_manifest: dict[str, Any] = {
         "Run_ID": run_id,
         "Strategy_Type": "SWING",
         "Pipeline_Version": PIPELINE_VERSION,
+        "Config_Source": config_provenance.get("config_source", ""),
+        "Config_Hash": config_provenance.get("config_hash", ""),
+        "Config_Version": config_provenance.get("config_version", ""),
+        "Config_Loaded_At": config_provenance.get("loaded_at", ""),
+        "Config_Audit_Path": str(config_audit_path.resolve()),
+        "Config_Override_Mode": config_provenance.get("override_mode", "NONE"),
         "Started_At": started_at,
         "Finished_At": "",
         "Pipeline_Status": "RUNNING",
@@ -320,8 +331,9 @@ def main() -> int:
             run_command(stage, [
                 sys.executable, "-u", str(resolve(paths["candidate_selector"])),
                 str(techdir / "latest_technical_features.csv"),
-                "--top", str(cfg.get("candidate", {}).get("top", 30)),
-                "--min-score", str(cfg.get("candidate", {}).get("min_score", 60)),
+                "--top", str(cfg.get("candidate", {}).get("top", 40)),
+                "--min-score", str(cfg.get("candidate", {}).get("min_score", 58)),
+                "--config", str(config_path),
                 "--output-dir", str(canddir),
                 "--run-id", run_id,
                 "--manifest-dir", str(manifest_dir),
@@ -333,7 +345,7 @@ def main() -> int:
             run_manifest["Candidate_Changed"] = candidate_manifest.get("Candidate_Changed", False)
             if candidate_manifest.get("Reason"):
                 run_manifest["Warnings"].append(candidate_manifest["Reason"])
-            run_manifest["Output_Files"]["Candidates"] = str(canddir / f"technical_candidates_top{cfg.get('candidate', {}).get('top', 30)}.csv")
+            run_manifest["Output_Files"]["Candidates"] = str(canddir / f"technical_candidates_top{cfg.get('candidate', {}).get('top', 40)}.csv")
             write_run_manifest(run_manifest_path, run_manifest)
 
             broker_symbols = canddir / "broker_symbols.csv"
@@ -395,7 +407,7 @@ def main() -> int:
                 write_run_manifest(run_manifest_path, run_manifest)
 
             stage = "BROKER FUSION"
-            candidate = canddir / f"technical_candidates_top{cfg.get('candidate', {}).get('top', 30)}.csv"
+            candidate = canddir / f"technical_candidates_top{cfg.get('candidate', {}).get('top', 40)}.csv"
             fusion_cmd = [
                 sys.executable, "-u", str(resolve(paths["broker_fusion"])),
                 str(candidate),
@@ -447,6 +459,7 @@ def main() -> int:
             str(decision_source),
             str(out),
             "--ihsg", str(ihsg),
+            "--config", str(config_path),
             "--run-id", run_id,
             "--manifest-dir", str(manifest_dir),
             "--data-quality-status", data_quality,
@@ -517,7 +530,7 @@ def main() -> int:
                 "--broker-manifest", str(broker_manifest_path),
                 "--historical-dir", str(hist),
                 "--technical", str(techdir / "latest_technical_features.csv"),
-                "--candidates", str(canddir / f"technical_candidates_top{cfg.get('candidate', {}).get('top', 30)}.csv"),
+                "--candidates", str(canddir / f"technical_candidates_top{cfg.get('candidate', {}).get('top', 40)}.csv"),
                 "--broker-summary", str(resolve(paths["broker_summary_latest"])),
                 "--fusion", str(decision_source),
                 "--decision", str(final),

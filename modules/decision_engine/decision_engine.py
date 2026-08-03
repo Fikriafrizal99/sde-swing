@@ -10,6 +10,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from swing_utils import PACKAGE_VERSION, PIPELINE_VERSION, file_sha256, make_run_id, write_json
+from modules.decision_engine.smart_selective_v162 import smart_decision
+from modules.runtime_config import load_runtime_config
 
 
 def n(v):
@@ -97,11 +99,19 @@ def main():
     parser.add_argument("source", nargs="?", default="FINAL_DECISION_V2.csv")
     parser.add_argument("output", nargs="?", default="decision_v3_output")
     parser.add_argument("--ihsg", help="IHSG historical CSV with Date and Close columns")
+    parser.add_argument("--config", default="config/pipeline.json")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--manifest-dir", default=None)
     parser.add_argument("--data-quality-status", default="VALID")
     args = parser.parse_args()
     args.run_id = args.run_id or make_run_id()
+    config_path = Path(args.config)
+    if not config_path.is_absolute():
+        config_path = PROJECT_ROOT / config_path
+    runtime_cfg, config_provenance = load_runtime_config(
+        config_path, strict=config_path.name.lower() == "pipeline.json"
+    )
+    decision_policy = runtime_cfg.get("decision", {})
 
     src = Path(args.source)
     out = Path(args.output)
@@ -128,6 +138,7 @@ def main():
             "Technical_Quality_Score", "Entry_Readiness_PreScore", "Broker_Confidence", "Broker_Direction"
         ))
 
+        telemetry = {}
         if not new_mode:
             # Backward-compatible V1.2/V1.5 path for historical files and regression fixtures.
             tech = tech_legacy
@@ -203,6 +214,34 @@ def main():
             else:
                 d, reason_code = "AVOID", "LOW_COMPOSITE_SCORE"
 
+            telemetry = smart_decision(r, ls, cls, market_status["market_regime"], policy=decision_policy)
+            d = telemetry["Decision_V3"]
+            reason_code = telemetry["Decision_Reason_Code"]
+            final = float(telemetry["Final_Score_V3"])
+
+        if not telemetry:
+            status = "BUY READY" if d in {"STRONG BUY", "BUY"} else "BUY ON TRIGGER" if d == "BUY CANDIDATE" else "WATCH" if d in {"WATCH", "WATCH HIGH", "SPECULATIVE"} else "AVOID"
+            legacy_rejected = [] if status == "BUY READY" else [reason_code]
+            legacy_hard = legacy_rejected if status == "AVOID" else []
+            legacy_soft = legacy_rejected if status != "AVOID" else []
+            telemetry = {
+                "Decision_Status": status,
+                "Rejected_By": json.dumps(legacy_rejected, ensure_ascii=False),
+                "Hard_Blockers": json.dumps(legacy_hard, ensure_ascii=False),
+                "Soft_Penalties": json.dumps(legacy_soft, ensure_ascii=False),
+                "Decision_Trace": json.dumps([
+                    "POLICY=LEGACY_COMPATIBILITY",
+                    f"TECH={quality:.1f}",
+                    f"BROKER={broker:.1f}",
+                    f"LIQ={ls:.1f}",
+                    f"FINAL={final:.1f}",
+                    f"STATUS={status}",
+                ], ensure_ascii=False),
+                "Threshold_Profile": "LEGACY",
+                "Broker_Score_Decorrelated": broker,
+                "Foreign_Score_Effective": 50.0,
+            }
+
         r.update({
             "Run_ID": args.run_id,
             "Market_Regime": market_status["market_regime"],
@@ -216,11 +255,16 @@ def main():
             "Final_Score_V3": f"{final:.2f}", "Decision_V3": d,
             "Data_Quality_Status": args.data_quality_status,
         })
+        r.update(telemetry)
+        r["Decision_Owner"] = "DECISION_ENGINE"
+        r["Config_Source"] = config_provenance.get("config_source", "")
+        r["Config_Hash"] = config_provenance.get("config_hash", "")
+        r["Config_Version"] = config_provenance.get("config_version", "")
 
-    p = {"STRONG BUY": 0, "BUY": 1, "BUY CANDIDATE": 2, "WATCH HIGH": 3, "WATCH": 4, "SPECULATIVE": 5, "AVOID": 6}
-    rows.sort(key=lambda r: (p[r["Decision_V3"]], -n(r["Final_Score_V3"])))
+    priority = {"BUY READY": 0, "BUY ON TRIGGER": 1, "WATCH": 2, "AVOID": 3}
+    rows.sort(key=lambda row: (priority.get(str(row.get("Decision_Status", "AVOID")).upper(), 9), -n(row["Final_Score_V3"])))
     for i, r in enumerate(rows, 1): r["Rank_V3"] = i
-    lead = ["Rank_V3", "Symbol", "Decision_V3", "Decision_Reason_Code", "Market_Regime", "Final_Score_V3",
+    lead = ["Rank_V3", "Symbol", "Decision_Status", "Decision_V3", "Decision_Owner", "Decision_Reason_Code", "Rejected_By", "Hard_Blockers", "Soft_Penalties", "Decision_Trace", "Threshold_Profile", "Market_Regime", "Final_Score_V3",
             "Technical_Quality_Score_Final", "Entry_Readiness_PreScore_Final",
             "Broker_Direction_Final", "Broker_Confidence_Final", "Liquidity_Score", "Liquidity_Class",
             "Turnover_MA20_Billion", "Volume_MA20_Lots"]
@@ -234,6 +278,12 @@ def main():
         "Run_ID": args.run_id,
         "Pipeline_Version": PIPELINE_VERSION,
         "Engine_Version": PACKAGE_VERSION,
+        "Config_Source": config_provenance.get("config_source", ""),
+        "Config_Hash": config_provenance.get("config_hash", ""),
+        "Config_Version": config_provenance.get("config_version", ""),
+        "Config_Loaded_At": config_provenance.get("loaded_at", ""),
+        "Config_Override_Mode": config_provenance.get("override_mode", "NONE"),
+        "Effective_Decision_Policy": decision_policy,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "source": str(src.resolve()),
         "source_hash": file_sha256(src),
@@ -242,7 +292,7 @@ def main():
         "market_status": str(status_path.resolve()),
         "market_status_hash": file_sha256(status_path),
         "rows": len(rows),
-        "decision_counts": pd.Series([r["Decision_V3"] for r in rows]).value_counts().to_dict(),
+        "decision_counts": pd.Series([r["Decision_Status"] for r in rows]).value_counts().to_dict(),
         "Data_Quality_Status": args.data_quality_status,
     }
     write_json(out / "manifest.json", manifest)

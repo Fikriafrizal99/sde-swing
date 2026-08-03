@@ -29,6 +29,7 @@ from modules.job_runner.reports import (
     post_market_payloads,
     write_payloads,
 )
+from modules.runtime_config import write_runtime_config_audit
 from modules.job_runner.runtime import (
     EXIT_DELIVERY_FAILED,
     EXIT_DUPLICATE,
@@ -401,7 +402,11 @@ def main() -> int:
         debug=args.debug,
         interactive_broker=args.interactive_broker,
     )
-    write_status(ctx, "RUNNING", "START", EXIT_SUCCESS)
+    manifest_dir = resolve(ctx.config.get("paths", {}).get("manifest_dir", "data/output/manifests"))
+    config_audit_path = manifest_dir / f"RUNTIME_CONFIG_{ctx.run_id}.json"
+    write_runtime_config_audit(config_audit_path, ctx.config_provenance, ctx.config)
+    ctx.config_provenance["audit_path"] = str(config_audit_path.resolve())
+    write_status(ctx, "RUNNING", "START", EXIT_SUCCESS, {"config_audit_path": str(config_audit_path)})
     if ctx.job != "full_manual":
         is_trading, reason = trading_day_status(ctx)
         if not is_trading:

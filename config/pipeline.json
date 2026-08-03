@@ -52,8 +52,16 @@
     "pause": 0.35
   },
   "candidate": {
-    "top": 30,
-    "min_score": 60
+    "top": 40,
+    "min_score": 58,
+    "max_relative_rank_pct": 15,
+    "setup_min_scores": {
+      "BREAKOUT": 60,
+      "PULLBACK": 58,
+      "TREND_CONTINUATION": 60,
+      "EARLY_ACCUMULATION": 56,
+      "DEVELOPING": 62
+    }
   },
   "broker": {
     "downloads_dir": "%USERPROFILE%/Downloads",
@@ -77,14 +85,47 @@
     "min_rr": 1.0,
     "preferred_rr": 2.0,
     "max_risk_pct": 7.0,
-    "max_hold_days": 20
+    "max_hold_days": 20,
+    "bear_market_policy": "CONDITIONAL",
+    "thin_liquidity_policy": "CONDITIONAL",
+    "resistance_must_be_above_entry": true
   },
   "logging": {
     "pipeline_log": "logs/master_pipeline.log"
   },
   "package": {
     "name": "SDE Swing",
-    "version": "1.6.1",
-    "pipeline_version": "SDE_SWING_V1_6_1_TELEGRAM_BROKER_DETAIL_CONTROL_PANEL"
+    "version": "1.6.2-stage1",
+    "pipeline_version": "SDE_SWING_V1_6_2_STAGE1_STABILIZED"
+  },
+  "decision": {
+    "policy": "SMART_SELECTIVE_V1_6_2",
+    "weights": {
+      "technical_quality": 0.42,
+      "entry_readiness": 0.18,
+      "liquidity": 0.1,
+      "broker_decorrelated": 0.17,
+      "foreign": 0.08,
+      "relative_rank": 0.05
+    },
+    "hard_blockers": [
+      "INVALID_DATA",
+      "LIQUIDITY_VERY_POOR",
+      "STRONG_BROKER_DISTRIBUTION",
+      "PRICE_EXTENDED_HARD",
+      "INVALID_STOP",
+      "RISK_REWARD_BELOW_MINIMUM"
+    ],
+    "statuses": [
+      "BUY READY",
+      "BUY ON TRIGGER",
+      "WATCH",
+      "AVOID"
+    ]
+  },
+  "runtime": {
+    "configuration_policy": "SINGLE_SOURCE_STRICT",
+    "allow_legacy_override": false,
+    "write_config_audit": true
   }
 }

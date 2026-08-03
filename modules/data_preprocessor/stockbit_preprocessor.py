@@ -48,8 +48,15 @@ def parse_number(value: object, *, compact_decimal_comma: bool = False) -> Optio
     if not s:
         return None
 
-    # Stockbit's compact columns may use Indonesian decimal comma: 65,12B or 2,41K.
-    if compact_decimal_comma and suffix and "," in s and "." not in s:
+    # Stockbit can mix international and Indonesian formatting.
+    # Examples: 2,186.59B (international), 65,12B (decimal comma),
+    # and 1.250,75K (Indonesian thousands + decimal comma).
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif compact_decimal_comma and suffix and "," in s:
         parts = s.split(",")
         if len(parts) == 2 and 1 <= len(parts[1]) <= 2:
             s = parts[0] + "." + parts[1]
@@ -107,12 +114,12 @@ def preprocess(input_path: Path, output_path: Path) -> tuple[int, int]:
         "Value": True, "Lot": True, "Freq": True,
         "Avg": False, "Prev": False, "Open": False, "High": False, "Low": False,
         "IEP": False, "IEV": False, "Volume": False, "Value 2": False,
-        "Price MA 5": False, "Foreign Flow": False, "RSI (14)": False,
+        "Price MA 5": False, "Foreign Flow": True, "RSI (14)": False,
         "Volume MA 20": False, "VWAP": False, "Previous Price": False,
         "Market Cap": False, "1 Week Price Returns": False,
         "52 Week High": False, "52 Week Low": False,
         "1 Day Price Returns (%)": False, "Price Change": False,
-        "Net Foreign Buy / Sell": False, "Bandar Accum/Dist": False,
+        "Net Foreign Buy / Sell": True, "Bandar Accum/Dist": False,
     }
 
     derived_headers = ["Change Value", "Change Percent"]

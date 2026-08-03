@@ -8,7 +8,13 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import sys
+
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from swing_utils import PIPELINE_VERSION
 
 EXCLUDED_PARTS = {"__pycache__", ".pytest_cache", ".git", ".venv"}
 EXCLUDED_NAMES = {"MANIFEST_SHA256.txt", "RELEASE_MANIFEST.json"}
@@ -60,7 +66,7 @@ def sha256(path: Path) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", default="SDE_SWING_V1_6_0_SIGNAL_QUALITY_ENTRY_READINESS")
+    parser.add_argument("--version", default=PIPELINE_VERSION)
     args = parser.parse_args()
     files = sorted((p for p in ROOT.rglob("*") if included(p)), key=lambda p: p.relative_to(ROOT).as_posix())
     entries = [(sha256(path), path.relative_to(ROOT).as_posix(), path.stat().st_size) for path in files]

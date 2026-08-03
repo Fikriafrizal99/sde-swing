@@ -17,7 +17,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from swing_utils import file_sha256, make_run_id, write_json
+from swing_utils import DISPLAY_VERSION, PACKAGE_VERSION, PIPELINE_VERSION, file_sha256, make_run_id, write_json
+from modules.decision_engine.smart_selective_v162 import finalize_after_entry_plan
 
 
 PLAN_DECISIONS = {"STRONG BUY", "BUY", "BUY CANDIDATE", "WATCH HIGH"}
@@ -71,6 +72,9 @@ def load_decisions(path: Path) -> pd.DataFrame:
     }
     optional = {
         "Final_Score": ("Final_Score_V3", "Final_Score"),
+        "Decision_Status_PrePlan": ("Decision_Status",),
+        "Rejected_By_PrePlan": ("Rejected_By",),
+        "Decision_Trace_PrePlan": ("Decision_Trace",),
         "Technical_Score": ("Technical_Score_Final", "Technical_Score"),
         "Broker_Score": ("Broker_Score",),
         "Broker_Confirmation": ("Broker_Confirmation",),
@@ -88,6 +92,7 @@ def load_decisions(path: Path) -> pd.DataFrame:
         "Volume_Ratio_20": ("Volume_Ratio_20",),
         "Distance_EMA20_Pct": ("Distance_EMA20_Pct", "Distance_EMA_20_Pct"),
         "ATR_Extension": ("ATR_Extension",),
+        "Turnover_MA_20": ("Turnover_MA_20",),
     }
 
     for target, aliases in required.items():
@@ -265,8 +270,9 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
 
     rr1_target = planned_entry + risk * min_rr
     rr2_target = planned_entry + risk * preferred_rr
-    resistance_floor = min(reference_close, entry_low)
-    levels = resistance_levels(px, resistance_floor, 120)
+    # Resistance used for RR must be strictly above the actual planned entry.
+    # Using a lower floor can select a pivot below entry and create negative RR.
+    levels = resistance_levels(px, planned_entry, 120)
     minor_resistance = levels[0] if levels else np.nan
     minor_rr = (minor_resistance - planned_entry) / risk if levels and risk > 0 else np.nan
     major_resistance = next(
@@ -274,6 +280,17 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
         np.nan,
     )
     major_rr = (major_resistance - planned_entry) / risk if not math.isnan(major_resistance) and risk > 0 else np.nan
+
+    # Keep T1 at the minimum required R, but do not publish a 2R target through a
+    # confirmed major resistance. This preserves the existing R framework while
+    # making T2 executable against the observed price structure.
+    target_1 = rr1_target
+    target_2 = rr2_target
+    target_2_basis = "R_MULTIPLE"
+    if not math.isnan(major_resistance) and min_rr <= major_rr < preferred_rr:
+        target_2 = major_resistance
+        target_2_basis = "MAJOR_RESISTANCE"
+    target_2_rr = (target_2 - planned_entry) / risk if risk > 0 else np.nan
 
     prelim = to_num(row.get("Entry_Readiness_PreScore"), 50.0)
     quality = to_num(row.get("Technical_Quality_Score"), to_num(row.get("Technical_Score"), 0.0))
@@ -307,21 +324,30 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
 
     hard_blocker = str(row.get("Entry_Hard_Blocker", "")).strip().lower() in {"1", "true", "yes"}
     liquidity = str(row.get("Liquidity_Class", "")).upper()
+    turnover_ma20 = to_num(row.get("Turnover_MA_20"), 0.0)
     market = str(row.get("Market_Regime", "")).upper()
+    extension_limit = {
+        "BREAKOUT": 3.3,
+        "PULLBACK": 2.8,
+        "TREND_CONTINUATION": 3.0,
+        "EARLY_ACCUMULATION": 2.6,
+    }.get(setup_type, 3.0)
     setup_quality = "ACCEPT"
     rejection_reason = ""
     warnings: list[str] = []
 
     if risk <= 0:
         setup_quality, rejection_reason = "REJECT", "INVALID_STOP"
-    elif market in {"BEAR", "BEARISH"}:
-        setup_quality, rejection_reason = "REJECT", "BEARISH_MARKET_REGIME"
-    elif liquidity in {"ILLIQUID", "THIN"}:
-        setup_quality, rejection_reason = "REJECT", "LIQUIDITY_GATE"
+    elif liquidity == "ILLIQUID" and turnover_ma20 < 2_000_000_000:
+        setup_quality, rejection_reason = "REJECT", "LIQUIDITY_VERY_POOR"
     elif hard_blocker:
         setup_quality, rejection_reason = "REJECT", "ENTRY_HARD_BLOCKER"
-    elif not math.isnan(atr_extension) and atr_extension > 2.5:
-        setup_quality, rejection_reason = "REJECT", "PRICE_EXTENDED"
+    elif not math.isnan(atr_extension) and atr_extension > extension_limit:
+        setup_quality, rejection_reason = "REJECT", "PRICE_EXTENDED_HARD"
+    elif market in {"BEAR", "BEARISH"}:
+        setup_quality, rejection_reason = "CONDITIONAL", "BEAR_MARKET_TRIGGER_REQUIRED"
+    elif liquidity in {"ILLIQUID", "THIN"}:
+        setup_quality, rejection_reason = "CONDITIONAL", "THIN_LIQUIDITY_TRIGGER_REQUIRED"
     elif not math.isnan(minor_rr) and minor_rr < min_rr and math.isnan(major_rr):
         setup_quality, rejection_reason = "REJECT", "NO_VALID_RESISTANCE_PATH"
     elif price_position_to_zone == "ABOVE_ZONE" and price_to_zone > 0.5:
@@ -355,18 +381,29 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
         warnings.append("broker divergence")
 
     decision = str(row.get("Decision", "WATCH")).upper()
-    if setup_quality == "ACCEPT" and decision in {"STRONG BUY", "BUY"}:
-        execution_status = "BUY CONFIRMED"
-    elif setup_quality == "ACCEPT":
-        execution_status = "BUY CANDIDATE READY"
-    elif setup_quality == "CONDITIONAL":
-        execution_status = "WAIT TRIGGER"
-    else:
-        execution_status = "NOT READY"
+    preplan_status = str(row.get("Decision_Status_PrePlan", "") or "").upper()
+    if not preplan_status:
+        preplan_status = "BUY ON TRIGGER" if decision in {"STRONG BUY", "BUY", "BUY CANDIDATE"} else "WATCH" if decision in {"WATCH", "WATCH HIGH", "SPECULATIVE"} else "AVOID"
+    finalization = finalize_after_entry_plan(
+        preplan_status=preplan_status,
+        plan_status=setup_quality,
+        plan_reason=rejection_reason,
+        rejected_by_preplan=row.get("Rejected_By_PrePlan", ""),
+        decision_trace_preplan=row.get("Decision_Trace_PrePlan", ""),
+        major_rr=None if math.isnan(major_rr) else major_rr,
+        risk_pct=risk_pct,
+    )
+    decision_status_final = finalization["Decision_Status_Final"]
+    execution_status = finalization["Execution_Status"]
 
     return {
         "Symbol": row["Symbol"],
         "Decision": decision,
+        "Decision_Status_PrePlan": preplan_status,
+        "Decision_Status_Final": decision_status_final,
+        "Rejected_By": finalization["Rejected_By"],
+        "Decision_Trace": finalization["Decision_Trace"],
+        "Final_Decision_Owner": finalization["Final_Decision_Owner"],
         "Execution_Status": execution_status,
         "Plan_Status": setup_quality,
         "Rejection_Reason": rejection_reason,
@@ -383,10 +420,11 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
         "Stop_Basis": stop_basis,
         "Risk_Per_Share": risk,
         "Risk_Pct": risk_pct,
-        "Target_1": rr1_target,
+        "Target_1": target_1,
         "Target_1_RR": min_rr,
-        "Target_2": rr2_target,
-        "Target_2_RR": preferred_rr,
+        "Target_2": target_2,
+        "Target_2_RR": target_2_rr,
+        "Target_2_Basis": target_2_basis,
         "Nearest_Resistance": minor_resistance,
         "Minor_Resistance": minor_resistance,
         "Major_Resistance": major_resistance,
@@ -523,7 +561,7 @@ def update_active_trade(trade: pd.Series, decision_row: pd.Series | None, px: pd
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Stockbit SDE Exit Engine V1.6")
+    p = argparse.ArgumentParser(description=f"Stockbit SDE Exit Engine {DISPLAY_VERSION}")
     p.add_argument("decision_csv")
     p.add_argument("price_dir")
     p.add_argument("--state-file", default="state/ACTIVE_TRADES.csv")
@@ -533,7 +571,7 @@ def main() -> int:
     p.add_argument("--max-risk-pct", type=float, default=7.0)
     p.add_argument("--max-hold-days", type=int, default=20)
     p.add_argument("--open-approved", action="store_true",
-                   help="Masukkan semua plan ACCEPT sebagai active trade pada harga reference close.")
+                   help="Masukkan hanya plan BUY READY sebagai active trade pada Entry_Reference_Price.")
     p.add_argument("--run-id", default=None)
     p.add_argument("--manifest-dir", default=None)
     p.add_argument("--data-quality-status", default="VALID")
@@ -566,20 +604,21 @@ def main() -> int:
         plans_df["Data_Quality_Status"] = args.data_quality_status
     plans_df.to_csv(output / "ENTRY_PLANS.csv", index=False)
     if not plans_df.empty:
-        plans_df[plans_df["Plan_Status"] == "ACCEPT"].to_csv(output / "APPROVED_ENTRIES.csv", index=False)
-        plans_df[plans_df["Plan_Status"] == "CONDITIONAL"].to_csv(output / "CONDITIONAL_ENTRIES.csv", index=False)
-        plans_df[plans_df["Plan_Status"] == "REJECT"].to_csv(output / "REJECTED_ENTRIES.csv", index=False)
+        plans_df[plans_df["Decision_Status_Final"] == "BUY READY"].to_csv(output / "APPROVED_ENTRIES.csv", index=False)
+        plans_df[plans_df["Decision_Status_Final"] == "BUY ON TRIGGER"].to_csv(output / "CONDITIONAL_ENTRIES.csv", index=False)
+        plans_df[plans_df["Decision_Status_Final"] == "AVOID"].to_csv(output / "REJECTED_ENTRIES.csv", index=False)
 
     if args.open_approved and not plans_df.empty:
         existing_active = set(active.loc[active.get("Status", pd.Series(dtype=str)).astype(str).eq("ACTIVE"), "Symbol"]) if not active.empty else set()
         new_rows = []
-        for _, plan in plans_df[plans_df["Plan_Status"] == "ACCEPT"].iterrows():
+        for _, plan in plans_df[plans_df["Decision_Status_Final"] == "BUY READY"].iterrows():
             if plan["Symbol"] in existing_active:
                 continue
             new_rows.append({
                 "Symbol": plan["Symbol"],
                 "Entry_Date": plan["Reference_Date"],
-                "Entry_Price": plan["Reference_Close"],
+                # The active trade must use the price on which stop/targets were calculated.
+                "Entry_Price": plan["Entry_Reference_Price"],
                 "Initial_Stop": plan["Initial_Stop"],
                 "Current_Stop": plan["Initial_Stop"],
                 "Target_1": plan["Target_1"],
@@ -634,7 +673,8 @@ def main() -> int:
 
     manifest = {
         "Run_ID": args.run_id,
-        "version": "1.6.0",
+        "version": PACKAGE_VERSION,
+        "pipeline_version": PIPELINE_VERSION,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "decision_source": str(Path(args.decision_csv).resolve()),
         "decision_source_hash": file_sha256(Path(args.decision_csv)),
@@ -644,11 +684,11 @@ def main() -> int:
         "max_risk_pct": args.max_risk_pct,
         "max_hold_days": args.max_hold_days,
         "entry_rules": [
-            "Plans are built for STRONG BUY, BUY, BUY CANDIDATE, WATCH HIGH, and qualified WATCH",
+            "Plans preserve legacy decision aliases but finalize into BUY READY, BUY ON TRIGGER, WATCH, or AVOID",
             "Technical quality and entry readiness are evaluated separately",
-            "Liquidity THIN/ILLIQUID rejected",
-            "Bearish market regime rejected when Market_Regime is supplied",
-            "Minor resistance can produce CONDITIONAL when a valid major resistance path exists"
+            "Only very poor liquidity is a hard blocker; THIN liquidity requires a trigger",
+            "Bearish market regime is conditional rather than an unconditional rejection",
+            "Resistance used for risk/reward must be strictly above the planned entry"
         ],
         "stop_rules": [
             "Recent support",
@@ -669,8 +709,8 @@ def main() -> int:
             "Target 1 activates trailing rather than mandatory full exit"
         ],
         "entry_plans": len(plans_df),
-        "approved_entries": int((plans_df.get("Plan_Status", pd.Series(dtype=str)) == "ACCEPT").sum()) if not plans_df.empty else 0,
-        "conditional_entries": int((plans_df.get("Plan_Status", pd.Series(dtype=str)) == "CONDITIONAL").sum()) if not plans_df.empty else 0,
+        "approved_entries": int((plans_df.get("Decision_Status_Final", pd.Series(dtype=str)) == "BUY READY").sum()) if not plans_df.empty else 0,
+        "conditional_entries": int((plans_df.get("Decision_Status_Final", pd.Series(dtype=str)) == "BUY ON TRIGGER").sum()) if not plans_df.empty else 0,
         "exit_alerts": len(alerts),
         "active_state_rows": len(state_df),
         "Data_Quality_Status": args.data_quality_status,
@@ -687,7 +727,7 @@ def main() -> int:
     if args.manifest_dir:
         write_json(Path(args.manifest_dir) / f"EXIT_MANIFEST_{args.run_id}.json", manifest)
 
-    print("Exit Engine V1.6 selesai")
+    print(f"Exit Engine {DISPLAY_VERSION} selesai")
     print(f"Entry plans : {len(plans_df)}")
     print(f"Approved    : {manifest['approved_entries']}")
     print(f"Conditional : {manifest['conditional_entries']}")

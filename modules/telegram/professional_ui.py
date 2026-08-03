@@ -9,10 +9,16 @@ from __future__ import annotations
 import html
 import math
 import re
+import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import pandas as pd
 
@@ -22,6 +28,8 @@ SEPARATOR = "━━━━━━━━━━━━━━━━━━━━━━�
 MISSING = "data tidak tersedia"
 
 PUBLIC_STATUS_MAP = {
+    "BUY READY": "BUY CONFIRMED",
+    "BUY ON TRIGGER": "BUY CANDIDATE",
     "STRONG BUY": "BUY CANDIDATE",
     "BUY": "BUY CANDIDATE",
     "BUY CANDIDATE": "BUY CANDIDATE",
@@ -211,8 +219,16 @@ def effective_public_status(raw: Any, plan: pd.Series | None = None) -> str:
     """Combine engine decision and validated entry plan for final presentation."""
     base = public_status(raw)
     current_plan = plan if plan is not None else pd.Series(dtype=object)
+    if not current_plan.empty:
+        final_status = normalize_text(row_value(current_plan, "Decision_Status_Final"), "").upper()
+        if final_status:
+            return public_status(final_status)
     readiness, _ = plan_readiness(current_plan) if not current_plan.empty else ("WAITING", "")
     raw_decision = normalize_text(raw, "WATCH").upper()
+    if raw_decision in {"BUY READY"}:
+        return "BUY CONFIRMED"
+    if raw_decision in {"BUY ON TRIGGER"}:
+        return "BUY CANDIDATE"
     if raw_decision in {"STRONG BUY", "BUY"} and readiness == "READY":
         return "BUY CONFIRMED"
     if raw_decision in {"STRONG BUY", "BUY"} and readiness != "READY":
@@ -254,14 +270,17 @@ def unique_final_decisions(decisions: pd.DataFrame) -> pd.DataFrame:
     return result.reset_index(drop=True)
 
 
-def public_counts(decisions: pd.DataFrame) -> dict[str, int]:
+def public_counts(decisions: pd.DataFrame, entry_plans: pd.DataFrame | None = None) -> dict[str, int]:
     work = unique_final_decisions(decisions)
+    plans = entry_plans if entry_plans is not None else pd.DataFrame()
     counts = {"BUY CONFIRMED": 0, "BUY CANDIDATE": 0, "WATCH HIGH": 0, "WATCH": 0, "AVOID": 0}
-    decision_col = find_col(work, "Decision_V3", "Decision")
+    decision_col = find_col(work, "Decision_Status", "Decision_V3", "Decision")
+    symbol_col = find_col(work, "Symbol", "EMITEN", "Ticker")
     if not decision_col:
         return counts
-    for raw in work[decision_col].tolist():
-        status = public_status(raw)
+    for _, row in work.iterrows():
+        plan = plan_for_symbol(plans, str(row[symbol_col])) if symbol_col else pd.Series(dtype=object)
+        status = effective_public_status(row[decision_col], plan)
         if status in counts:
             counts[status] += 1
         elif status in {"HOLD", "TAKE PROFIT"}:
@@ -1197,9 +1216,10 @@ def format_daily_signal_recap(
     generated_at: Any = None,
     partial: bool = False,
     config: UiConfig | None = None,
+    entry_plans: pd.DataFrame | None = None,
 ) -> str:
     cfg = config or UiConfig()
-    counts = public_counts(decisions)
+    counts = public_counts(decisions, entry_plans)
     total = sum(counts.values())
     positive = counts["BUY CONFIRMED"] + counts["BUY CANDIDATE"] + counts["WATCH HIGH"] + counts["WATCH"]
     positive_pct = positive / total * 100 if total else 0
@@ -1375,7 +1395,7 @@ def format_closing_bell(
 ) -> str:
     cfg = config or UiConfig()
     metrics = ihsg_metrics(ihsg)
-    counts = public_counts(decisions)
+    counts = public_counts(decisions, entry_plans)
     regime = normalize_text(market_status.get("market_regime"), "UNKNOWN").upper()
     trend_icon = "📈" if (metrics.get("change_point") or 0) > 0 else "📉" if (metrics.get("change_point") or 0) < 0 else "➖"
     global_state, _, _ = global_sentiment_block(global_snapshot)
@@ -1746,11 +1766,17 @@ def format_position_evaluation(
     return "\n".join(lines)
 
 
-def format_pipeline_status(run_manifest: dict[str, Any], decisions: pd.DataFrame, exit_alerts: pd.DataFrame, config: UiConfig | None = None) -> str:
+def format_pipeline_status(
+    run_manifest: dict[str, Any],
+    decisions: pd.DataFrame,
+    exit_alerts: pd.DataFrame,
+    config: UiConfig | None = None,
+    entry_plans: pd.DataFrame | None = None,
+) -> str:
     cfg = config or UiConfig()
     status = normalize_text(run_manifest.get("Pipeline_Status"), "UNKNOWN").upper()
     icon = "✅" if status in {"SUCCESS", "COMPLETED", "OK"} else "⚠️"
-    counts = public_counts(decisions)
+    counts = public_counts(decisions, entry_plans)
     return "\n".join([
         f"{icon} <b>SDE SWING - PIPELINE SELESAI</b>",
         cfg.separator,

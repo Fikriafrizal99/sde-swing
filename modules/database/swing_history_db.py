@@ -869,7 +869,7 @@ def main() -> int:
     parser.add_argument("--broker-manifest", default="")
     parser.add_argument("--historical-dir", default="data/output/historical/by_symbol")
     parser.add_argument("--technical", default="data/output/technical/latest_technical_features.csv")
-    parser.add_argument("--candidates", default="data/output/candidates/technical_candidates_top30.csv")
+    parser.add_argument("--candidates", default="data/output/candidates/technical_candidates_top40.csv")
     parser.add_argument("--broker-summary", default="data/input/broker/BROKER_SUMMARY_LATEST.csv")
     parser.add_argument("--fusion", default="data/input/FINAL_DECISION_V2.csv")
     parser.add_argument("--decision", default="data/output/decision/FINAL_DECISION_V3.csv")

@@ -355,7 +355,11 @@ def post_market_payloads(ctx: RunnerContext, run_manifest: dict[str, Any] | None
     snapshot = _snapshot_from_manifest(manifest)
     output_paths = snapshot.get("output_paths", {}) if snapshot else {}
     technical_path = Path(str(output_paths.get("technical_features") or ctx.path("technical_output_dir", "data/output/technical") / "latest_technical_features.csv"))
-    candidates_path = Path(str(output_paths.get("technical_candidates") or ctx.path("candidate_output_dir", "data/output/candidates") / "technical_candidates_top30.csv"))
+    candidate_top = int(ctx.config.get("candidate", {}).get("top", 40))
+    candidates_path = Path(str(
+        output_paths.get("technical_candidates")
+        or ctx.path("candidate_output_dir", "data/output/candidates") / f"technical_candidates_top{candidate_top}.csv"
+    ))
     technical = load_csv(technical_path)
     candidates = load_csv(candidates_path)
     trade_date = (

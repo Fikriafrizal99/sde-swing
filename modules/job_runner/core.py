@@ -261,9 +261,11 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
         str(resolve(paths.get("candidate_selector", "modules/candidate_selector/technical_candidate_selector.py"))),
         str(stage_paths["technical_dir"] / "latest_technical_features.csv"),
         "--top",
-        str(cfg.get("candidate", {}).get("top", 30)),
+        str(cfg.get("candidate", {}).get("top", 40)),
         "--min-score",
-        str(cfg.get("candidate", {}).get("min_score", 60)),
+        str(cfg.get("candidate", {}).get("min_score", 58)),
+        "--config",
+        str(ctx.config_path),
         "--output-dir",
         str(stage_paths["candidate_dir"]),
         "--run-id",
@@ -344,7 +346,7 @@ def create_technical_snapshot(
     root = stage_paths["snapshot_root"] / ctx.trade_date.isoformat() / snapshot_id
     root.mkdir(parents=True, exist_ok=True)
     technical = stage_paths["technical_dir"] / "latest_technical_features.csv"
-    candidates = stage_paths["candidate_dir"] / f"technical_candidates_top{ctx.config.get('candidate', {}).get('top', 30)}.csv"
+    candidates = stage_paths["candidate_dir"] / f"technical_candidates_top{ctx.config.get('candidate', {}).get('top', 40)}.csv"
     ranking = stage_paths["candidate_dir"] / "technical_ranking_full.csv"
     broker_symbols = stage_paths["candidate_dir"] / "broker_symbols.csv"
     copied: dict[str, str] = {}
@@ -683,11 +685,19 @@ def run_final_from_snapshot(ctx: RunnerContext) -> dict[str, Any]:
     hist = resolve(paths.get("historical_dir", "data/output/historical/by_symbol"))
     ihsg = resolve(paths.get("ihsg_csv", "data/input/IHSG.csv"))
     broker_summary = resolve(paths.get("broker_summary_latest", "data/input/broker/BROKER_SUMMARY_LATEST.csv"))
+    broker_raw = resolve(paths.get("broker_raw_latest", "data/input/broker/BROKER_RAW_LATEST.csv"))
     bcfg = cfg.get("broker", {})
     run_manifest_path = manifest_dir / f"SWING_RUN_MANIFEST_{ctx.run_id}.json"
     manifest: dict[str, Any] = {
         "Run_ID": ctx.run_id,
         "Strategy_Type": "SWING",
+        "Pipeline_Version": ctx.config_provenance.get("pipeline_version", ""),
+        "Config_Source": ctx.config_provenance.get("config_source", str(ctx.config_path)),
+        "Config_Hash": ctx.config_provenance.get("config_hash", ""),
+        "Config_Version": ctx.config_provenance.get("config_version", ""),
+        "Config_Loaded_At": ctx.config_provenance.get("loaded_at", ""),
+        "Config_Audit_Path": ctx.config_provenance.get("audit_path", ""),
+        "Config_Override_Mode": ctx.config_provenance.get("override_mode", "NONE"),
         "Started_At": ctx.started_at.isoformat(timespec="seconds"),
         "Finished_At": "",
         "Pipeline_Status": "RUNNING",
@@ -701,7 +711,7 @@ def run_final_from_snapshot(ctx: RunnerContext) -> dict[str, Any]:
         "Telegram_Status": "SKIPPED",
         "Warnings": [],
         "Errors": [],
-        "Source_Files": {"Technical_Candidates": str(candidate), "Broker_Summary": str(broker_summary)},
+        "Source_Files": {"Technical_Candidates": str(candidate), "Broker_Summary": str(broker_summary), "Broker_Raw": str(broker_raw)},
         "Output_Files": {},
     }
     write_json(run_manifest_path, manifest)
@@ -723,6 +733,8 @@ def run_final_from_snapshot(ctx: RunnerContext) -> dict[str, Any]:
         str(bcfg.get("min_coverage", 0.80)),
         "--expected-broker-date",
         ctx.trade_date.isoformat(),
+        "--broker-raw",
+        str(broker_raw),
     ]
     run_command(ctx, "BROKER FUSION FROM SNAPSHOT", fusion_cmd)
     fusion_manifest = read_json_safely(manifest_dir / f"BROKER_FUSION_MANIFEST_{ctx.run_id}.json")
@@ -744,6 +756,8 @@ def run_final_from_snapshot(ctx: RunnerContext) -> dict[str, Any]:
         str(decision_dir),
         "--ihsg",
         str(ihsg),
+        "--config",
+        str(ctx.config_path),
         "--run-id",
         ctx.run_id,
         "--manifest-dir",
