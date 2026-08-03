@@ -1,0 +1,23 @@
+{
+  "data": [
+    {
+      "No": 1,
+      "Date": "2026-06-12T00:00:00",
+      "Close": 6007.656,
+      "Value": 21654846683780,
+      "Change": 121.624,
+      "Lowest": 5952.852,
+      "Volume": 34775696450,
+      "Highest": 6074.072,
+      "Previous": 5886.032,
+      "Frequency": 2346364,
+      "IndexCode": "COMPOSITE",
+      "MarketCapital": 10524297346477400,
+      "NumberOfStock": 913,
+      "IndexSummaryID": 193005
+    }
+  ],
+  "dataset": "index-summary",
+  "provider": "idx",
+  "recordsTotal": 45
+}

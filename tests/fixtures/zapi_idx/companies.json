@@ -1,0 +1,21 @@
+{
+  "data": [
+    {
+      "id": 0,
+      "Sektor": "Energi",
+      "SubSektor": "Minyak, Gas &amp; Batu Bara",
+      "KodeEmiten": "AADI",
+      "NamaEmiten": "PT Adaro Andalan Indonesia Tbk",
+      "PapanPencatatan": "Utama",
+      "Status": 0,
+      "EfekEmiten_Saham": true,
+      "DataID": 0
+    }
+  ],
+  "start": 0,
+  "length": 1,
+  "dataset": "listed-companies",
+  "provider": "idx",
+  "recordsTotal": 958,
+  "recordsFiltered": 958
+}

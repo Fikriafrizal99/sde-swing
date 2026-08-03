@@ -1,0 +1,26 @@
+{
+  "data": {
+    "Results": [
+      {
+        "Judul": "UMA atas Saham PT Solusi Environment Asia Tbk. (SOFA)",
+        "UMAID": null,
+        "Status": null,
+        "UMADate": "2026-06-11T00:00:00",
+        "CompanyID": "SOFA",
+        "CompanyName": null,
+        "AnnouncementNo": null
+      }
+    ],
+    "ResultCount": 0,
+    "SearchCriteria": {
+      "DateTo": null,
+      "Keyword": "not used",
+      "DateFrom": null,
+      "pagesize": 10,
+      "indexfrom": 0
+    }
+  },
+  "type": "uma",
+  "dataset": "market-activity",
+  "provider": "idx"
+}

@@ -1,0 +1,33 @@
+{
+  "data": [
+    {
+      "No": 1,
+      "Bid": 8625,
+      "Low": 8050,
+      "Date": "2026-06-12T00:00:00",
+      "High": 8850,
+      "Close": 8650,
+      "Offer": 8650,
+      "Value": 182271837500,
+      "Change": 600,
+      "Volume": 21262200,
+      "Previous": 8050,
+      "BidVolume": 29200,
+      "Frequency": 9962,
+      "OpenPrice": 8100,
+      "StockCode": "AADI",
+      "StockName": "Adaro Andalan Indonesia Tbk.",
+      "FirstTrade": 8075,
+      "ForeignBuy": 5896500,
+      "ForeignSell": 9874800,
+      "OfferVolume": 67500,
+      "IDStockSummary": 4031673
+    }
+  ],
+  "start": 0,
+  "length": 1,
+  "dataset": "stock-summary",
+  "provider": "idx",
+  "recordsTotal": 959,
+  "recordsFiltered": 959
+}

@@ -13,6 +13,13 @@ Stage 3 now has one shared runtime facade without recreating the application:
 snapshot metadata, and Telegram topic router. Existing Stage 1/2 engines and
 their imports remain intact.
 
+The ZAPI IDX source is now aligned with the published Zapi Finance IDX
+reference. The adapter no longer contains guessed `v1/*` paths: it uses the
+documented stock, index, company/security, and market-activity endpoints,
+validates the documented response shapes, and sends `x-api-key` from the
+environment. Unsupported canonical types are explicit rather than silently
+falling through to an invented endpoint.
+
 ## Files added/modified
 
 Added:
@@ -34,6 +41,8 @@ Modified:
   metadata;
 - `modules/job_runner/delivery.py` three-topic routing and delivery telemetry;
 - version/config files, CI validators, `.gitignore`, and compatibility marker.
+- ZAPI endpoint adapter, transport error handling, documented response
+  fixtures, and endpoint contract tests.
 
 Moved/deleted/archived: none. Existing files were classified before change;
 legacy and archive candidates remain until an import/entry-point review gives a
@@ -99,13 +108,40 @@ Final Watchlist validates predecessor status, `trade_date`, and
 | final watchlist | dependency artifacts only | dependency status and snapshot IDs |
 | final decision | `CanonicalCandidate` | source provenance and snapshot IDs required |
 
-## Source readiness
+## ZAPI IDX endpoint alignment
 
-ZAPI is `NOT_CONFIGURED` by default. It becomes `LIVE` only if enabled,
-documentation is configured, base URL exists, and API key exists. Forced/offline
-runs are `MOCK` and never `LIVE`. Stockbit API may be empty; in that case the
-manager keeps the API `NOT_CONFIGURED` and uses an available file export as
-`FILE`/fallback. Provider metadata is never blank for data jobs.
+Reference: [Zapi Finance IDX full reference](https://zpi.web.id/api/finance/idx/llms.txt).
+The environment base URL is `ZAPI_IDX_BASE_URL` (deployment value
+`https://api.zpi.web.id/v1/finance:idx`) and the only authentication header is
+`x-api-key: ZAPI_IDX_API_KEY`.
+
+| Canonical type | Verified endpoint(s) | Request parameters | Status |
+|---|---|---|---|
+| `DailyBar` | `/stock-summary` | `length`, `start`, `date`, `code` | SUPPORTED |
+| `MarketIndex` | `/index-summary` | `length`, `start`, `date` | SUPPORTED |
+| `SymbolMetadata` | `/companies`, `/securities` | `length`, `start`, `code`; securities also `sector`, `board` | SUPPORTED |
+| `TradingStatus` | `/market-activity` | required `type=suspend\|relisting\|uma` | SUPPORTED |
+| `BrokerFlow` | `/broker-summary` is documented | `length`, `start`, `date` | UNSUPPORTED for canonical flow |
+| `IntradayQuote`, `OrderBookSnapshot`, `CorporateAction`, `ForeignFlow` | no enabled verified mapping | — | UNSUPPORTED / NOT_CONFIGURED |
+
+The stock-summary mapper covers the IDX field names (`OpenPrice`, `High`,
+`Low`, `Close`, `Previous`, `Volume`, `Value`, `Frequency`, `StockCode`), the
+index mapper preserves `IndexCode` and derives percentage change from
+`Change`/`Previous`, and metadata joins `companies` with `securities`. Market
+activity rows become fail-closed `SUSPENDED`, `RELISTING`, or `UMA` status
+records. Each record carries raw-payload hash, endpoint provenance, source
+mode (`ZAPI_IDX` or `ZAPI_IDX_MOCK`), and pagination telemetry.
+
+The published free-tier limit (60 requests/minute) is handled as a retryable
+429 with `Retry-After`; authentication, 4xx/5xx, malformed JSON, envelope, and
+pagination errors are surfaced without leaking response bodies or credentials.
+
+ZAPI is `NOT_CONFIGURED` by default at runtime because the repository has no
+key. It becomes `LIVE` only if enabled, documentation is configured, and both
+environment values exist. Forced/offline runs are `MOCK` and never `LIVE`.
+Stockbit API may be empty; in that case the manager keeps the API
+`NOT_CONFIGURED` and uses an available file export as `FILE`/fallback. Provider
+metadata is never blank for data jobs.
 
 ## Unified status example: post_market
 
@@ -163,17 +199,19 @@ message thread ID, Telegram message ID, part count, idempotency key and status.
 ## Cleanup and security
 
 `.env`, runtime state, caches, locks, previews, snapshots, job status, output,
-logs, temporary CSV/JSON, and coverage caches are ignored. The local Telegram
-configuration was sanitized to empty values; credentials are environment-only.
-No official test fixture was ignored or removed. No source active file contains
-a redaction marker or hardcoded credential.
+logs, temporary CSV/JSON, and coverage caches are ignored and local runtime
+artefacts were cleaned before validation. The local Telegram configuration was
+sanitized to empty values; credentials are environment-only. No official test
+fixture was ignored or removed. No source active file contains a redaction
+marker or hardcoded credential.
 
 ## Validation and compatibility
 
-The required runtime/config/contract checks, compilation, full pytest suite,
-`git diff --check`, and Git status are run before delivery. Legacy Stage 1/2
-imports and tests remain supported; `master_pipeline.py` is explicitly marked
-deprecated rather than removed. Live ZAPI payload mapping, authentication,
-rate limits, real corporate actions, live market freshness, and provider
-conflict behaviour still require ZAPI documentation and live market data.
-
+The required runtime/config/contract checks, compilation, full pytest suite
+(`226 passed`), `git diff --check`, and Git status are run before delivery.
+Legacy Stage 1/2 imports and tests remain supported; `master_pipeline.py` is
+explicitly marked deprecated rather than removed. Live ZAPI authentication,
+quota behaviour, market-date freshness, and production conflict behaviour
+still require a valid ZAPI key and live market data. Broker-summary semantics
+still require a canonical BUY/SELL mapping before it can be enabled as
+`BrokerFlow`.

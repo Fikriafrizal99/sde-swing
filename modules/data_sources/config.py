@@ -47,6 +47,7 @@ class SourceConfig:
     api_key_env: str = ""
     base_url_env: str = ""
     documentation_configured: bool = False
+    capabilities: dict[str, Any] = field(default_factory=dict)
     note: str = ""
 
     def api_key(self) -> str | None:
@@ -138,6 +139,7 @@ def parse_config(payload: dict[str, Any]) -> DataSourceConfig:
             api_key_env=str(raw.get("api_key_env", "") or ""),
             base_url_env=str(raw.get("base_url_env", "") or ""),
             documentation_configured=_as_bool(raw.get("documentation_configured"), False),
+            capabilities=dict(raw.get("capabilities") or {}),
             note=str(raw.get("note", "") or ""),
         )
 

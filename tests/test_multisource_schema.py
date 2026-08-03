@@ -74,11 +74,12 @@ def test_payload_hash_is_deterministic():
 
 def test_data_source_config_loads_and_validates():
     cfg = load_data_source_config(ROOT / "config" / "data_sources.json")
-    # ZAPI must be disabled/not-configured by default; never live.
+    # Endpoint documentation is configured, but credentials are still absent
+    # in the repository, so the source cannot become LIVE.
     zapi = cfg.source("ZAPI_IDX")
     assert zapi is not None
-    assert zapi.enabled is False
-    assert zapi.documentation_configured is False
+    assert zapi.enabled is True
+    assert zapi.documentation_configured is True
     # Ownership chains resolve to known sources.
     assert cfg.resolution_chain("DailyBar")[0] == "ZAPI_IDX"
     assert cfg.resolution_chain("BrokerFlow") == ["STOCKBIT"]

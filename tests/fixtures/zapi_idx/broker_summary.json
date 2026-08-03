@@ -1,0 +1,19 @@
+{
+  "data": [
+    {
+      "No": 1,
+      "Date": "2026-06-12T00:00:00",
+      "Value": 1187317700,
+      "IDFirm": "AD",
+      "Volume": 5131200,
+      "FirmName": "Sukadana Prima Sekuritas",
+      "Frequency": 204,
+      "IDBrokerSummary": 957287
+    }
+  ],
+  "start": 0,
+  "length": 1,
+  "dataset": "broker-summary",
+  "provider": "idx",
+  "recordsTotal": 88
+}

@@ -25,11 +25,23 @@ class SourceTimeout(SourceError):
 
 
 class SourceRateLimited(SourceError):
-    pass
+    """The provider rejected the request because its rate limit was hit."""
+
+    def __init__(self, message: str = "source rate limited", *, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class SourceUnavailable(SourceError):
     pass
+
+
+class SourceUnsupported(SourceError):
+    """The provider/source has no verified endpoint for the requested type."""
+
+
+class SourceRequestInvalid(SourceError):
+    """A request cannot be represented by the documented provider contract."""
 
 
 class SourceNotConfigured(SourceError):
@@ -91,7 +103,9 @@ class SourceClient(ABC):
                 last_exc = exc
                 if attempt >= self.retry:
                     break
-                sleep(self.backoff_base * (2 ** attempt))
+                retry_after = getattr(exc, "retry_after", None)
+                delay = float(retry_after) if retry_after is not None else self.backoff_base * (2 ** attempt)
+                sleep(max(0.0, delay))
         if last_exc is not None:
             raise last_exc
         raise SourceError("with_retry exhausted without result")

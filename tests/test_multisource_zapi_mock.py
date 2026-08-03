@@ -81,12 +81,14 @@ def test_mock_trading_status_maps_to_canonical():
     adapter = ZapiIdxAdapter(client)
     records = adapter.to_canonical("TradingStatus", raw, symbol="BBCA")
     assert records[0].record_type == "TradingStatus"
-    assert records[0].status == "NORMAL"
+    # The documented market-activity default is type=suspend, so a returned
+    # row is fail-closed as suspended rather than a fabricated NORMAL state.
+    assert records[0].status == "SUSPENDED"
 
 
 def test_force_mock_never_makes_http():
     # MockZapiTransport returns latency 0 and status 200 without network.
     transport = MockZapiTransport()
-    resp = transport.request("GET", "v1/daily", params={"symbol": "BBCA"})
+    resp = transport.request("GET", "/stock-summary", params={"code": "BBCA"})
     assert resp.status_code == 200
     assert resp.latency_ms == 0.0

@@ -9,12 +9,14 @@
       "fallback": ["HISTORICAL_PROVIDER"]
     },
     "IntradayQuote": {
-      "primary": "ZAPI_IDX",
-      "fallback": []
+      "primary": "INTERNAL",
+      "fallback": [],
+      "note": "UNSUPPORTED: ZAPI IDX catalog has no documented intraday quote endpoint."
     },
     "OrderBookSnapshot": {
-      "primary": "ZAPI_IDX",
-      "fallback": ["STOCKBIT"]
+      "primary": "INTERNAL",
+      "fallback": [],
+      "note": "UNSUPPORTED: ZAPI IDX catalog has no documented order-book endpoint."
     },
     "BrokerFlow": {
       "primary": "STOCKBIT",
@@ -34,7 +36,7 @@
       "fallback": ["HISTORICAL_PROVIDER"]
     },
     "CorporateAction": {
-      "primary": "ZAPI_IDX",
+      "primary": "INTERNAL",
       "fallback": []
     },
     "SymbolMetadata": {
@@ -49,7 +51,7 @@
   },
   "sources": {
     "ZAPI_IDX": {
-      "enabled": false,
+      "enabled": true,
       "priority": 10,
       "timeout": 15,
       "retry": 3,
@@ -60,8 +62,51 @@
       "fail_open_or_closed": "FAIL_CLOSED",
       "api_key_env": "ZAPI_IDX_API_KEY",
       "base_url_env": "ZAPI_IDX_BASE_URL",
-      "documentation_configured": false,
-      "note": "ZAPI IDX is NOT_CONFIGURED until documentation + credentials are supplied. It is never treated as live while disabled."
+      "documentation_configured": true,
+      "capabilities": {
+        "DailyBar": {
+          "status": "SUPPORTED",
+          "endpoint": "/stock-summary",
+          "params": ["length", "start", "date", "code"]
+        },
+        "MarketIndex": {
+          "status": "SUPPORTED",
+          "endpoint": "/index-summary",
+          "params": ["length", "start", "date"]
+        },
+        "SymbolMetadata": {
+          "status": "SUPPORTED",
+          "endpoints": ["/companies", "/securities"],
+          "params": ["length", "start", "code", "sector", "board"]
+        },
+        "TradingStatus": {
+          "status": "SUPPORTED",
+          "endpoint": "/market-activity",
+          "params": ["type"]
+        },
+        "BrokerFlow": {
+          "status": "UNSUPPORTED",
+          "endpoint": "/broker-summary",
+          "reason": "Documented response has aggregate broker totals without symbol BUY/SELL/net flow fields."
+        },
+        "IntradayQuote": {
+          "status": "UNSUPPORTED",
+          "reason": "No documented endpoint."
+        },
+        "OrderBookSnapshot": {
+          "status": "UNSUPPORTED",
+          "reason": "No documented endpoint."
+        },
+        "ForeignFlow": {
+          "status": "NOT_CONFIGURED",
+          "reason": "No verified canonical mapping enabled."
+        },
+        "CorporateAction": {
+          "status": "UNSUPPORTED",
+          "reason": "No verified canonical mapping enabled."
+        }
+      },
+      "note": "Published Zapi IDX endpoints are verified. Live mode still requires ZAPI_IDX_BASE_URL and ZAPI_IDX_API_KEY; absent credentials remain NOT_CONFIGURED/MOCK and never LIVE."
     },
     "STOCKBIT": {
       "enabled": true,

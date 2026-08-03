@@ -31,7 +31,7 @@ Produksi tetap memakai `MODERATE_BASELINE`. `MODERATE_BALANCED` dan `MODERATE_FL
 ## 2. Source integrity dan critical fixes
 
 - Source Stage 2 dibangun dari archive branch GitHub yang persis, bukan source audit yang ter-redact.
-- Pemeriksaan source aktif tidak menemukan literal `<REDACTED>`.
+- Pemeriksaan source aktif tidak menemukan literal redaction marker.
 - Parser Stockbit, validasi tanggal, config hash/version, data quality, not-tradeable/suspend, strong broker distribution, hard extension, stop/target consistency, maximum risk, minimum RR, position sizing, dan active-trade guard tetap ketat.
 - `STRONG_BROKER_DISTRIBUTION` tetap hard blocker.
 - Stop loss tidak diperlebar untuk meningkatkan jumlah kandidat.

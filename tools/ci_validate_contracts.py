@@ -7,7 +7,8 @@ Enforces the Stage 3 hard constraints at CI time:
    AVOID (those belong to the Final Decision Engine).
 3. The decision bridge never adds a decision column and never mutates a
    protected decision column.
-4. config/data_sources.json keeps ZAPI NOT_CONFIGURED (never live in CI).
+4. config/data_sources.json records the documented ZAPI capabilities while
+   credentials remain environment-only; a credential-less run is never LIVE.
 
 Exits non-zero on any violation.
 """
@@ -113,7 +114,7 @@ def check_bridge_protects_decisions() -> int:
     return 0
 
 
-def check_zapi_not_configured() -> int:
+def check_zapi_not_live_without_credentials() -> int:
     cfg_path = ROOT / "config" / "data_sources.json"
     if not cfg_path.exists():
         return _fail("config/data_sources.json missing")
@@ -121,9 +122,27 @@ def check_zapi_not_configured() -> int:
     zapi = cfg.source("ZAPI_IDX")
     if zapi is None:
         return _fail("ZAPI_IDX source missing from config")
-    if zapi.enabled or zapi.documentation_configured:
-        return _fail("ZAPI_IDX must stay disabled + not documentation_configured")
-    print("OK config: ZAPI_IDX NOT_CONFIGURED (never live in CI)")
+    if not zapi.enabled or not zapi.documentation_configured:
+        return _fail("ZAPI_IDX documented capabilities must remain enabled in config")
+    capabilities = zapi.capabilities
+    for record_type in ("DailyBar", "MarketIndex", "SymbolMetadata", "TradingStatus"):
+        if str((capabilities.get(record_type) or {}).get("status", "")).upper() != "SUPPORTED":
+            return _fail(f"ZAPI_IDX capability missing SUPPORTED status: {record_type}")
+    for record_type in ("IntradayQuote", "OrderBookSnapshot", "BrokerFlow", "CorporateAction"):
+        status = str((capabilities.get(record_type) or {}).get("status", "")).upper()
+        if status not in {"UNSUPPORTED", "NOT_CONFIGURED"}:
+            return _fail(f"unverified ZAPI capability was enabled: {record_type}={status}")
+    # CI must not require credentials and must never print them. A local
+    # operator may still run this check with a key; the client readiness
+    # assertion below is what prevents a false LIVE label when absent.
+    from modules.data_sources.zapi_idx_adapter import MockZapiTransport, ZapiIdxClient
+    client = ZapiIdxClient.from_config(zapi)
+    if not zapi.api_key() and not isinstance(client._transport, MockZapiTransport):
+        return _fail("credential-less ZAPI_IDX unexpectedly selected LIVE transport")
+    if not zapi.api_key():
+        print("OK config: documented ZAPI_IDX capabilities, credential-less run NOT_CONFIGURED/MOCK")
+    else:
+        print("OK config: documented ZAPI_IDX capabilities; credentials remain environment-only")
     return 0
 
 
@@ -179,7 +198,7 @@ def main() -> int:
     rc |= check_record_types()
     rc |= check_multiday_context_only()
     rc |= check_bridge_protects_decisions()
-    rc |= check_zapi_not_configured()
+    rc |= check_zapi_not_live_without_credentials()
     rc |= check_integrated_runtime_contract()
     rc |= check_structure_and_security()
     return 1 if rc else 0

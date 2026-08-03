@@ -1,0 +1,17 @@
+{
+  "data": [
+    {
+      "Code": "AADI",
+      "Name": "Adaro Andalan Indonesia Tbk.",
+      "Shares": 7786891760,
+      "ListingDate": "2024-12-05T00:00:00",
+      "ListingBoard": "Utama"
+    }
+  ],
+  "start": 0,
+  "length": 1,
+  "dataset": "securities",
+  "provider": "idx",
+  "recordsTotal": 957,
+  "recordsFiltered": 957
+}
