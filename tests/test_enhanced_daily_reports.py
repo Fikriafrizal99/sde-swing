@@ -19,55 +19,135 @@ def test_gemini_without_key_uses_deterministic_fallback() -> None:
     assert result.main_risk == "Risiko engine"
 
 
-def test_final_watchlist_sends_summary_top_five_and_exports_active_rows(tmp_path: Path) -> None:
+def _watchlist_row(index: int, decision: str) -> dict:
+    return {
+        "trade_date": "2026-08-03",
+        "generated_at": "2026-08-03T18:37:00+07:00",
+        "rank": index,
+        "symbol": f"S{index}",
+        "decision": decision,
+        "confidence": 90 - index,
+        "setup": "BREAKOUT_RETEST",
+        "trend": "BULLISH",
+        "technical_state": "★★★★",
+        "technical_quality": 77,
+        "entry_readiness": 68,
+        "momentum_status": "POSITIVE",
+        "rsi": 57,
+        "volume_description": "CONFIRMED",
+        "volume_ratio_ma20": 1.24,
+        "entry_low": 100,
+        "entry_high": 105,
+        "stop_loss": 95,
+        "target_1": 115,
+        "target_2": 120,
+        "risk_reward": 2.2636250620755885,
+        "broker_status": "ACCUMULATION",
+        "broker_direction": "ACCUMULATION",
+        "broker_confidence": 72,
+        "broker_net_flow": 1_500_000_000,
+        "broker_buy_ratio": 64,
+        "broker_sell_ratio": 32,
+        "broker_alignment": "SELARAS",
+        "top_buyers": [{
+            "broker": "AK",
+            "value": 1_000_000_000,
+            "avg_price": 103,
+            "classification": "Lokal",
+        }],
+        "top_sellers": [{
+            "broker": "TP",
+            "value": 500_000_000,
+            "avg_price": 104,
+            "classification": "Asing",
+        }],
+        "avg_buyer_price": 102,
+        "avg_seller_price": 104,
+        "last_price": 103,
+        "distance_to_buyer_avg_pct": 0.98,
+        "broker_raw_coverage": 96,
+        "execution_state": "WAITING — TUNGGU AREA ENTRY / TRIGGER",
+        "trigger_description": "Harga masuk area entry dan volume menguat.",
+        "waiting_triggers": [
+            "Harga masuk area entry",
+            "Volume menguat",
+            "Broker flow tetap positif",
+        ],
+        "main_reason_technical": "Trend bullish dan momentum positif.",
+        "main_reason_broker": "Broker accumulation mendukung.",
+        "main_reason_entry": "Harga masih dekat area entry.",
+        "risk_items": [
+            "Harga berisiko membuka terlalu tinggi.",
+            "Flow broker dapat melemah.",
+        ],
+        "invalidation": "harga menembus support utama",
+        "sector_state": "ROTATING_IN",
+        "market_regime": "BULLISH_MODERATE",
+        "data_status": "VALID",
+        "yahoo_status": "VALID",
+        "zapi_status": "MATCH_WITH_TOLERANCE",
+        "source": "TEST",
+    }
+
+
+def test_final_watchlist_uses_agreed_format_and_exports_active_rows(tmp_path: Path) -> None:
     builder = EnhancedDailyReportBuilder(
         output_root=tmp_path,
         interpreter=GeminiInterpreter(api_key=""),
         max_watchlist_messages=5,
     )
-    rows = []
     decisions = ["BUY", "BUY_CANDIDATE", "WATCH_HIGH", "WATCH", "WATCH", "WAIT", "AVOID"]
-    for index, decision in enumerate(decisions, 1):
-        rows.append({
-            "trade_date": "2026-08-03",
-            "rank": index,
-            "symbol": f"S{index}",
-            "decision": decision,
-            "confidence": 90 - index,
-            "setup": "BREAKOUT_RETEST",
-            "entry_low": 100,
-            "entry_high": 105,
-            "stop_loss": 95,
-            "target_1": 115,
-            "target_2": 120,
-            "risk_reward": 2.0,
-            "technical_state": "STRONG",
-            "broker_state": "ACCUMULATION",
-            "sector_state": "ROTATING_IN",
-            "market_regime": "BULLISH_MODERATE",
-            "data_status": "VALID",
-            "source": "TEST",
-        })
+    rows = [_watchlist_row(index, decision) for index, decision in enumerate(decisions, 1)]
 
     artifacts = builder.build_final_watchlist({
         "trade_date": "2026-08-03",
+        "generated_at": "2026-08-03T18:37:00+07:00",
         "provider": "ZAPI IDX + STOCKBIT",
         "source_mode": "LIVE",
         "coverage": 96,
+        "market_regime": "BULLISH_MODERATE",
+        "execution_mode": "SELECTIVE",
         "rows": rows,
     })
     summary = [item for item in artifacts if item.report_type == "final_watchlist_summary"]
     detail = [item for item in artifacts if item.report_type == "final_watchlist_detail"]
     csv_items = [item for item in artifacts if item.report_type == "final_watchlist_csv"]
+
     assert len(summary) == 1
     assert "🎯 SDE SWING — FINAL WATCHLIST" in summary[0].text
+    assert "🕒 Dibuat: 18:37 WIB" in summary[0].text
     assert "• BUY READY      : 1" in summary[0].text
     assert "• BUY CANDIDATE  : 1" in summary[0].text
     assert "• WATCH          : 3" in summary[0].text
-    assert len(detail) == 5
-    assert len(csv_items) == 1
-    assert "📊 S1 | 🟢 BUY" in detail[0].text
 
+    assert len(detail) == 5
+    text = detail[0].text
+    required_sections = [
+        "📈 TEKNIKAL",
+        "🌊 BROKER SUMMARY",
+        "🟢 TOP BUYER",
+        "🔴 TOP SELLER",
+        "💰 POSISI BROKER",
+        "🎯 RENCANA",
+        "🔔 YANG DITUNGGU",
+        "✅ ALASAN UTAMA",
+        "⚠️ RISIKO DAN INVALIDATION",
+        "🧭 EKSEKUSI",
+    ]
+    for section in required_sections:
+        assert section in text
+    for forbidden in ("VALIDASI DATA", "SOURCE PROVENANCE", "ZAPI IDX", "Yahoo", "MARKET CONTEXT"):
+        assert forbidden not in text
+
+    assert "Trend         : BULLISH" in text
+    assert "Trend         : ★★★★" not in text
+    assert "Momentum      : POSITIVE — RSI 57" in text
+    assert "Volume        : CONFIRMED — 1,24x MA20" in text
+    assert "R:R    : 1:2,26" in text
+    assert "1. AK — Rp1 miliar | Avg 103 | Lokal" in text
+
+    assert len(csv_items) == 1
+    assert "validasi data" not in csv_items[0].caption.lower()
     csv_path = csv_items[0].attachment_path
     assert csv_path is not None and csv_path.exists()
     assert csv_path.name == "sde-final-watchlist-2026-08-03.csv"
@@ -75,6 +155,7 @@ def test_final_watchlist_sends_summary_top_five_and_exports_active_rows(tmp_path
         exported = list(csv.DictReader(handle))
     assert len(exported) == 5
     assert {row["decision"] for row in exported}.isdisjoint({"WAIT", "AVOID"})
+    assert {row["symbol"] for row in exported} == {"S1", "S2", "S3", "S4", "S5"}
 
 
 def test_market_outlook_matches_restored_sections(tmp_path: Path) -> None:
@@ -116,27 +197,100 @@ def test_market_outlook_matches_restored_sections(tmp_path: Path) -> None:
     assert "Sentimen global digunakan sebagai konteks" in artifact.text
 
 
-def test_post_market_reconciles_loaded_and_invalid_counts(tmp_path: Path) -> None:
+def test_post_market_matches_agreed_sections_and_counts(tmp_path: Path) -> None:
     builder = EnhancedDailyReportBuilder(tmp_path, GeminiInterpreter(api_key=""))
     artifact = builder.build_post_market({
         "trade_date": "2026-08-04",
-        "process_status": "SUCCESS",
+        "finished_at": "2026-08-04T18:37:00+07:00",
+        "process_status": "SUCCESS_WITH_WARNING",
+        "market_regime": "STRONG_BULLISH",
+        "execution_mode": "SELECTIVE_AGGRESSIVE",
+        "global_tone": "RISK_ON",
+        "ihsg_trend": "BULLISH",
+        "breadth": "BULLISH",
+        "leading": ["Energy"],
+        "rotating_in": ["Industrials"],
+        "weakening": ["Technology"],
+        "lagging": ["Infrastructure"],
         "symbols_requested": 441,
         "symbols_loaded": 439,
         "symbols_valid": 437,
         "symbols_failed": 2,
         "symbols_skipped": 0,
         "coverage": 99.1,
+        "funnel_universe": 441,
+        "funnel_liquidity": 120,
+        "funnel_technical": 50,
+        "funnel_setup": 20,
+        "funnel_entry_ready": 15,
+        "funnel_broker": 13,
+        "funnel_final": 13,
+        "dominant_filters": [
+            {"label": "Likuiditas tidak memenuhi batas", "count": 321},
+            {"label": "Setup belum matang", "count": 70},
+        ],
+        "buy_ready_count": 2,
+        "buy_candidate_count": 4,
+        "watch_count": 7,
+        "wait_count": 6,
+        "avoid_count": 1,
+        "final_ready_count": 13,
         "technical_status": "READY",
         "universe_status": "READY",
         "candidate_status": "READY",
         "broker_status": "READY",
+        "market_outlook_status": "READY",
+        "final_watchlist_status": "READY_TO_RUN",
         "historical_status": "VALID",
+        "yahoo_data_date": "2026-08-04",
         "zapi_status": "SUCCESS_WITH_WARNING",
+        "zapi_data_date": "2026-08-03",
         "zapi_coverage": 100,
+        "zapi_note": "Menggunakan completed trading session terakhir.",
         "stockbit_status": "READY",
+        "stockbit_data_date": "2026-08-04",
+        "stockbit_coverage": 100,
+        "global_market_status": "VALID",
+        "global_data_date": "2026-08-03",
+        "global_coverage": 100,
+        "run_id": "POST-20260804-183700",
     })
-    assert "🌆 SDE SWING — POST MARKET" in artifact.text
-    assert "• Not Loaded      : 2 saham" in artifact.text
-    assert "• Invalid         : 2 saham" in artifact.text
-    assert "• Impact          : Tidak material" in artifact.text
+    text = artifact.text
+    ordered_sections = [
+        "📊 MARKET SUMMARY",
+        "🔄 SECTOR BIAS",
+        "📦 DATA QUALITY",
+        "🔎 CANDIDATE FUNNEL",
+        "🚧 FILTER DOMINAN",
+        "📊 SCREENING RESULT",
+        "📌 INTERPRETASI",
+        "📈 PIPELINE STATUS",
+        "📡 SOURCE STATUS",
+        "🎯 NEXT PROCESS",
+    ]
+    positions = [text.index(section) for section in ordered_sections]
+    assert positions == sorted(positions)
+    assert "🕒 Proses selesai: 18:37 WIB" in text
+    assert "SUCCESS WITH WARNING" in text
+    assert "• Not Loaded      : 2 saham" in text
+    assert "• Invalid         : 2 saham" in text
+    assert "• Impact          : TIDAK MATERIAL" in text
+    assert "• Lolos likuiditas        : 120" in text
+    assert "• BUY READY     : 2" in text
+    assert "Run ID: POST-20260804-183700" in text
+
+
+def test_post_market_does_not_invent_missing_funnel_counts(tmp_path: Path) -> None:
+    builder = EnhancedDailyReportBuilder(tmp_path, GeminiInterpreter(api_key=""))
+    artifact = builder.build_post_market({
+        "trade_date": "2026-08-04",
+        "process_status": "SUCCESS",
+        "symbols_requested": 10,
+        "symbols_loaded": 10,
+        "symbols_valid": 10,
+        "symbols_skipped": 0,
+        "coverage": 100,
+    })
+    assert "• Universe awal           : 10" in artifact.text
+    assert "• Tahap rinci belum tersedia dari artifact engine" in artifact.text
+    assert "• Belum tersedia dari artifact engine" in artifact.text
