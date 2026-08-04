@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -9,6 +10,7 @@ from modules.ai_interpretation import GeminiInterpreter
 from modules.telegram.daily_report_ui import (
     format_broker_multiday,
     format_broker_summary,
+    format_final_watchlist_summary,
     format_market_outlook,
     format_post_market,
     format_watchlist_detail,
@@ -33,12 +35,17 @@ class DailyReportArtifact:
 
 
 FINAL_WATCHLIST_COLUMNS = [
-    "trade_date", "rank", "symbol", "decision", "confidence", "setup",
-    "entry_low", "entry_high", "stop_loss", "target_1", "target_2",
-    "risk_reward", "technical_score", "technical_state", "broker_score",
-    "broker_state", "sector_state", "market_regime", "main_reason",
-    "main_risk", "data_status", "source", "yahoo_status", "zapi_status",
-    "reconciliation_status", "zapi_freshness_days", "broker_status",
+    "trade_date", "rank", "symbol", "decision", "execution_state",
+    "confidence", "setup", "entry_low", "entry_high", "stop_loss",
+    "target_1", "target_2", "risk_reward", "technical_score",
+    "technical_state", "entry_readiness", "momentum_status", "rsi",
+    "volume_ratio_ma20", "broker_score", "broker_state", "broker_net_flow",
+    "broker_buy_ratio", "broker_sell_ratio", "broker_alignment",
+    "sector_state", "market_regime", "main_reason", "main_risk",
+    "trigger_description", "data_status", "data_conflict", "source",
+    "yahoo_status", "zapi_status", "reconciliation_status",
+    "zapi_freshness_days", "broker_status", "foreign_buy", "foreign_sell",
+    "foreign_net",
 ]
 
 BROKER_SUMMARY_COLUMNS = [
@@ -55,11 +62,11 @@ BROKER_MULTIDAY_COLUMNS = [
 
 
 class EnhancedDailyReportBuilder:
-    """Build the agreed Telegram UI and CSV artifacts from engine-owned data.
+    """Build Telegram UI and CSV artifacts from engine-owned data.
 
-    Input values are treated as final engine facts. Gemini may only replace the
-    narrative fields main_reason/main_risk/execution_note. The original rows are
-    never mutated in place.
+    Input values remain engine facts. Presentation enrichment only reads
+    already-produced Market Outlook artifacts; it never changes scoring,
+    decisions, thresholds, or source ownership.
     """
 
     def __init__(
@@ -88,7 +95,86 @@ class EnhancedDailyReportBuilder:
             artifacts.extend(self.build_final_watchlist(dict(bundle["final_watchlist"])))
         return artifacts
 
+    @staticmethod
+    def _read_json_optional(path: Path) -> dict[str, Any]:
+        if not path.exists() or not path.is_file() or path.stat().st_size <= 0:
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _market_context(self, trade_date: str) -> dict[str, Any]:
+        if not trade_date:
+            return {}
+        global_path = self.output_root / "global_market" / trade_date / "global_market_snapshot.json"
+        regime_path = self.output_root / "market_regime" / trade_date / "market_outlook_regime.json"
+        global_snapshot = self._read_json_optional(global_path)
+        regime = self._read_json_optional(regime_path)
+
+        rotation: dict[str, Any] = {}
+        if isinstance(regime.get("sector_rotation"), dict):
+            rotation = dict(regime["sector_rotation"])
+        rotation_path = regime.get("sector_rotation_path")
+        if rotation_path and not rotation:
+            candidate = Path(str(rotation_path))
+            if not candidate.is_absolute():
+                candidate = Path.cwd() / candidate
+            payload = self._read_json_optional(candidate)
+            if isinstance(payload.get("sector_rotation"), dict):
+                rotation = dict(payload["sector_rotation"])
+            elif payload:
+                rotation = payload
+
+        sentiment = global_snapshot.get("global_sentiment")
+        sentiment = dict(sentiment) if isinstance(sentiment, dict) else {}
+        coverage = global_snapshot.get("coverage_ratio")
+        if coverage not in (None, ""):
+            try:
+                coverage = float(coverage)
+                if 0 <= coverage <= 1:
+                    coverage *= 100.0
+            except Exception:
+                pass
+
+        return {
+            "market_regime": regime.get("market_regime") or regime.get("regime"),
+            "execution_mode": regime.get("execution_mode"),
+            "ihsg_change": regime.get("ihsg_change_pct", regime.get("ihsg_change")),
+            "ihsg_trend": regime.get("trend", regime.get("ihsg_trend")),
+            "ihsg_momentum": regime.get("momentum", regime.get("ihsg_momentum")),
+            "breadth": regime.get("breadth", regime.get("market_breadth")),
+            "ihsg_reason": regime.get("reason"),
+            "confidence_pct": regime.get("confidence_pct"),
+            "ihsg_data_date": regime.get("data_date"),
+            "global_instruments": global_snapshot.get("instruments", []),
+            "global_sentiment": sentiment,
+            "global_tone": sentiment.get("sentiment_state"),
+            "global_coverage": coverage,
+            "global_market_status": (
+                "VALID" if global_snapshot and not global_snapshot.get("errors")
+                else "VALID_WITH_WARNING" if global_snapshot
+                else "NOT_ATTACHED"
+            ),
+            "snapshot_id": global_snapshot.get("snapshot_id"),
+            "snapshot_created_at": global_snapshot.get("created_at"),
+            "leading": rotation.get("leading", []),
+            "rotating_in": rotation.get("improving", rotation.get("rotating_in", [])),
+            "weakening": rotation.get("weakening", []),
+            "rotating_out": rotation.get("lagging", rotation.get("rotating_out", [])),
+        }
+
+    @staticmethod
+    def _merge_missing(target: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(target)
+        for key, value in context.items():
+            if merged.get(key) in (None, "", [], {}):
+                merged[key] = value
+        return merged
+
     def build_market_outlook(self, data: dict[str, Any]) -> DailyReportArtifact:
+        data = self._merge_missing(data, self._market_context(str(data.get("trade_date", ""))))
         fallback = {
             "main_reason": str(data.get("focus_tomorrow") or "Prioritaskan saham dengan setup valid dan broker flow mendukung."),
             "main_risk": str(data.get("avoid_guidance") or "Hindari mengejar harga di luar area entry."),
@@ -103,8 +189,8 @@ class EnhancedDailyReportBuilder:
             data.setdefault("warnings", []).append(interpretation.warning)
         return DailyReportArtifact("market_outlook", format_market_outlook(data))
 
-    @staticmethod
-    def build_post_market(data: dict[str, Any]) -> DailyReportArtifact:
+    def build_post_market(self, data: dict[str, Any]) -> DailyReportArtifact:
+        data = self._merge_missing(data, self._market_context(str(data.get("trade_date", ""))))
         return DailyReportArtifact("post_market", format_post_market(data))
 
     def build_broker_summary(self, data: dict[str, Any]) -> tuple[DailyReportArtifact, DailyReportArtifact]:
@@ -146,7 +232,27 @@ class EnhancedDailyReportBuilder:
             ),
         )
 
+    @staticmethod
+    def _decision_key(value: Any) -> str:
+        return str(value or "").upper().replace("_", " ").strip()
+
+    @classmethod
+    def _decision_bucket(cls, value: Any) -> str:
+        decision = cls._decision_key(value)
+        if decision in {"BUY", "BUY READY", "BUY CONFIRMED"}:
+            return "BUY_READY"
+        if decision in {"BUY CANDIDATE", "BUY ON TRIGGER"}:
+            return "BUY_CANDIDATE"
+        if decision in {"WATCH", "WATCH HIGH"}:
+            return "WATCH"
+        if decision == "WAIT":
+            return "WAIT"
+        if decision == "AVOID":
+            return "AVOID"
+        return "OTHER"
+
     def build_final_watchlist(self, data: dict[str, Any]) -> list[DailyReportArtifact]:
+        data = self._merge_missing(data, self._market_context(str(data.get("trade_date", ""))))
         rows = [dict(row) for row in data.get("rows", [])]
         interpreted: list[dict[str, Any]] = []
         for row in rows:
@@ -157,6 +263,7 @@ class EnhancedDailyReportBuilder:
             current.setdefault("coverage", data.get("coverage"))
             current.setdefault("zapi_status", data.get("zapi_status", ""))
             current.setdefault("reconciliation_status", data.get("reconciliation_status", ""))
+            current.setdefault("market_regime", data.get("market_regime", ""))
             fallback = {
                 "main_reason": str(current.get("main_reason") or self._watchlist_reason(current)),
                 "main_risk": str(current.get("main_risk") or self._watchlist_risk(current)),
@@ -170,36 +277,58 @@ class EnhancedDailyReportBuilder:
             current["interpretation_status"] = result.status
             interpreted.append(current)
 
-        trade_date = str(data.get("trade_date", ""))
-        csv_path = self.output_root / "final_watchlist" / f"final_watchlist_{trade_date}.csv"
-        self._write_csv(
-            csv_path,
-            interpreted,
-            FINAL_WATCHLIST_COLUMNS + ["interpretation_source", "interpretation_status", "execution_note"],
-        )
-
-        allowed = {"BUY", "BUY READY", "BUY_READY", "BUY CONFIRMED", "BUY_CANDIDATE", "BUY CANDIDATE", "BUY ON TRIGGER", "WATCH_HIGH", "WATCH HIGH", "WATCH"}
-        priority = {
-            "BUY": 0, "BUY READY": 0, "BUY_READY": 0, "BUY CONFIRMED": 0, "BUY ON TRIGGER": 0, "BUY_CANDIDATE": 1, "BUY CANDIDATE": 1,
-            "WATCH_HIGH": 2, "WATCH HIGH": 2, "WATCH": 3,
-        }
-        selected = [row for row in interpreted if str(row.get("decision", "")).upper() in allowed]
+        allowed_buckets = {"BUY_READY", "BUY_CANDIDATE", "WATCH"}
+        priority = {"BUY_READY": 0, "BUY_CANDIDATE": 1, "WATCH": 2}
+        selected = [row for row in interpreted if self._decision_bucket(row.get("decision")) in allowed_buckets]
         selected.sort(key=lambda row: (
-            priority.get(str(row.get("decision", "")).upper(), 99),
+            priority.get(self._decision_bucket(row.get("decision")), 99),
             -float(row.get("confidence", 0) or 0),
             int(row.get("rank", 9999) or 9999),
         ))
-        artifacts = [
+        for index, row in enumerate(selected, start=1):
+            row["rank"] = index
+
+        trade_date = str(data.get("trade_date", ""))
+        csv_path = self.output_root / "final_watchlist" / f"sde-final-watchlist-{trade_date}.csv"
+        self._write_csv(
+            csv_path,
+            selected,
+            FINAL_WATCHLIST_COLUMNS + ["interpretation_source", "interpretation_status", "execution_note"],
+        )
+
+        counts = {"BUY_READY": 0, "BUY_CANDIDATE": 0, "WATCH": 0, "WAIT": 0, "AVOID": 0, "OTHER": 0}
+        for row in interpreted:
+            bucket = self._decision_bucket(row.get("decision"))
+            counts[bucket] = counts.get(bucket, 0) + 1
+
+        summary_data = {
+            **data,
+            "rows": selected,
+            "decision_counts": counts,
+            "top_priority": selected[:3],
+            "csv_filename": csv_path.name,
+        }
+        artifacts: list[DailyReportArtifact] = [
+            DailyReportArtifact("final_watchlist_summary", format_final_watchlist_summary(summary_data))
+        ]
+        artifacts.extend(
             DailyReportArtifact(
                 "final_watchlist_detail",
                 format_watchlist_detail(row),
                 symbol=str(row.get("symbol", "")).upper(),
             )
             for row in selected[: self.max_watchlist_messages]
-        ]
+        )
         artifacts.append(DailyReportArtifact(
             "final_watchlist_csv", "", attachment_path=csv_path,
-            caption="📎 Final Watchlist lengkap terlampir.",
+            caption=(
+                "📎 FINAL WATCHLIST LENGKAP\n\n"
+                f"{len(selected)} saham masuk daftar:\n"
+                f"• BUY READY: {counts['BUY_READY']}\n"
+                f"• BUY CANDIDATE: {counts['BUY_CANDIDATE']}\n"
+                f"• WATCH: {counts['WATCH']}\n\n"
+                "CSV memuat seluruh saham aktif beserta ranking, teknikal, trade plan, broker, validasi data, risiko, dan action."
+            ),
         ))
         return artifacts
 
