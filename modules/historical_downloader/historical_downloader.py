@@ -36,6 +36,7 @@ from swing_utils import (  # noqa: E402
     write_dict_rows_csv,
     write_json,
 )
+from modules.market_calendar.idx_calendar import is_idx_trading_day  # noqa: E402
 
 try:
     import yfinance as yf
@@ -45,8 +46,12 @@ except ImportError:
 
 REQUIRED_CANDLE_COLUMNS = ["Date", "Open", "High", "Low", "Close", "Volume"]
 FULL_BACKFILL = "FULL_BACKFILL"
-INCREMENTAL_UPDATE = "INCREMENTAL_UPDATE"
-SKIP_ALREADY_CURRENT = "SKIP_ALREADY_CURRENT"
+MISSING_ONLY = "MISSING_ONLY"
+REPAIR_OVERLAP = "REPAIR_OVERLAP"
+ALREADY_CURRENT = "ALREADY_CURRENT"
+# Compatibility aliases for callers/tests that still import the V1.2 names.
+INCREMENTAL_UPDATE = MISSING_ONLY
+SKIP_ALREADY_CURRENT = ALREADY_CURRENT
 DEFAULT_EXCLUDED_SYMBOLS = {"IHSG", "BRENT", "OIL", "XAU"}
 
 SYMBOL_STATUSES = {
@@ -74,6 +79,15 @@ class RefreshPlan:
     rows_before: int = 0
     local_modified_at: str = ""
     warning: str = ""
+    canonical_file_path: str = ""
+    file_exists: bool = False
+    first_date: str = ""
+    missing_market_sessions: int = 0
+    duplicate_dates: int = 0
+    internal_gaps: int = 0
+    first_internal_gap: str = ""
+    first_missing_session: str = ""
+    refresh_reason: str = ""
 
 
 @dataclass
@@ -111,6 +125,17 @@ class DownloadResult:
     retry_count: int = 0
     warning: str = ""
     message: str = ""
+    canonical_file_path: str = ""
+    file_exists: bool = False
+    missing_market_sessions: int = 0
+    duplicate_dates: int = 0
+    internal_gaps: int = 0
+    first_missing_session: str = ""
+    refresh_reason: str = ""
+    rows_inserted: int = 0
+    rows_updated: int = 0
+    file_written: bool = False
+    file_unchanged: bool = False
 
 
 def parse_args() -> argparse.Namespace:
@@ -131,10 +156,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pause", type=float, default=0.35, help="Jeda antar simbol dalam detik")
     parser.add_argument("--retries", type=int, default=3, help="Jumlah percobaan per simbol")
     parser.add_argument("--force", action="store_true", help="Compatibility mode: sama dengan --full-backfill")
-    parser.add_argument("--force-refresh", action="store_true", help="Abaikan already-current dan refresh incremental dengan overlap")
+    parser.add_argument("--force-refresh", action="store_true", help="Compatibility alias untuk --repair")
+    parser.add_argument("--repair", action="store_true", help="Jalankan repair overlap per simbol")
     parser.add_argument("--full-backfill", action="store_true", help="Unduh ulang full range; tidak aktif secara default")
     parser.add_argument("--skip-existing", action="store_true", help="Compatibility mode: jangan refresh file yang sudah ada")
-    parser.add_argument("--incremental-overlap-days", type=int, default=5, help="Overlap hari kalender untuk incremental update")
+    parser.add_argument("--repair-overlap-sessions", type=int, default=5, help="Jumlah sesi bursa untuk repair overlap")
+    parser.add_argument("--incremental-overlap-days", type=int, default=5, help=argparse.SUPPRESS)
     parser.add_argument("--batch-enabled", action="store_true", help="Aktifkan batch Yahoo download untuk simbol yang perlu update")
     parser.add_argument("--no-batch", dest="batch_enabled", action="store_false", help="Matikan batch Yahoo download")
     parser.add_argument("--batch-size", type=int, default=50, help="Jumlah simbol per batch Yahoo")
@@ -151,6 +178,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--after-midnight-cutoff", default="06:00", help="Cutoff setelah tengah malam, HH:MM lokal")
     parser.add_argument("--evaluation-datetime", default="", help="Override waktu evaluasi ISO untuk replay/test deterministik")
     parser.add_argument("--market-holiday", action="append", default=[], help="Tanggal libur bursa YYYY-MM-DD; bisa diulang")
+    parser.add_argument("--special-trading-day", action="append", default=[], help="Tanggal perdagangan khusus YYYY-MM-DD; bisa diulang")
     parser.add_argument("--data-source", choices=["LIVE", "FIXTURE"], default="LIVE")
     parser.add_argument("--test-fixture", action="store_true", help="Gunakan fixture lokal; hanya untuk test")
     parser.add_argument("--fixture-dir", default="", help="Folder fixture OHLCV per simbol; hanya untuk --test-fixture")
@@ -336,10 +364,90 @@ def parse_date_text(value: str) -> date | None:
 
 
 def incremental_start_date(local_latest_valid_date: str, overlap_days: int) -> str:
+    """Deprecated calendar-day overlap helper kept for compatibility."""
     parsed = parse_date_text(local_latest_valid_date)
     if parsed is None:
         return ""
     return (parsed - timedelta(days=max(int(overlap_days or 0), 0))).isoformat()
+
+
+def trading_sessions_between(
+    start_exclusive: date,
+    end_inclusive: date,
+    holidays: Iterable[str] = (),
+    special_trading_days: Iterable[str] = (),
+) -> list[date]:
+    sessions: list[date] = []
+    probe = start_exclusive + timedelta(days=1)
+    while probe <= end_inclusive:
+        if is_idx_trading_day(probe, holidays, special_trading_days):
+            sessions.append(probe)
+        probe += timedelta(days=1)
+    return sessions
+
+
+def repair_start_date(
+    local_latest_valid_date: str,
+    overlap_sessions: int,
+    holidays: Iterable[str] = (),
+    special_trading_days: Iterable[str] = (),
+) -> str:
+    parsed = parse_date_text(local_latest_valid_date)
+    if parsed is None:
+        return ""
+    remaining = max(int(overlap_sessions or 0), 0)
+    probe = parsed
+    while remaining > 0:
+        probe -= timedelta(days=1)
+        if is_idx_trading_day(probe, holidays, special_trading_days):
+            remaining -= 1
+    return probe.isoformat()
+
+
+def history_integrity(
+    existing: pd.DataFrame,
+    expected_closed: date,
+    holidays: Iterable[str] = (),
+    special_trading_days: Iterable[str] = (),
+    lookback_sessions: int = 30,
+) -> dict[str, Any]:
+    if existing.empty or "Date" not in existing.columns:
+        return {"first_date": "", "duplicate_dates": 0, "internal_gaps": [], "invalid_latest_candle": False}
+
+    parsed_all = pd.to_datetime(existing["Date"], errors="coerce").dropna().dt.date
+    valid = closed_rows(existing)
+    parsed_valid = pd.to_datetime(valid["Date"], errors="coerce").dropna().dt.date if not valid.empty else pd.Series(dtype=object)
+    if parsed_valid.empty:
+        return {
+            "first_date": "",
+            "duplicate_dates": int(parsed_all.duplicated().sum()),
+            "internal_gaps": [],
+            "invalid_latest_candle": bool(len(parsed_all)),
+        }
+
+    unique_valid = sorted(set(parsed_valid))
+    latest_valid = unique_valid[-1]
+    earliest_probe = latest_valid
+    remaining = max(int(lookback_sessions or 1), 1)
+    while remaining > 0 and earliest_probe > unique_valid[0]:
+        earliest_probe -= timedelta(days=1)
+        if is_idx_trading_day(earliest_probe, holidays, special_trading_days):
+            remaining -= 1
+    expected_internal = trading_sessions_between(
+        earliest_probe - timedelta(days=1),
+        min(latest_valid, expected_closed),
+        holidays,
+        special_trading_days,
+    )
+    valid_set = set(unique_valid)
+    gaps = [day for day in expected_internal if day not in valid_set]
+    latest_any = max(parsed_all) if len(parsed_all) else None
+    return {
+        "first_date": unique_valid[0].isoformat(),
+        "duplicate_dates": int(parsed_all.duplicated().sum()),
+        "internal_gaps": gaps,
+        "invalid_latest_candle": bool(latest_any and latest_any > latest_valid),
+    }
 
 
 def classify_refresh_action(
@@ -348,36 +456,86 @@ def classify_refresh_action(
     expected_closed: date,
     force_refresh: bool = False,
     full_backfill: bool = False,
+    needs_repair: bool = False,
 ) -> str:
     if full_backfill:
         return FULL_BACKFILL
     if not existing_schema_valid or not local_latest_valid_date:
         return FULL_BACKFILL
-    if force_refresh:
-        return INCREMENTAL_UPDATE
+    if force_refresh or needs_repair:
+        return REPAIR_OVERLAP
     if local_latest_valid_date >= expected_closed.isoformat():
-        return SKIP_ALREADY_CURRENT
-    return INCREMENTAL_UPDATE
+        return ALREADY_CURRENT
+    return MISSING_ONLY
 
 
 def build_refresh_plan(symbol: str, destination: Path, args: argparse.Namespace, expected_closed: date) -> RefreshPlan:
     existing, schema_valid, modified_at, warning = inspect_existing(destination, symbol)
     local_latest = latest_date(existing, valid_only=True)
+    holidays = list(getattr(args, "market_holiday", []) or [])
+    special_trading_days = list(getattr(args, "special_trading_day", []) or [])
+    overlap_sessions = int(
+        getattr(args, "repair_overlap_sessions", getattr(args, "incremental_overlap_days", 5)) or 0
+    )
+    integrity = history_integrity(
+        existing,
+        expected_closed,
+        holidays,
+        special_trading_days,
+        lookback_sessions=max(overlap_sessions * 6, 30),
+    )
+    missing_sessions = (
+        trading_sessions_between(
+            parse_date_text(local_latest),
+            expected_closed,
+            holidays,
+            special_trading_days,
+        )
+        if parse_date_text(local_latest)
+        else []
+    )
+    needs_repair = bool(
+        integrity["duplicate_dates"]
+        or integrity["internal_gaps"]
+        or integrity["invalid_latest_candle"]
+    )
+    explicit_repair = bool(getattr(args, "repair", False) or getattr(args, "force_refresh", False))
     action = classify_refresh_action(
         schema_valid,
         local_latest,
         expected_closed,
-        force_refresh=bool(args.force_refresh),
-        full_backfill=bool(args.full_backfill),
+        force_refresh=explicit_repair,
+        full_backfill=bool(getattr(args, "full_backfill", False)),
+        needs_repair=needs_repair,
     )
     download_start = ""
-    download_end = args.end or (expected_closed + timedelta(days=1)).isoformat()
-    if action == INCREMENTAL_UPDATE:
-        download_start = incremental_start_date(local_latest, args.incremental_overlap_days)
+    download_end = getattr(args, "end", None) or (expected_closed + timedelta(days=1)).isoformat()
+    first_missing = missing_sessions[0].isoformat() if missing_sessions else ""
+    if action == MISSING_ONLY:
+        download_start = first_missing
+    elif action == REPAIR_OVERLAP:
+        download_start = repair_start_date(local_latest, overlap_sessions, holidays, special_trading_days)
+        if integrity["internal_gaps"]:
+            download_start = min(download_start, integrity["internal_gaps"][0].isoformat()) if download_start else integrity["internal_gaps"][0].isoformat()
     elif action == FULL_BACKFILL:
-        download_start = args.start or ""
+        download_start = getattr(args, "start", None) or ""
     else:
         download_end = ""
+
+    if action == FULL_BACKFILL:
+        reason = "EXPLICIT_FULL_BACKFILL" if bool(getattr(args, "full_backfill", False)) else (warning or "LOCAL_HISTORY_INVALID").upper().replace(" ", "_")
+    elif explicit_repair:
+        reason = "EXPLICIT_REPAIR"
+    elif integrity["invalid_latest_candle"]:
+        reason = "INVALID_LATEST_CANDLE"
+    elif integrity["duplicate_dates"]:
+        reason = "DUPLICATE_DATES"
+    elif integrity["internal_gaps"]:
+        reason = "INTERNAL_GAP"
+    elif action == MISSING_ONLY:
+        reason = "MISSING_MARKET_SESSIONS"
+    else:
+        reason = "LOCAL_ALREADY_CURRENT"
 
     return RefreshPlan(
         symbol=symbol,
@@ -393,6 +551,15 @@ def build_refresh_plan(symbol: str, destination: Path, args: argparse.Namespace,
         rows_before=int(len(existing)),
         local_modified_at=modified_at,
         warning=warning,
+        canonical_file_path=str(destination.resolve()),
+        file_exists=destination.exists(),
+        first_date=str(integrity["first_date"]),
+        missing_market_sessions=len(missing_sessions),
+        duplicate_dates=int(integrity["duplicate_dates"]),
+        internal_gaps=len(integrity["internal_gaps"]),
+        first_internal_gap=integrity["internal_gaps"][0].isoformat() if integrity["internal_gaps"] else "",
+        first_missing_session=first_missing,
+        refresh_reason=reason,
     )
 
 
@@ -417,6 +584,46 @@ def merge_history(existing: pd.DataFrame, fresh: pd.DataFrame) -> pd.DataFrame:
     combined = combined.sort_values(["Date", "_valid_rank"])
     combined = combined.drop_duplicates("Date", keep="last").drop(columns=["_valid_rank"])
     return combined.sort_values("Date").reset_index(drop=True)
+
+
+def canonical_history_for_hash(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    columns = ["Symbol", "Ticker", "Date", "Open", "High", "Low", "Close", "Adj Close", "Volume"]
+    work = df.copy()
+    work["Date"] = pd.to_datetime(work["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    work = work.dropna(subset=["Date"]).drop_duplicates("Date", keep="last").sort_values("Date")
+    return work[[column for column in columns if column in work.columns]].reset_index(drop=True)
+
+
+def histories_equal(left: pd.DataFrame, right: pd.DataFrame) -> bool:
+    return dataframe_hash(canonical_history_for_hash(left)) == dataframe_hash(canonical_history_for_hash(right))
+
+
+def should_write_history(plan: RefreshPlan, combined: pd.DataFrame) -> bool:
+    return plan.refresh_action != ALREADY_CURRENT and not combined.empty and not histories_equal(plan.existing, combined)
+
+
+def history_change_counts(existing: pd.DataFrame, fresh: pd.DataFrame) -> tuple[int, int]:
+    if fresh is None or fresh.empty:
+        return 0, 0
+    old = canonical_history_for_hash(existing)
+    new = canonical_history_for_hash(fresh)
+    if new.empty:
+        return 0, 0
+    old_by_date = {str(row["Date"]): row for row in old.to_dict(orient="records")} if not old.empty else {}
+    inserted = 0
+    updated = 0
+    for row in new.to_dict(orient="records"):
+        day = str(row["Date"])
+        previous = old_by_date.get(day)
+        if previous is None:
+            inserted += 1
+            continue
+        comparable_columns = [column for column in ("Open", "High", "Low", "Close", "Adj Close", "Volume") if column in row]
+        if any(not pd.isna(row.get(column)) and row.get(column) != previous.get(column) for column in comparable_columns):
+            updated += 1
+    return inserted, updated
 
 
 def build_yahoo_kwargs(
@@ -708,6 +915,16 @@ def fetch_live_group_with_fallback(
     return payloads, batch_requests + left_batches + right_batches
 
 
+def group_plans_by_request(plans: list[RefreshPlan]) -> dict[tuple[str, str, str, str], list[RefreshPlan]]:
+    grouped: dict[tuple[str, str, str, str], list[RefreshPlan]] = {}
+    for plan in plans:
+        if plan.refresh_action == ALREADY_CURRENT:
+            continue
+        key = (plan.refresh_action, plan.download_start_date, plan.download_end_date, plan.refresh_reason)
+        grouped.setdefault(key, []).append(plan)
+    return grouped
+
+
 def fetch_live_for_plans(plans: list[RefreshPlan], args: argparse.Namespace) -> tuple[dict[str, FetchPayload], int]:
     pending = [plan for plan in plans if plan.refresh_action != SKIP_ALREADY_CURRENT]
     payloads: dict[str, FetchPayload] = {}
@@ -736,19 +953,20 @@ def fetch_live_for_plans(plans: list[RefreshPlan], args: argparse.Namespace) -> 
             time.sleep(max(args.pause, 0))
         return payloads, batch_request_count
 
-    grouped: dict[tuple[str, str, str], list[RefreshPlan]] = {}
-    for plan in pending:
-        key = (plan.refresh_action, plan.download_start_date, plan.download_end_date)
-        grouped.setdefault(key, []).append(plan)
+    grouped = group_plans_by_request(pending)
 
     batch_index = 0
     total_batches = sum(len(list(chunked(group_plans, args.batch_size))) for group_plans in grouped.values())
-    for (_action, start, end), group_plans in grouped.items():
+    for (action, start, end, reason), group_plans in grouped.items():
         for chunk in chunked(group_plans, args.batch_size):
             batch_index += 1
             print(
-                f"Processing batch {batch_index}/{total_batches}: "
-                f"{len(chunk)} simbol, start={start or 'period:' + args.period}, end={end or '-'}",
+                f"\nBatch {batch_index}/{total_batches}\n"
+                f"Required start : {start or 'period:' + args.period}\n"
+                f"Expected end   : {end or '-'}\n"
+                f"Symbols        : {len(chunk)}\n"
+                f"Refresh mode   : {action}\n"
+                f"Reason         : {reason}",
                 flush=True,
             )
             group_payloads, group_batch_count = fetch_live_group_with_fallback(chunk, args, start, end, args.period)
@@ -785,6 +1003,13 @@ def build_result(
     download_end_date: str = "",
     retry_count: int = 0,
     warning: str = "",
+    canonical_file_path: str = "",
+    file_exists: bool = False,
+    missing_market_sessions: int = 0,
+    duplicate_dates: int = 0,
+    internal_gaps: int = 0,
+    first_missing_session: str = "",
+    refresh_reason: str = "",
 ) -> DownloadResult:
     latest_before = latest_date(existing, valid_only=True)
     latest_valid_after = latest_date(combined, valid_only=True)
@@ -808,6 +1033,8 @@ def build_result(
 
     if status not in SYMBOL_STATUSES:
         status = "FAILED"
+
+    rows_inserted, rows_updated = history_change_counts(existing, fresh)
 
     return DownloadResult(
         symbol=symbol,
@@ -833,6 +1060,15 @@ def build_result(
         retry_count=int(retry_count),
         warning=warning,
         message=message,
+        canonical_file_path=canonical_file_path,
+        file_exists=file_exists,
+        missing_market_sessions=int(missing_market_sessions),
+        duplicate_dates=int(duplicate_dates),
+        internal_gaps=int(internal_gaps),
+        first_missing_session=first_missing_session,
+        refresh_reason=refresh_reason,
+        rows_inserted=rows_inserted,
+        rows_updated=rows_updated,
     )
 
 
@@ -865,17 +1101,69 @@ def summarize_manifest(
     failed = int(status_df["status"].eq("FAILED").sum()) if not status_df.empty else 0
     no_data = int(status_df["status"].eq("NO_DATA").sum()) if not status_df.empty else 0
     full_backfill = int(status_df["refresh_action"].eq(FULL_BACKFILL).sum()) if not status_df.empty and "refresh_action" in status_df else 0
-    incremental = int(status_df["refresh_action"].eq(INCREMENTAL_UPDATE).sum()) if not status_df.empty and "refresh_action" in status_df else 0
-    already_current = int(status_df["refresh_action"].eq(SKIP_ALREADY_CURRENT).sum()) if not status_df.empty and "refresh_action" in status_df else 0
+    incremental = int(status_df["refresh_action"].eq(MISSING_ONLY).sum()) if not status_df.empty and "refresh_action" in status_df else 0
+    repair = int(status_df["refresh_action"].eq(REPAIR_OVERLAP).sum()) if not status_df.empty and "refresh_action" in status_df else 0
+    already_current = int(status_df["refresh_action"].eq(ALREADY_CURRENT).sum()) if not status_df.empty and "refresh_action" in status_df else 0
     skipped = already_current
     retry_total = int(pd.to_numeric(status_df["retry_count"], errors="coerce").fillna(0).sum()) if not status_df.empty and "retry_count" in status_df else 0
     network_request_symbol_count = int(status_df["network_request_performed"].fillna(False).astype(bool).sum()) if not status_df.empty and "network_request_performed" in status_df else 0
     if len(results) and already_current == len(results):
-        refresh_mode = SKIP_ALREADY_CURRENT
+        refresh_mode = ALREADY_CURRENT
     elif len(results) and full_backfill == len(results):
         refresh_mode = FULL_BACKFILL
+    elif len(results) and repair == len(results):
+        refresh_mode = REPAIR_OVERLAP
+    elif len(results) and incremental == len(results):
+        refresh_mode = MISSING_ONLY
     else:
-        refresh_mode = INCREMENTAL_UPDATE
+        refresh_mode = "MIXED_PER_SYMBOL"
+
+    request_groups: dict[tuple[str, str, str, str], int] = {}
+    for result in results:
+        if result.refresh_action == ALREADY_CURRENT:
+            continue
+        key = (result.refresh_action, result.download_start_date, result.download_end_date, result.refresh_reason)
+        request_groups[key] = request_groups.get(key, 0) + 1
+    request_plan = [
+        {
+            "refresh_mode": key[0],
+            "request_start": key[1] or None,
+            "request_end": key[2] or None,
+            "reason": key[3],
+            "symbols": count,
+        }
+        for key, count in sorted(request_groups.items())
+    ]
+    symbol_plans = []
+    for result in results:
+        canonical_status = (
+            "ALREADY_CURRENT" if result.status == "UNCHANGED_ALREADY_CURRENT"
+            else "UPDATED" if result.status == "UPDATED_VALID"
+            else result.status
+        )
+        symbol_plans.append({
+            "symbol": result.symbol,
+            "canonical_file_path": result.canonical_file_path,
+            "file_exists": result.file_exists,
+            "row_count": result.rows_before,
+            "first_date": result.first_date,
+            "local_last_date_before": result.local_latest_valid_date or result.latest_date_before,
+            "expected_closed_date": result.expected_closed_date,
+            "missing_market_sessions": result.missing_market_sessions,
+            "duplicate_dates": result.duplicate_dates,
+            "internal_gaps": result.internal_gaps,
+            "first_missing_session": result.first_missing_session or None,
+            "request_start": result.download_start_date or None,
+            "request_end": result.download_end_date or None,
+            "refresh_mode": result.refresh_action,
+            "reason": result.refresh_reason,
+            "downloaded_rows": result.rows_downloaded,
+            "inserted_rows": result.rows_inserted,
+            "updated_rows": result.rows_updated,
+            "local_last_date_after": result.latest_valid_close_date,
+            "file_written": result.file_written,
+            "status": canonical_status,
+        })
 
     provider_mode = "LIVE" if str(args.data_source).upper() == "LIVE" else "FIXTURE"
     network_request_performed = bool(status_df["network_request_performed"].fillna(False).astype(bool).any()) if not status_df.empty and "network_request_performed" in status_df else False
@@ -914,12 +1202,16 @@ def summarize_manifest(
         "Refresh_Mode": refresh_mode,
         "Full_Backfill_Count": full_backfill,
         "Incremental_Update_Count": incremental,
+        "Missing_Only_Count": incremental,
+        "Repair_Overlap_Count": repair,
         "Already_Current_Count": already_current,
         "Skipped_Count": skipped,
         "Retry_Count": retry_total,
         "Failed_Count": failed,
         "Network_Request_Symbol_Count": network_request_symbol_count,
         "Network_Request_Batch_Count": int(network_request_batch_count),
+        "Requests_Planned": len(request_plan),
+        "Request_Groups": request_plan,
         "Batch_Size": int(args.batch_size),
         "Worker_Count": int(args.max_workers),
         "Started_At": started_at,
@@ -936,7 +1228,11 @@ def summarize_manifest(
         "Latest_Actual_Valid_Date": latest_valid,
         "Historical_Output_Path": str(output / "historical_ohlcv_combined.csv"),
         "Rows_Before": int(sum(x.rows_before for x in results)),
+        "Rows_Downloaded": int(sum(x.rows_downloaded for x in results)),
+        "Rows_Inserted": int(sum(x.rows_inserted for x in results)),
+        "Rows_Updated": int(sum(x.rows_updated for x in results)),
         "Rows_After": int(sum(x.rows_after for x in results)),
+        "Files_Unchanged": int(sum(bool(x.file_unchanged) for x in results)),
         "Latest_Date_Before": max([x.latest_date_before for x in results if x.latest_date_before] or [""]),
         "Latest_Date_After": max([x.latest_date_after for x in results if x.latest_date_after] or [""]),
         "Latest_Valid_Close_Date": latest_valid,
@@ -956,25 +1252,44 @@ def summarize_manifest(
         "Daily_Candle_Policy": args.daily_candle_policy,
         "Allow_Partial_Daily_Candle": bool(args.allow_partial_daily_candle),
         "Yahoo_Failure_Policy": args.yahoo_failure_policy,
+        "Symbol_Plans": symbol_plans,
     }
 
 
 def symbol_status_rows(results: list[DownloadResult]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for result in results:
+        canonical_status = (
+            "ALREADY_CURRENT" if result.status == "UNCHANGED_ALREADY_CURRENT"
+            else "UPDATED" if result.status == "UPDATED_VALID"
+            else result.status
+        )
         rows.append({
             "Symbol": result.symbol,
+            "Canonical_File_Path": result.canonical_file_path,
+            "File_Exists": result.file_exists,
+            "Row_Count": result.rows_before,
+            "First_Date": result.first_date,
             "Local_Latest_Valid_Date": result.local_latest_valid_date or result.latest_date_before,
             "Expected_Closed_Date": result.expected_closed_date,
+            "Missing_Market_Sessions": result.missing_market_sessions,
+            "Duplicate_Dates": result.duplicate_dates,
+            "Internal_Gaps": result.internal_gaps,
+            "First_Missing_Session": result.first_missing_session,
             "Refresh_Action": result.refresh_action,
+            "Refresh_Reason": result.refresh_reason,
             "Download_Start_Date": result.download_start_date,
             "Download_End_Date": result.download_end_date,
             "Rows_Before": result.rows_before,
             "Rows_Downloaded": result.rows_downloaded,
+            "Rows_Inserted": result.rows_inserted,
+            "Rows_Updated": result.rows_updated,
             "Rows_After": result.rows_after,
+            "File_Written": result.file_written,
+            "File_Unchanged": result.file_unchanged,
             "Network_Request_Performed": result.network_request_performed,
             "Retry_Count": result.retry_count,
-            "Status": result.status,
+            "Status": canonical_status,
             "Warning": result.warning or result.message,
         })
     return rows
@@ -990,6 +1305,7 @@ def main() -> int:
     args.batch_size = max(int(args.batch_size or 1), 1)
     args.max_workers = max(int(args.max_workers or 1), 1)
     args.incremental_overlap_days = max(int(args.incremental_overlap_days or 0), 0)
+    args.repair_overlap_sessions = max(int(args.repair_overlap_sessions or 0), 0)
     if args.force:
         args.full_backfill = True
     if args.test_fixture:
@@ -1044,16 +1360,30 @@ def main() -> int:
                 plan.warning = "; ".join(x for x in [plan.warning, "skip-existing compatibility mode"] if x)
 
     full_backfill_count = sum(1 for plan in plans if plan.refresh_action == FULL_BACKFILL)
-    incremental_count = sum(1 for plan in plans if plan.refresh_action == INCREMENTAL_UPDATE)
-    already_current_count = sum(1 for plan in plans if plan.refresh_action == SKIP_ALREADY_CURRENT)
-    retry_candidates = sum(1 for plan in plans if plan.warning in {"file_missing", "file_empty", "schema_invalid", "no_valid_candle"})
+    missing_only_count = sum(1 for plan in plans if plan.refresh_action == MISSING_ONLY)
+    repair_count = sum(1 for plan in plans if plan.refresh_action == REPAIR_OVERLAP)
+    already_current_count = sum(1 for plan in plans if plan.refresh_action == ALREADY_CURRENT)
+    retry_candidates = sum(
+        1 for plan in plans
+        if any(plan.warning.startswith(prefix) for prefix in ("file_missing", "file_empty", "file_unreadable", "schema_invalid", "no_valid_candle"))
+    )
+    missing_one = sum(1 for plan in plans if plan.missing_market_sessions == 1)
+    missing_two_to_five = sum(1 for plan in plans if 2 <= plan.missing_market_sessions <= 5)
+    request_groups = {
+        (plan.refresh_action, plan.download_start_date, plan.download_end_date, plan.refresh_reason)
+        for plan in plans if plan.refresh_action != ALREADY_CURRENT
+    }
 
-    print("\nYahoo Refresh - INCREMENTAL MODE")
+    print("\nYahoo Refresh - INCREMENTAL MISSING-ONLY")
     print(f"Universe             : {len(plans)} simbol")
     print(f"Already current      : {already_current_count}")
-    print(f"Need incremental     : {incremental_count}")
+    print(f"Missing 1 session    : {missing_one}")
+    print(f"Missing 2-5 sessions : {missing_two_to_five}")
+    print(f"Need missing-only    : {missing_only_count}")
+    print(f"Need repair          : {repair_count}")
     print(f"Need full backfill   : {full_backfill_count}")
     print(f"Retry/new/invalid    : {retry_candidates}")
+    print(f"Requests planned     : {len(request_groups)}")
     print(f"Batch enabled        : {bool(args.batch_enabled and args.data_source == 'LIVE')}")
 
     fetched: dict[str, FetchPayload] = {}
@@ -1111,13 +1441,23 @@ def main() -> int:
             download_end_date=plan.download_end_date,
             retry_count=payload.retry_count,
             warning=symbol_warning,
+            canonical_file_path=plan.canonical_file_path,
+            file_exists=plan.file_exists,
+            missing_market_sessions=plan.missing_market_sessions,
+            duplicate_dates=plan.duplicate_dates,
+            internal_gaps=plan.internal_gaps,
+            first_missing_session=plan.first_missing_session,
+            refresh_reason=plan.refresh_reason,
         )
-        results.append(result)
 
         if not combined.empty:
-            if plan.refresh_action != SKIP_ALREADY_CURRENT:
+            if should_write_history(plan, combined):
                 atomic_csv(combined, plan.destination)
+                result.file_written = True
+            else:
+                result.file_unchanged = True
             combined_parts.append(combined)
+        results.append(result)
         if result.status == "UPDATED_VALID":
             logging.info("[%d/%d] %s: updated valid -> %s", index, len(symbols), plan.symbol, result.latest_valid_close_date)
         elif result.status == "UNCHANGED_ALREADY_CURRENT":
@@ -1132,6 +1472,10 @@ def main() -> int:
         f"updated={sum(1 for x in results if x.status == 'UPDATED_VALID')}, "
         f"skipped={already_current_count}, "
         f"failed={sum(1 for x in results if x.status == 'FAILED')}, "
+        f"downloaded={sum(x.rows_downloaded for x in results)}, "
+        f"inserted={sum(x.rows_inserted for x in results)}, "
+        f"updated_rows={sum(x.rows_updated for x in results)}, "
+        f"unchanged_files={sum(bool(x.file_unchanged) for x in results)}, "
         f"network_symbols={sum(1 for x in results if x.network_request_performed)}, "
         f"batch_requests={network_request_batch_count}",
         flush=True,
@@ -1234,6 +1578,8 @@ def main() -> int:
         "refresh_mode": manifest["Refresh_Mode"],
         "already_current": manifest["Already_Current_Count"],
         "incremental_update": manifest["Incremental_Update_Count"],
+        "missing_only": manifest["Missing_Only_Count"],
+        "repair_overlap": manifest["Repair_Overlap_Count"],
         "full_backfill": manifest["Full_Backfill_Count"],
         "network_request_symbol_count": manifest["Network_Request_Symbol_Count"],
         "network_request_batch_count": manifest["Network_Request_Batch_Count"],

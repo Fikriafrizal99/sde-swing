@@ -1,48 +1,69 @@
 from __future__ import annotations
 
+"""Yahoo/ZAPI latest-candle validation and immutable source lineage.
+
+Yahoo remains the source of truth for the historical series.  This module
+validates the latest closed candle and records ZAPI metadata; it never inserts
+or overwrites a Yahoo candle and never changes an engine score.
+"""
+
 import json
-from dataclasses import asdict
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from modules.data_sources.base import SourceNotConfigured, SourceUnavailable
 from modules.data_sources.config import load_data_source_config
-from modules.data_sources.zapi_idx_adapter import ZapiIdxAdapter, ZapiIdxClient
+from modules.data_sources.zapi_idx_adapter import (
+    ZapiIdxAdapter,
+    ZapiIdxClient,
+    canonical_symbol,
+)
 
 
-def _norm_symbol(value: str) -> str:
-    return str(value or "").strip().upper().replace(".JK", "")
+PROBLEM_STATUSES = {
+    "STALE_ZAPI", "STALE_YAHOO", "DATE_MISMATCH", "PRICE_MISMATCH",
+    "MISSING_ZAPI", "MISSING_YAHOO", "INVALID_SCHEMA",
+}
 
 
-def _latest_yahoo_bar(folder: Path, symbol: str, market_date: str) -> dict[str, Any] | None:
-    candidates = [folder / f"{symbol}.csv", folder / f"{symbol}.JK.csv"]
-    for path in candidates:
+def _latest_yahoo_bar(folder: Path, symbol: str) -> dict[str, Any] | None:
+    for path in (folder / f"{symbol}.csv", folder / f"{symbol}.JK.csv"):
         if not path.exists() or path.stat().st_size == 0:
             continue
         try:
             frame = pd.read_csv(path, low_memory=False)
         except Exception:
             continue
-        date_col = next((c for c in frame.columns if str(c).strip().lower() in {"date", "datetime", "market_date"}), None)
+        date_col = next(
+            (c for c in frame.columns if str(c).strip().lower() in {"date", "datetime", "market_date"}),
+            None,
+        )
         if not date_col:
             continue
         parsed = pd.to_datetime(frame[date_col], errors="coerce")
-        rows = frame.loc[parsed.dt.date.astype(str).eq(market_date)]
-        if rows.empty:
+        valid = frame.loc[parsed.notna()].copy()
+        if valid.empty:
             continue
-        row = rows.iloc[-1]
+        valid["__parsed_date"] = parsed.loc[parsed.notna()]
+        row = valid.sort_values("__parsed_date").iloc[-1]
+
         def num(*names: str) -> float | None:
             for name in names:
                 if name in row.index:
                     try:
-                        value = row[name]
-                        return None if pd.isna(value) else float(value)
+                        return None if pd.isna(row[name]) else float(row[name])
                     except (TypeError, ValueError):
                         return None
             return None
+
+        stamp = pd.Timestamp(row["__parsed_date"])
         return {
             "path": str(path),
+            "trade_date": stamp.date().isoformat(),
+            "timestamp": stamp.isoformat(),
             "open": num("Open", "open"),
             "high": num("High", "high"),
             "low": num("Low", "low"),
@@ -55,8 +76,44 @@ def _latest_yahoo_bar(folder: Path, symbol: str, market_date: str) -> dict[str, 
 def _pct_diff(left: float | None, right: float | None) -> float | None:
     if left is None or right is None:
         return None
-    base = max(abs(right), 1e-9)
-    return abs(left - right) / base
+    return abs(left - right) / max(abs(right), 1e-9)
+
+
+def _days_behind(actual: str, expected: str) -> int | None:
+    try:
+        return (date.fromisoformat(expected) - date.fromisoformat(actual)).days
+    except (TypeError, ValueError):
+        return None
+
+
+def _classify(
+    *,
+    yahoo: dict[str, Any] | None,
+    zapi: Any | None,
+    expected_date: str,
+    price_diffs: list[float],
+    price_tolerance: float,
+    error_status: str,
+) -> str:
+    if yahoo is None:
+        return "MISSING_YAHOO"
+    if error_status == "INVALID_SCHEMA":
+        return "INVALID_SCHEMA"
+    if zapi is None:
+        return "MISSING_ZAPI"
+    yahoo_date = str(yahoo.get("trade_date") or "")
+    zapi_date = str(getattr(zapi, "market_date", "") or "")
+    if yahoo_date != zapi_date:
+        if yahoo_date == expected_date:
+            return "STALE_ZAPI" if (_days_behind(zapi_date, expected_date) or 0) > 0 else "DATE_MISMATCH"
+        if zapi_date == expected_date:
+            return "STALE_YAHOO" if (_days_behind(yahoo_date, expected_date) or 0) > 0 else "DATE_MISMATCH"
+        return "DATE_MISMATCH"
+    if not price_diffs or any(value > price_tolerance for value in price_diffs):
+        return "PRICE_MISMATCH"
+    if all(value <= 1e-12 for value in price_diffs):
+        return "MATCH"
+    return "MATCH_WITH_TOLERANCE"
 
 
 def validate_yahoo_against_zapi(
@@ -68,134 +125,240 @@ def validate_yahoo_against_zapi(
     config_path: str | Path = "config/data_sources.json",
     price_tolerance_pct: float = 0.005,
     volume_tolerance_pct: float = 0.20,
+    maximum_stale_days: int = 1,
+    minimum_coverage_ratio: float = 0.90,
+    blocking: bool = False,
     max_symbols: int = 0,
+    run_id: str = "",
+    client: ZapiIdxClient | None = None,
 ) -> dict[str, Any]:
-    """Validate Yahoo execution bars against ZAPI without replacing engine data.
-
-    Yahoo remains the executable historical source. ZAPI is a secondary validator
-    and enrichment source. Missing credentials or API errors never masquerade as
-    successful validation and never stop the trading pipeline.
-    """
+    """Validate Yahoo bars against live ZAPI and persist per-run lineage."""
     folder = Path(historical_dir)
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
-    normalized = list(dict.fromkeys(_norm_symbol(item) for item in symbols if _norm_symbol(item)))
+    normalized = list(dict.fromkeys(canonical_symbol(item) for item in symbols if canonical_symbol(item)))
+    normalized = [item for item in normalized if item != "IHSG"]
     if max_symbols > 0:
         normalized = normalized[:max_symbols]
+    run_id = run_id or f"ZAPI-{market_date}-{datetime.now().strftime('%H%M%S')}"
 
     cfg = load_data_source_config(config_path)
     source_cfg = cfg.sources.get("ZAPI_IDX")
-    rows: list[dict[str, Any]] = []
     if source_cfg is None:
-        summary = {
-            "status": "NOT_CONFIGURED",
-            "reason": "ZAPI_SOURCE_CONFIG_NOT_FOUND",
-            "market_date": market_date,
-            "symbols_requested": len(normalized),
-            "validated": 0,
-            "matched": 0,
-            "conflicted": 0,
-            "missing_yahoo": 0,
-            "missing_zapi": len(normalized),
-            "coverage_ratio": 0.0,
-            "rows": rows,
-        }
-        _write_outputs(out, market_date, rows, summary)
-        return summary
+        return _write_skipped(out, run_id, market_date, normalized, "ZAPI_SOURCE_CONFIG_NOT_FOUND", blocking=blocking)
+    if not source_cfg.enabled:
+        return _write_skipped(out, run_id, market_date, normalized, "ZAPI_DISABLED", status="ZAPI_DISABLED", blocking=blocking)
+    zapi_client = client or ZapiIdxClient.from_config(source_cfg)
+    if not zapi_client.is_configured() and client is None:
+        return _write_skipped(out, run_id, market_date, normalized, "ZAPI_MISSING_CREDENTIAL", blocking=blocking)
 
-    client = ZapiIdxClient.from_config(source_cfg)
-    adapter = ZapiIdxAdapter(client)
-    configured = client.is_configured()
+    adapter = ZapiIdxAdapter(zapi_client)
+    rows: list[dict[str, Any]] = []
+    endpoint_counts: dict[str, int] = {"/stock-summary": 0}
+    success_count = 0
+    failure_count = 0
 
     for symbol in normalized:
-        yahoo = _latest_yahoo_bar(folder, symbol, market_date)
+        yahoo = _latest_yahoo_bar(folder, symbol)
         zapi_record = None
         error = ""
-        if configured:
-            try:
-                raw = client.fetch_raw("DailyBar", symbol, market_date=market_date, date=market_date, length=10, start=0)
-                mapped = adapter.to_canonical("DailyBar", raw, symbol=symbol, market_date=market_date)
-                zapi_record = next((item for item in mapped if item.symbol == symbol and item.market_date == market_date), mapped[0] if mapped else None)
-            except Exception as exc:  # validation is intentionally non-blocking
-                error = f"{type(exc).__name__}: {exc}"
+        error_status = ""
+        try:
+            raw = zapi_client.fetch_raw(
+                "DailyBar", symbol, market_date=market_date, date=market_date, length=10, start=0
+            )
+            endpoint_counts["/stock-summary"] += 1
+            mapped = adapter.to_canonical("DailyBar", raw, symbol=symbol, market_date=market_date)
+            candidates = [item for item in mapped if canonical_symbol(item.symbol) == symbol]
+            zapi_record = max(candidates or mapped, key=lambda item: item.market_date, default=None)
+            if zapi_record is None:
+                error_status = "INVALID_SCHEMA" if mapped else "MISSING_ZAPI"
+                failure_count += 1
+            else:
+                success_count += 1
+        except SourceNotConfigured as exc:
+            error, error_status = str(exc), "MISSING_ZAPI"
+            failure_count += 1
+        except SourceUnavailable as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            error_status = "INVALID_SCHEMA" if "INVALID" in str(exc).upper() else "MISSING_ZAPI"
+            failure_count += 1
+        except Exception as exc:
+            error, error_status = f"{type(exc).__name__}: {exc}", "MISSING_ZAPI"
+            failure_count += 1
 
-        close_diff = _pct_diff(yahoo.get("close") if yahoo else None, zapi_record.close if zapi_record else None)
-        open_diff = _pct_diff(yahoo.get("open") if yahoo else None, zapi_record.open if zapi_record else None)
-        high_diff = _pct_diff(yahoo.get("high") if yahoo else None, zapi_record.high if zapi_record else None)
-        low_diff = _pct_diff(yahoo.get("low") if yahoo else None, zapi_record.low if zapi_record else None)
-        volume_diff = _pct_diff(yahoo.get("volume") if yahoo else None, zapi_record.volume if zapi_record else None)
-        price_diffs = [item for item in (open_diff, high_diff, low_diff, close_diff) if item is not None]
-        price_match = bool(price_diffs) and max(price_diffs) <= price_tolerance_pct
-        volume_match = volume_diff is None or volume_diff <= volume_tolerance_pct
-
-        if yahoo is None:
-            status = "MISSING_YAHOO"
-        elif not configured:
-            status = "VALID_WITHOUT_ZAPI_VALIDATION"
-        elif zapi_record is None:
-            status = "ZAPI_UNAVAILABLE"
-        elif price_match and volume_match:
-            status = "MATCH"
-        elif price_match:
-            status = "PRICE_MATCH_VOLUME_DIFFERENCE"
-        else:
-            status = "CONFLICT"
-
+        diffs = {
+            name: _pct_diff(yahoo.get(name) if yahoo else None, getattr(zapi_record, name, None) if zapi_record else None)
+            for name in ("open", "high", "low", "close", "volume")
+        }
+        price_diffs = [diffs[name] for name in ("open", "high", "low", "close") if diffs[name] is not None]
+        status = _classify(
+            yahoo=yahoo,
+            zapi=zapi_record,
+            expected_date=market_date,
+            price_diffs=price_diffs,
+            price_tolerance=price_tolerance_pct,
+            error_status=error_status,
+        )
+        zapi_date = str(getattr(zapi_record, "market_date", "") or "")
+        stale_days = _days_behind(zapi_date, market_date) if zapi_date else None
+        if status == "STALE_ZAPI" and stale_days is not None and stale_days <= maximum_stale_days:
+            # Still stale, but the explicit age lets callers decide severity.
+            error = error or f"ZAPI candle is {stale_days} trading/calendar day(s) behind"
         rows.append({
-            "market_date": market_date,
+            "run_id": run_id,
             "symbol": symbol,
-            "status": status,
-            "yahoo_source": "YAHOO",
-            "zapi_source": "ZAPI_IDX" if zapi_record else "NOT_AVAILABLE",
-            "yahoo_path": yahoo.get("path", "") if yahoo else "",
+            "yahoo_trade_date": yahoo.get("trade_date") if yahoo else None,
+            "zapi_trade_date": zapi_date or None,
+            "yahoo_timestamp": yahoo.get("timestamp") if yahoo else None,
+            "zapi_timestamp": getattr(zapi_record, "event_timestamp", None) if zapi_record else None,
             "yahoo_open": yahoo.get("open") if yahoo else None,
             "yahoo_high": yahoo.get("high") if yahoo else None,
             "yahoo_low": yahoo.get("low") if yahoo else None,
             "yahoo_close": yahoo.get("close") if yahoo else None,
             "yahoo_volume": yahoo.get("volume") if yahoo else None,
-            "zapi_open": zapi_record.open if zapi_record else None,
-            "zapi_high": zapi_record.high if zapi_record else None,
-            "zapi_low": zapi_record.low if zapi_record else None,
-            "zapi_close": zapi_record.close if zapi_record else None,
-            "zapi_volume": zapi_record.volume if zapi_record else None,
-            "open_diff_pct": open_diff,
-            "high_diff_pct": high_diff,
-            "low_diff_pct": low_diff,
-            "close_diff_pct": close_diff,
-            "volume_diff_pct": volume_diff,
+            "zapi_open": getattr(zapi_record, "open", None) if zapi_record else None,
+            "zapi_high": getattr(zapi_record, "high", None) if zapi_record else None,
+            "zapi_low": getattr(zapi_record, "low", None) if zapi_record else None,
+            "zapi_close": getattr(zapi_record, "close", None) if zapi_record else None,
+            "zapi_volume": getattr(zapi_record, "volume", None) if zapi_record else None,
+            "open_difference_pct": diffs["open"],
+            "high_difference_pct": diffs["high"],
+            "low_difference_pct": diffs["low"],
+            "close_difference_pct": diffs["close"],
+            "volume_difference_pct": diffs["volume"],
+            "freshness_days": stale_days,
+            "trading_status": "NOT_FETCHED",
+            "status": status,
+            "blocking": bool(blocking and status in PROBLEM_STATUSES),
+            "selected_source": "YAHOO",
+            "enrichment_source": "ZAPI_IDX" if zapi_record else "NONE",
+            "endpoint": getattr(zapi_record, "source_record_id", "").split(":", 1)[0] if zapi_record else "/stock-summary",
             "error": error,
         })
 
-    validated = sum(row["status"] in {"MATCH", "PRICE_MATCH_VOLUME_DIFFERENCE", "CONFLICT"} for row in rows)
-    matched = sum(row["status"] in {"MATCH", "PRICE_MATCH_VOLUME_DIFFERENCE"} for row in rows)
-    conflicted = sum(row["status"] == "CONFLICT" for row in rows)
+    validated = sum(row["status"] in {"MATCH", "MATCH_WITH_TOLERANCE", "PRICE_MISMATCH"} for row in rows)
+    coverage = validated / len(rows) if rows else 0.0
+    counts = {status: sum(row["status"] == status for row in rows) for status in sorted(PROBLEM_STATUSES | {"MATCH", "MATCH_WITH_TOLERANCE"})}
+    blocking_failures = sum(bool(row["blocking"]) for row in rows)
+    coverage_failed = coverage < minimum_coverage_ratio
+    status = "ZAPI_VALIDATED"
+    if blocking and (blocking_failures or coverage_failed):
+        status = "FAILED_BLOCKING"
+    elif any(counts[item] for item in PROBLEM_STATUSES) or coverage_failed:
+        status = "ZAPI_RECONCILIATION_WARNING"
+
     summary = {
-        "status": "SUCCESS" if configured and conflicted == 0 else "SUCCESS_WITH_WARNING" if configured else "NOT_CONFIGURED",
-        "reason": "" if configured else "ZAPI_CREDENTIALS_NOT_CONFIGURED",
-        "market_date": market_date,
+        "run_id": run_id,
+        "trade_date": market_date,
+        "config_version": cfg.config_version,
+        "status": status,
+        "reason": "MINIMUM_COVERAGE_NOT_MET" if coverage_failed else "",
+        "provider": "ZAPI_IDX",
+        "execution_source": "YAHOO",
+        "validation_source": "ZAPI_IDX",
+        "source_mode": "LIVE",
+        "endpoint_logical_names": list(endpoint_counts),
+        "endpoint_request_counts": endpoint_counts,
+        "request_count": sum(endpoint_counts.values()),
+        "success_count": success_count,
+        "failure_count": failure_count,
         "symbols_requested": len(rows),
+        "symbols_successful": success_count,
         "validated": validated,
-        "matched": matched,
-        "conflicted": conflicted,
-        "missing_yahoo": sum(row["status"] == "MISSING_YAHOO" for row in rows),
-        "missing_zapi": sum(row["status"] in {"ZAPI_UNAVAILABLE", "VALID_WITHOUT_ZAPI_VALIDATION"} for row in rows),
-        "coverage_ratio": validated / len(rows) if rows else 0.0,
-        "match_ratio": matched / validated if validated else 0.0,
+        "coverage_ratio": coverage,
+        "minimum_coverage_ratio": minimum_coverage_ratio,
+        "freshness_limit_days": maximum_stale_days,
         "price_tolerance_pct": price_tolerance_pct,
         "volume_tolerance_pct": volume_tolerance_pct,
-        "execution_source": "YAHOO",
-        "validation_source": "ZAPI_IDX" if configured else "NOT_CONFIGURED",
+        "blocking": blocking,
+        "blocking_failures": blocking_failures + int(blocking and coverage_failed and not blocking_failures),
+        "reconciliation_counts": counts,
+        "selected_source": "YAHOO",
+        "enrichment_source": "ZAPI_IDX",
+        "warnings": sorted({row["status"] for row in rows if row["status"] in PROBLEM_STATUSES}),
+        "input_paths": [str(folder), str(Path(config_path))],
         "rows": rows,
     }
-    _write_outputs(out, market_date, rows, summary)
-    return summary
+    return _write_outputs(out, run_id, market_date, rows, summary)
 
 
-def _write_outputs(out: Path, market_date: str, rows: list[dict[str, Any]], summary: dict[str, Any]) -> None:
-    csv_path = out / f"yahoo_zapi_reconciliation_{market_date}.csv"
-    json_path = out / f"yahoo_zapi_reconciliation_{market_date}.json"
-    pd.DataFrame(rows).to_csv(csv_path, index=False, encoding="utf-8-sig")
+def _write_skipped(
+    out: Path,
+    run_id: str,
+    market_date: str,
+    symbols: list[str],
+    reason: str,
+    *,
+    status: str = "SKIPPED_NOT_CONFIGURED",
+    blocking: bool = False,
+) -> dict[str, Any]:
+    rows = [{
+        "run_id": run_id,
+        "symbol": symbol,
+        "status": "MISSING_ZAPI",
+        "blocking": blocking,
+        "selected_source": "YAHOO",
+        "enrichment_source": "NONE",
+        "error": reason,
+    } for symbol in symbols]
+    summary = {
+        "run_id": run_id,
+        "trade_date": market_date,
+        "status": status,
+        "reason": reason,
+        "provider": "ZAPI_IDX",
+        "execution_source": "YAHOO",
+        "validation_source": "ZAPI_IDX",
+        "source_mode": "DISABLED" if status == "ZAPI_DISABLED" else "NOT_CONFIGURED",
+        "endpoint_logical_names": ["/stock-summary"],
+        "endpoint_request_counts": {"/stock-summary": 0},
+        "request_count": 0,
+        "success_count": 0,
+        "failure_count": 0,
+        "symbols_requested": len(symbols),
+        "symbols_successful": 0,
+        "validated": 0,
+        "coverage_ratio": 0.0,
+        "blocking": blocking,
+        "blocking_failures": int(blocking and bool(symbols)),
+        "reconciliation_counts": {"MISSING_ZAPI": len(symbols)},
+        "selected_source": "YAHOO",
+        "enrichment_source": "NONE",
+        "warnings": [reason],
+        "rows": rows,
+    }
+    return _write_outputs(out, run_id, market_date, rows, summary)
+
+
+def _write_outputs(
+    out: Path,
+    run_id: str,
+    market_date: str,
+    rows: list[dict[str, Any]],
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    safe_run_id = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in run_id)
+    csv_path = out / f"yahoo_zapi_reconciliation_{market_date}_{safe_run_id}.csv"
+    json_path = out / f"yahoo_zapi_reconciliation_{market_date}_{safe_run_id}.json"
+    latest_csv = out / f"yahoo_zapi_reconciliation_{market_date}.csv"
+    latest_json = out / f"yahoo_zapi_reconciliation_{market_date}.json"
+    frame = pd.DataFrame(rows)
+    frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    frame.to_csv(latest_csv, index=False, encoding="utf-8-sig")
     payload = dict(summary)
+    payload["output_paths"] = {
+        "csv": str(csv_path), "json": str(json_path),
+        "latest_csv": str(latest_csv), "latest_json": str(latest_json),
+    }
     payload["csv_path"] = str(csv_path)
     payload["json_path"] = str(json_path)
-    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    json_path.write_text(rendered, encoding="utf-8")
+    latest_json.write_text(rendered, encoding="utf-8")
+    audit_path = out / "zapi_reconciliation_audit.jsonl"
+    audit = {key: value for key, value in payload.items() if key != "rows"}
+    with audit_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(audit, ensure_ascii=False, default=str) + "\n")
+    payload["audit_path"] = str(audit_path)
+    return payload

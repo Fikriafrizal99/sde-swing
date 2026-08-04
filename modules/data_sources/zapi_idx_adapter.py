@@ -301,6 +301,10 @@ class HttpZapiTransport(Transport):
         if 500 <= resp.status_code:
             raise SourceUnavailable(f"ZAPI HTTP {resp.status_code}")
 
+        content_type = str(dict(getattr(resp, "headers", {}) or {}).get("Content-Type", ""))
+        if content_type and "json" not in content_type.lower():
+            raise SourceUnavailable(f"{C.ZAPI_RESPONSE_INVALID}:content-type")
+
         try:
             payload = resp.json() if getattr(resp, "content", b"") else {}
         except (TypeError, ValueError) as exc:
@@ -321,11 +325,18 @@ class HttpZapiTransport(Transport):
 class ZapiIdxClient(SourceClient):
     name = "ZAPI_IDX"
 
-    def __init__(self, transport: Transport, source_config: SourceConfig) -> None:
-        super().__init__(retry=source_config.retry, timeout=source_config.timeout)
+    def __init__(self, transport: Transport, source_config: SourceConfig, *, explicit_mock: bool | None = None) -> None:
+        super().__init__(
+            retry=source_config.retry,
+            timeout=source_config.timeout,
+            backoff_base=source_config.backoff_base_seconds,
+        )
         self._transport = transport
         self._source_config = source_config
+        self._explicit_mock = isinstance(transport, MockZapiTransport) if explicit_mock is None else bool(explicit_mock)
         self.last_response: dict[str, Any] = {}
+        self._cache: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[float, dict[str, Any]]] = {}
+        self._last_request_at = 0.0
 
     @classmethod
     def from_config(cls, source_config: SourceConfig, *, force_mock: bool = False) -> "ZapiIdxClient":
@@ -335,7 +346,7 @@ class ZapiIdxClient(SourceClient):
             or not source_config.documentation_configured
             or not source_config.has_credentials()
         ):
-            return cls(MockZapiTransport(), source_config)
+            return cls(MockZapiTransport(), source_config, explicit_mock=force_mock)
         return cls(
             HttpZapiTransport(
                 source_config.base_url() or "",
@@ -361,6 +372,8 @@ class ZapiIdxClient(SourceClient):
                 else "ZAPI_SOURCE_DISABLED"
             )
             raise SourceNotConfigured(reason)
+        if not self.is_configured() and not (self._explicit_mock or kwargs.pop("allow_mock", False)):
+            raise SourceNotConfigured("ZAPI_CREDENTIALS_NOT_CONFIGURED")
         specs = ZAPI_ENDPOINTS.get(record_type)
         if specs is None:
             reason = ZAPI_UNSUPPORTED_RECORD_TYPES.get(record_type, "no verified endpoint")
@@ -383,9 +396,20 @@ class ZapiIdxClient(SourceClient):
         kwargs: Mapping[str, Any],
     ) -> dict[str, Any]:
         params = _build_params(spec, symbol, kwargs)
+        cache_key = (spec.path, tuple(sorted((str(key), str(value)) for key, value in params.items())))
+        cached = self._cache.get(cache_key)
+        if cached and self._source_config.cache_ttl_seconds > 0:
+            if time.monotonic() - cached[0] <= self._source_config.cache_ttl_seconds:
+                return dict(cached[1])
+        rate = self._source_config.rate_limit_per_second
+        if rate > 0 and not isinstance(self._transport, MockZapiTransport):
+            remaining = (1.0 / rate) - (time.monotonic() - self._last_request_at)
+            if remaining > 0:
+                time.sleep(remaining)
         response = self.with_retry(
             lambda: self._transport.request("GET", spec.path, params=params, timeout=self.timeout)
         )
+        self._last_request_at = time.monotonic()
         body = _unwrap_payload(response.payload)
         _validate_response(spec, body)
         if not isinstance(body, dict):  # validated specs currently return objects
@@ -404,6 +428,7 @@ class ZapiIdxClient(SourceClient):
                 if key in result
             },
         }
+        self._cache[cache_key] = (time.monotonic(), dict(result))
         return result
 
 
@@ -447,7 +472,7 @@ class ZapiIdxAdapter(Adapter):
         endpoint = str(raw.get("_zapi_endpoint") or "/stock-summary")
         records: list[DailyBar] = []
         for row in _rows(raw):
-            symbol = _text(row.get("StockCode") or kwargs.get("symbol")).upper()
+            symbol = canonical_symbol(row.get("StockCode") or kwargs.get("symbol"))
             event = _timestamp(row.get("Date"))
             market_date = _market_date(row.get("Date"), kwargs.get("market_date"))
             received = now_wib().isoformat()
@@ -471,8 +496,8 @@ class ZapiIdxAdapter(Adapter):
         endpoint = str(raw.get("_zapi_endpoint") or "/index-summary")
         records: list[MarketIndex] = []
         for row in _rows(raw):
-            code = _text(row.get("IndexCode") or kwargs.get("symbol") or "COMPOSITE").upper()
-            requested_symbol = _text(kwargs.get("symbol") or code).upper()
+            code = _text(row.get("IndexCode") or provider_symbol(kwargs.get("symbol") or "IHSG", record_type="MarketIndex")).upper()
+            requested_symbol = canonical_symbol(kwargs.get("symbol") or code)
             event = _timestamp(row.get("Date"))
             market_date = _market_date(row.get("Date"), kwargs.get("market_date"))
             previous = _f(row.get("Previous"))
@@ -498,7 +523,7 @@ class ZapiIdxAdapter(Adapter):
         companies = _rows(raw.get("companies") if isinstance(raw.get("companies"), Mapping) else {})
         securities = _rows(raw.get("securities") if isinstance(raw.get("securities"), Mapping) else {})
         company_by_code = {
-            _text(row.get("KodeEmiten") or row.get("Code")).upper(): row for row in companies
+            canonical_symbol(row.get("KodeEmiten") or row.get("Code")): row for row in companies
         }
         endpoints = raw.get("_zapi_endpoints") or ["/companies", "/securities"]
         endpoint = ",".join(str(item) for item in endpoints)
@@ -506,7 +531,7 @@ class ZapiIdxAdapter(Adapter):
         snapshot_date = _market_date(None, kwargs.get("market_date")) or now_wib().date().isoformat()
         received = now_wib().isoformat()
         for security in securities:
-            code = _text(security.get("Code") or security.get("KodeEmiten")).upper()
+            code = canonical_symbol(security.get("Code") or security.get("KodeEmiten"))
             company = company_by_code.get(code, {})
             event = _timestamp(security.get("ListingDate")) or received
             rec = SymbolMetadata(
@@ -533,7 +558,7 @@ class ZapiIdxAdapter(Adapter):
         for row in result_rows:
             if not isinstance(row, Mapping):
                 continue
-            symbol = _text(row.get("CompanyID") or kwargs.get("symbol")).upper()
+            symbol = canonical_symbol(row.get("CompanyID") or kwargs.get("symbol"))
             event = _timestamp(row.get("UMADate") or row.get("Date"))
             market_date = _market_date(row.get("UMADate") or row.get("Date"), kwargs.get("market_date"))
             status, tradable, suspended = _activity_status(activity_type, row.get("Status"))
@@ -567,7 +592,7 @@ def _build_params(spec: ZapiEndpoint, symbol: str, kwargs: Mapping[str, Any]) ->
         if value is not None and value != "":
             params["date"] = _date_param(value)
     if "code" in allowed:
-        value = kwargs.get("code") or symbol
+        value = kwargs.get("code") or provider_symbol(symbol, record_type="DailyBar")
         if value:
             params["code"] = _text(value).upper()
     if "sector" in allowed and kwargs.get("sector"):
@@ -580,6 +605,26 @@ def _build_params(spec: ZapiEndpoint, symbol: str, kwargs: Mapping[str, Any]) ->
             raise SourceRequestInvalid("ZAPI market-activity type must be suspend, relisting, or uma")
         params["type"] = value
     return params
+
+
+def canonical_symbol(value: Any) -> str:
+    """Normalize Yahoo/ZAPI/IDX symbol forms into the engine symbol."""
+    text = _text(value).upper()
+    if text.startswith("IDX:"):
+        text = text[4:]
+    if text.endswith(".JK"):
+        text = text[:-3]
+    if text in {"^JKSE", "JKSE", "IHSG", "COMPOSITE"}:
+        return "IHSG"
+    return text
+
+
+def provider_symbol(value: Any, *, record_type: str = "DailyBar") -> str:
+    """Map a canonical engine symbol to the documented ZAPI request value."""
+    symbol = canonical_symbol(value)
+    if record_type == "MarketIndex" and symbol == "IHSG":
+        return "COMPOSITE"
+    return symbol
 
 
 def _unwrap_payload(payload: Any) -> Any:

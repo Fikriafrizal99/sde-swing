@@ -5,8 +5,9 @@
   "primary_broker_window": "5D",
   "record_ownership": {
     "DailyBar": {
-      "primary": "ZAPI_IDX",
-      "fallback": ["HISTORICAL_PROVIDER"]
+      "primary": "HISTORICAL_PROVIDER",
+      "fallback": [],
+      "note": "Yahoo/historical provider remains the source of truth for the canonical technical series; ZAPI validates the latest closed candle only."
     },
     "IntradayQuote": {
       "primary": "INTERNAL",
@@ -23,8 +24,9 @@
       "fallback": []
     },
     "ForeignFlow": {
-      "primary": "STOCKBIT",
-      "fallback": []
+      "primary": "ZAPI_IDX",
+      "fallback": [],
+      "note": "NOT_CONFIGURED until a verified ZAPI foreign-flow schema is available. Stockbit BrokerFlow remains a separate metric."
     },
     "TradingStatus": {
       "primary": "ZAPI_IDX",
@@ -55,7 +57,11 @@
       "priority": 10,
       "timeout": 15,
       "retry": 3,
+      "backoff_base_seconds": 0.5,
+      "rate_limit_per_second": 4,
+      "cache_ttl_seconds": 300,
       "maximum_stale_seconds": 90,
+      "minimum_coverage_ratio": 0.9,
       "fallback_policy": "ALLOW",
       "conflict_tolerance": 0.0,
       "required_fields": ["symbol", "market_date", "event_timestamp"],
@@ -106,7 +112,7 @@
           "reason": "No verified canonical mapping enabled."
         }
       },
-      "note": "Published Zapi IDX endpoints are verified. Live mode still requires ZAPI_IDX_BASE_URL and ZAPI_IDX_API_KEY; absent credentials remain NOT_CONFIGURED/MOCK and never LIVE."
+      "note": "Published Zapi IDX endpoints are verified. Live mode requires ZAPI_IDX_BASE_URL and ZAPI_IDX_API_KEY; absent credentials are SKIPPED_NOT_CONFIGURED and never produce mock-labelled runtime facts."
     },
     "STOCKBIT": {
       "enabled": true,

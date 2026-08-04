@@ -11,6 +11,7 @@ from typing import Any
 import pandas as pd
 
 from swing_utils import file_sha256, find_col, read_json as read_json_safely, write_json
+from modules.data_sources.yahoo_zapi_validator import validate_yahoo_against_zapi
 
 from .runtime import RunnerContext, append_job_log, now_wib, resolve
 
@@ -210,8 +211,8 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
         freshness.get("after_midnight_cutoff", "06:00"),
         "--data-source",
         data_source if data_source == "FIXTURE" else "LIVE",
-        "--incremental-overlap-days",
-        str(freshness.get("yahoo_incremental_overlap_days", 5)),
+        "--repair-overlap-sessions",
+        str(freshness.get("yahoo_repair_overlap_sessions", 5)),
         "--batch-size",
         str(freshness.get("yahoo_batch_size", 50)),
         "--max-workers",
@@ -230,10 +231,57 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
         downloader_cmd += ["--test-fixture", "--fixture-dir", fixture_dir]
     for holiday in freshness.get("market_holidays", []):
         downloader_cmd += ["--market-holiday", str(holiday)]
+    for special_day in freshness.get("special_trading_days", []):
+        downloader_cmd += ["--special-trading-day", str(special_day)]
     run_command(ctx, "POST MARKET HISTORICAL DOWNLOADER", downloader_cmd)
 
     yahoo_manifest = read_json_safely(manifest_dir / f"YAHOO_REFRESH_MANIFEST_{ctx.run_id}.json")
     data_quality = str(yahoo_manifest.get("Data_Quality_Status", "VALID"))
+    validation_cfg = ctx.scheduler_config.get("source_validation", {})
+    reconciliation: dict[str, Any] = {"status": "ZAPI_DISABLED", "reason": "SOURCE_VALIDATION_DISABLED"}
+    if bool(validation_cfg.get("enabled", True)):
+        symbols = sorted({
+            path.stem[:-3] if path.stem.upper().endswith(".JK") else path.stem
+            for path in stage_paths["historical_by_symbol"].glob("*.csv")
+        })
+        closed_date = str(
+            yahoo_manifest.get("Latest_Closed_Candle_Date")
+            or yahoo_manifest.get("Latest_Valid_Close_Date")
+            or ctx.trade_date.isoformat()
+        )
+        non_blocking = bool(validation_cfg.get("non_blocking", False))
+        reconciliation = validate_yahoo_against_zapi(
+            historical_dir=stage_paths["historical_by_symbol"],
+            symbols=symbols,
+            market_date=closed_date,
+            output_dir=resolve(validation_cfg.get("output_dir", "data/output/source_validation")),
+            config_path=ctx.config.get("data_sources_config", "config/data_sources.json"),
+            price_tolerance_pct=float(validation_cfg.get("price_tolerance_pct", 0.005)),
+            volume_tolerance_pct=float(validation_cfg.get("volume_tolerance_pct", 0.20)),
+            maximum_stale_days=int(validation_cfg.get("maximum_stale_days", 1) or 1),
+            minimum_coverage_ratio=float(validation_cfg.get("minimum_coverage_ratio", 0.90)),
+            blocking=not non_blocking,
+            max_symbols=int(validation_cfg.get("max_symbols", 0) or 0),
+            run_id=ctx.run_id,
+        )
+        append_job_log(ctx, "YAHOO_ZAPI_RECONCILIATION", str({
+            "status": reconciliation.get("status"),
+            "symbols_requested": reconciliation.get("symbols_requested"),
+            "symbols_successful": reconciliation.get("symbols_successful"),
+            "coverage_ratio": reconciliation.get("coverage_ratio"),
+            "blocking_failures": reconciliation.get("blocking_failures"),
+        }))
+        failed = str(reconciliation.get("status", "")).upper() == "FAILED_BLOCKING"
+        skipped = str(reconciliation.get("status", "")).upper() in {
+            "SKIPPED_NOT_CONFIGURED", "ZAPI_DISABLED"
+        }
+        if not non_blocking and (failed or skipped):
+            raise RuntimeError(
+                "ZAPI_SOURCE_VALIDATION_BLOCKED: "
+                + str(reconciliation.get("reason") or reconciliation.get("status"))
+            )
+        if str(reconciliation.get("status", "")).upper() == "ZAPI_RECONCILIATION_WARNING":
+            data_quality = "VALID_WITH_ZAPI_WARNING"
     if data_source != "FIXTURE":
         run_command(ctx, "POST MARKET IHSG UPDATER", [
             sys.executable,
@@ -291,6 +339,7 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
         tech_manifest,
         candidate_manifest,
         navigator_path=navigator_path,
+        reconciliation=reconciliation,
     )
     return {
         "Run_ID": ctx.run_id,
@@ -313,6 +362,9 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
         "provider_status": snapshot.get("source_metadata", {}).get("provider_status") or source_metadata.get("provider_status", ""),
         "data_source_mode": snapshot.get("source_metadata", {}).get("data_source_mode") or source_metadata.get("data_source_mode", ""),
         "source_coverage_ratio": snapshot.get("source_metadata", {}).get("source_coverage_ratio"),
+        "Reconciliation_Status": reconciliation.get("status", ""),
+        "Reconciliation_Manifest": reconciliation.get("json_path", ""),
+        "reconciliation": {key: value for key, value in reconciliation.items() if key != "rows"},
         "snapshot_ids": {"technical": snapshot.get("snapshot_id", "")},
         "Config_Version": ctx.runtime_version,
         "Broker_Navigator_Path": str(navigator_path),
@@ -362,7 +414,9 @@ def create_technical_snapshot(
     tech_manifest: dict[str, Any],
     candidate_manifest: dict[str, Any],
     navigator_path: Path | None = None,
+    reconciliation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    reconciliation = reconciliation or {}
     snapshot_id = f"SWING-TECH-SNAPSHOT-{ctx.trade_date.strftime('%Y%m%d')}-{now_wib().strftime('%H%M%S')}"
     root = stage_paths["snapshot_root"] / ctx.trade_date.isoformat() / snapshot_id
     root.mkdir(parents=True, exist_ok=True)
@@ -423,7 +477,14 @@ def create_technical_snapshot(
             "provider_status": yahoo_manifest.get("Provider_Status", "FILE" if str(yahoo_manifest.get("Data_Source", "")).upper() != "LIVE_YAHOO" else "LIVE"),
             "data_source_mode": yahoo_manifest.get("Data_Source_Mode", "FILE" if str(yahoo_manifest.get("Data_Source", "")).upper() != "LIVE_YAHOO" else "LIVE"),
             "source_coverage_ratio": round((symbols_valid / symbols_requested), 4) if symbols_requested else 0.0,
+            "historical_source": "YAHOO",
+            "latest_validation_source": reconciliation.get("validation_source", "ZAPI_IDX"),
+            "zapi_status": reconciliation.get("status", "ZAPI_DISABLED"),
+            "zapi_coverage_ratio": reconciliation.get("coverage_ratio", 0.0),
+            "reconciliation_status": reconciliation.get("status", "ZAPI_DISABLED"),
+            "degraded_reason": reconciliation.get("reason", ""),
         },
+        "reconciliation": {key: value for key, value in reconciliation.items() if key != "rows"},
         "broker_navigator_path": str(navigator_path) if navigator_path else "",
         "output_paths": copied,
         "file_hashes": {label: file_sha256(path) for label, path in copied.items()},

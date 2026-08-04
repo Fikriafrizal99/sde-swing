@@ -37,7 +37,8 @@ FINAL_WATCHLIST_COLUMNS = [
     "entry_low", "entry_high", "stop_loss", "target_1", "target_2",
     "risk_reward", "technical_score", "technical_state", "broker_score",
     "broker_state", "sector_state", "market_regime", "main_reason",
-    "main_risk", "data_status", "source",
+    "main_risk", "data_status", "source", "yahoo_status", "zapi_status",
+    "reconciliation_status", "zapi_freshness_days", "broker_status",
 ]
 
 BROKER_SUMMARY_COLUMNS = [
@@ -154,6 +155,8 @@ class EnhancedDailyReportBuilder:
             current.setdefault("provider", data.get("provider", ""))
             current.setdefault("source_mode", data.get("source_mode", ""))
             current.setdefault("coverage", data.get("coverage"))
+            current.setdefault("zapi_status", data.get("zapi_status", ""))
+            current.setdefault("reconciliation_status", data.get("reconciliation_status", ""))
             fallback = {
                 "main_reason": str(current.get("main_reason") or self._watchlist_reason(current)),
                 "main_risk": str(current.get("main_risk") or self._watchlist_risk(current)),

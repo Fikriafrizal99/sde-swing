@@ -17,7 +17,7 @@ from modules.job_runner.report_validation import (
     validate_market_outlook_sources,
     validate_post_market_sources,
 )
-from modules.job_runner.runtime import RunnerContext, resolve
+from modules.job_runner.runtime import RunnerContext, read_json, resolve
 
 
 def _norm(value: Any) -> str:
@@ -96,6 +96,22 @@ def _builder(ctx: RunnerContext) -> EnhancedDailyReportBuilder:
         output_root=resolve(cfg.get("output_root", "data/output")),
         max_watchlist_messages=int(cfg.get("max_watchlist_messages", 5)),
     )
+
+
+def _zapi_lineage(ctx: RunnerContext) -> tuple[dict[str, Any], dict[str, dict[str, Any]], list[str]]:
+    latest = resolve("data/output/snapshots") / ctx.trade_date.isoformat() / "latest_snapshot.json"
+    snapshot = read_json(latest) if latest.exists() else {}
+    summary = snapshot.get("reconciliation") if isinstance(snapshot.get("reconciliation"), dict) else {}
+    rows: dict[str, dict[str, Any]] = {}
+    inputs = [str(latest)] if latest.exists() else []
+    reconciliation_path = str(summary.get("json_path") or "")
+    if reconciliation_path and Path(reconciliation_path).exists():
+        payload = read_json(reconciliation_path)
+        for item in payload.get("rows", []) if isinstance(payload.get("rows"), list) else []:
+            if isinstance(item, dict) and _symbol(item.get("symbol")):
+                rows[_symbol(item.get("symbol"))] = item
+        inputs.append(reconciliation_path)
+    return summary, rows, inputs
 
 
 def market_outlook_payloads(
@@ -208,6 +224,12 @@ def post_market_payloads(ctx: RunnerContext, manifest: dict[str, Any]) -> list[R
         "next_process": "Data siap digunakan untuk Final Watchlist." if valid > 0 else "Periksa sumber data sebelum melanjutkan.",
         "provider": provider,
         "source_mode": mode,
+        "historical_status": "VALID" if valid > 0 else "FAILED",
+        "zapi_status": validated["zapi_status"],
+        "zapi_coverage": validated["zapi_coverage"],
+        "reconciliation_status": validated["zapi_status"],
+        "degraded_reason": validated["degraded_reason"],
+        "stockbit_status": "WAITING",
     }
     artifact = _builder(ctx).build_post_market(data)
     artifact = _artifact_with_lineage(
@@ -417,12 +439,14 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
     coverage = _float(coverage, 0.0) if coverage is not None else None
     if coverage is not None and 0 <= coverage <= 1:
         coverage *= 100
+    zapi_summary, zapi_rows, zapi_inputs = _zapi_lineage(ctx)
     rows: list[dict[str, Any]] = []
     for index, raw in enumerate(decisions.to_dict(orient="records"), start=1):
         symbol = _symbol(_value(raw, "Symbol", "EMITEN", "Ticker"))
         if not symbol:
             continue
         plan = plans.get(symbol, {})
+        zapi = zapi_rows.get(symbol, {})
         rows.append({
             "trade_date": ctx.trade_date.isoformat(),
             "rank": _value(raw, "Rank_V3", "Rank", default=index),
@@ -449,6 +473,11 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             "provider": provider,
             "source_mode": mode,
             "coverage": coverage,
+            "yahoo_status": "VALID",
+            "zapi_status": zapi.get("status") or zapi_summary.get("status") or "ZAPI_LINEAGE_MISSING",
+            "reconciliation_status": zapi.get("status") or zapi_summary.get("status") or "ZAPI_LINEAGE_MISSING",
+            "zapi_freshness_days": zapi.get("freshness_days"),
+            "broker_status": "AVAILABLE" if _value(raw, "Broker_Confirmation", "Broker_Direction_Final", default="") else "MISSING",
         })
     data = {
         "trade_date": ctx.trade_date.isoformat(),
@@ -456,12 +485,14 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
         "provider": provider,
         "source_mode": mode,
         "coverage": coverage,
+        "zapi_status": zapi_summary.get("status") or "ZAPI_LINEAGE_MISSING",
+        "reconciliation_status": zapi_summary.get("status") or "ZAPI_LINEAGE_MISSING",
     }
     artifacts = _builder(ctx).build_final_watchlist(data)
     return [_artifact_payload(_artifact_with_lineage(
         artifact,
-        input_paths=[decisions_path, entry_path, decision_manifest_path],
-        source_of_truth=[decisions_path, entry_path, decision_manifest_path],
+        input_paths=[decisions_path, entry_path, decision_manifest_path, *zapi_inputs],
+        source_of_truth=[decisions_path, entry_path, decision_manifest_path, *zapi_inputs],
         row_count=len(rows),
         validation_details=validation,
     )) for artifact in artifacts]

@@ -279,6 +279,7 @@ def validate_post_market_sources(
     snapshot_date = snapshot.get("trade_date")
     manifest_date = manifest.get("Technical_Date") or manifest.get("trade_date")
     source_meta = snapshot.get("source_metadata") if isinstance(snapshot.get("source_metadata"), Mapping) else {}
+    reconciliation = snapshot.get("reconciliation") if isinstance(snapshot.get("reconciliation"), Mapping) else {}
     errors: list[str] = []
     if is_missing(snapshot_id):
         errors.append("FIELD_EMPTY:snapshot_id")
@@ -356,6 +357,12 @@ def validate_post_market_sources(
         "symbols_valid": int(count_fields["symbols_valid"] or 0),
         "symbols_failed": int(count_fields["symbols_failed"] or 0),
         "symbols_skipped": int(count_fields["symbols_skipped"] or 0),
+        "reconciliation": dict(reconciliation),
+        "zapi_status": reconciliation.get("status") or source_meta.get("zapi_status") or "ZAPI_LINEAGE_MISSING",
+        "zapi_coverage": _normalise_coverage(
+            reconciliation.get("coverage_ratio", source_meta.get("zapi_coverage_ratio"))
+        ) or 0.0,
+        "degraded_reason": reconciliation.get("reason") or source_meta.get("degraded_reason") or "",
     }
 
 

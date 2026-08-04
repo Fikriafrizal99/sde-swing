@@ -5,6 +5,7 @@ import argparse
 import os
 import sys
 import traceback
+from pathlib import Path
 from typing import Callable
 
 from modules.global_market.global_market_snapshot import build_global_market_snapshot
@@ -127,6 +128,9 @@ def _manifest_from_existing_snapshot(ctx, snapshot: dict, warning: str = "") -> 
         "data_source_mode": snapshot.get("source_metadata", {}).get("data_source_mode", ""),
         "source_coverage_ratio": snapshot.get("source_metadata", {}).get("source_coverage_ratio"),
         "source_metadata": snapshot.get("source_metadata", {}),
+        "Reconciliation_Status": snapshot.get("reconciliation", {}).get("status", ""),
+        "Reconciliation_Manifest": snapshot.get("reconciliation", {}).get("json_path", ""),
+        "reconciliation": snapshot.get("reconciliation", {}),
         "Warnings": warnings,
         "Output_Files": snapshot.get("output_paths", {}),
     }
@@ -147,12 +151,14 @@ def _market_source_details(ctx, snapshot: dict) -> dict:
 
 def job_market_outlook(ctx) -> int:
     print("[1/5] Menyiapkan snapshot global market...", flush=True)
-    global_snapshot = build_global_market_snapshot(
-        ctx,
-        # Existing snapshots are a compatibility preview only.  The versioned
-        # runtime must fail closed when the current refresh is not valid.
-        fallback_to_existing_on_failure=not _official_runtime(ctx),
-    )
+    global_snapshot = getattr(ctx, "_prepared_global_snapshot", None)
+    if not isinstance(global_snapshot, dict) or not global_snapshot:
+        global_snapshot = build_global_market_snapshot(
+            ctx,
+            # Existing snapshots are a compatibility preview only.  The versioned
+            # runtime must fail closed when the current refresh is not valid.
+            fallback_to_existing_on_failure=not _official_runtime(ctx),
+        )
     coverage = float(global_snapshot.get("coverage_ratio", 0.0) or 0.0)
     minimum_coverage = float(global_snapshot.get("minimum_required_coverage_ratio", 0.5) or 0.5)
     print(
@@ -495,12 +501,12 @@ def job_full_manual(ctx) -> int:
         setattr(ctx, "_suppress_reports", True)
         ctx.no_telegram = True
         stage_jobs = (
-            ("pre_market", job_pre_market),
-            ("market_outlook", job_market_outlook),
+            ("global_market_preparation", None),
             ("post_market", job_post_market),
             ("technical_snapshot", job_technical_snapshot),
             ("universe_selection", job_universe_selection),
             ("candidate_selection", job_candidate_selection),
+            ("market_outlook", job_market_outlook),
             ("broker_summary", job_broker_summary),
             ("broker_multi_day", job_broker_multi_day),
             ("final_watchlist", job_final_watchlist),
@@ -508,6 +514,15 @@ def job_full_manual(ctx) -> int:
         stage_results: list[dict] = []
         try:
             for stage_name, handler in stage_jobs:
+                if stage_name == "global_market_preparation":
+                    setattr(ctx, "_prepared_global_snapshot", build_global_market_snapshot(
+                        ctx,
+                        fallback_to_existing_on_failure=False,
+                    ))
+                    stage_results.append({"job": "global_market_preparation", "exit_code": EXIT_SUCCESS})
+                    continue
+                if handler is None:
+                    raise RuntimeError(f"FULL_MANUAL_HANDLER_MISSING:{stage_name}")
                 ctx.job = stage_name
                 code = handler(ctx)
                 stage_results.append({"job": stage_name, "exit_code": code})
@@ -521,6 +536,8 @@ def job_full_manual(ctx) -> int:
             ctx.job = original_job
             ctx.no_telegram = original_no_telegram
             setattr(ctx, "_suppress_reports", original_suppress_reports)
+            if hasattr(ctx, "_prepared_global_snapshot"):
+                delattr(ctx, "_prepared_global_snapshot")
 
         global_snapshot_path = resolve("data/output/global_market") / ctx.trade_date.isoformat() / "global_market_snapshot.json"
         global_snapshot = read_json(global_snapshot_path)

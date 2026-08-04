@@ -47,6 +47,27 @@ def _items(lines: Iterable[str]) -> str:
     return "\n".join(f"• {item}" for item in values) if values else "• Tidak ada"
 
 
+def _source_block(data: dict[str, Any], *, detail: bool = False) -> str:
+    yahoo = data.get("yahoo_status") or data.get("historical_status") or ""
+    zapi = data.get("zapi_status") or data.get("reconciliation_status") or ""
+    broker = data.get("broker_status") or data.get("stockbit_status") or ""
+    lines = ["", "SOURCE PROVENANCE"]
+    if yahoo:
+        lines.append(f"- Yahoo: {yahoo}")
+    if zapi:
+        lines.append(f"- ZAPI IDX: {zapi}")
+    if broker:
+        lines.append(f"- Stockbit: {broker}")
+    if data.get("zapi_coverage") not in (None, ""):
+        value = float(data.get("zapi_coverage"))
+        lines.append(f"- ZAPI coverage: {_pct(value * 100 if value <= 1 else value)}")
+    if detail and data.get("zapi_freshness_days") not in (None, ""):
+        lines.append(f"- Freshness: {data.get('zapi_freshness_days')} day(s)")
+    if data.get("degraded_reason"):
+        lines.append(f"- Degraded: {data.get('degraded_reason')}")
+    return "\n".join(lines) if len(lines) > 2 else ""
+
+
 def format_market_outlook(data: dict[str, Any]) -> str:
     blocks = [
         "🌐 SDE MARKET OUTLOOK",
@@ -92,7 +113,7 @@ def format_market_outlook(data: dict[str, Any]) -> str:
 def format_post_market(data: dict[str, Any]) -> str:
     status = str(data.get("process_status") or "").upper()
     icon = {"SUCCESS": "✅", "PARTIAL": "🟡", "FAILED": "🔴"}.get(status, "")
-    return "\n".join([
+    message = "\n".join([
         "📊 SDE POST MARKET",
         SEPARATOR,
         f"📅 {_date(data.get('trade_date'))} | {data.get('finished_time') or ''}",
@@ -122,6 +143,7 @@ def format_post_market(data: dict[str, Any]) -> str:
         "",
         f"📡 {data.get('provider', '')} | {data.get('source_mode', '')} | Coverage {_pct(data.get('coverage'))}",
     ])
+    return message + _source_block(data)
 
 
 def format_broker_summary(data: dict[str, Any]) -> str:
@@ -199,7 +221,7 @@ def format_watchlist_detail(data: dict[str, Any]) -> str:
     entry = f"{_price(data.get('entry_low'))}–{_price(data.get('entry_high'))}"
     rr = data.get("risk_reward")
     rr_text = f"1:{str(rr).replace('.', ',')}" if rr not in (None, "") else ""
-    return "\n".join([
+    message = "\n".join([
         f"📌 {str(data.get('symbol', '')).upper()} | {icon} {decision} | {data.get('confidence', '')}%",
         SEPARATOR,
         f"📅 {_date(data.get('trade_date'))} | POST MARKET",
@@ -228,3 +250,4 @@ def format_watchlist_detail(data: dict[str, Any]) -> str:
         "",
         f"📡 {data.get('provider', '')} | Coverage {_pct(data.get('coverage'))}",
     ])
+    return message + _source_block(data, detail=True)

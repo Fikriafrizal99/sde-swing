@@ -66,6 +66,8 @@ def outside_current_root(text: str) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Print latest SDE job status in a click-friendly format")
     parser.add_argument("--job", required=True)
+    parser.add_argument("--status-only", action="store_true")
+    parser.add_argument("--log-fields", action="store_true")
     args = parser.parse_args()
 
     path = ROOT / "data/output/job_status" / f"{args.job}_latest.json"
@@ -75,17 +77,42 @@ def main() -> int:
         print("Jalankan BAT *_CEK untuk membuat status baru di folder ini.")
         return 1
 
+    if args.status_only:
+        print(str(payload.get("status", "UNKNOWN")).upper())
+        return 0
+
     details = payload.get("details", {}) if isinstance(payload.get("details"), dict) else {}
+    overall_status = str(payload.get("status", "") or "UNKNOWN").upper()
+    engine_status = str(details.get("engine_status") or overall_status)
+    report_status = str(details.get("report_status") or ("SUCCESS" if overall_status in {"SUCCESS", "SUCCESS_WITH_WARNING"} else "NOT_RUN"))
+    delivery_status = str(
+        details.get("delivery_status")
+        or payload.get("telegram_status")
+        or ("SKIPPED" if payload.get("no_telegram") else "NOT_RUN")
+    )
+    if args.log_fields:
+        print(
+            f"run_id={payload.get('run_id', '')} "
+            f"engine_status={engine_status} report_status={report_status} "
+            f"delivery_status={delivery_status} overall_status={overall_status}"
+        )
+        return 0
     print("============================================================")
     print(f"SDE Job Status: {args.job}")
     print("============================================================")
+    if overall_status == "SUCCESS_WITH_WARNING":
+        print("[OK WITH WARNING]")
+    elif overall_status == "SUCCESS":
+        print("[OK] SUCCESS")
     print(f"Run ID       : {payload.get('run_id', '')}")
     print(f"Trade date   : {payload.get('trade_date', '')}")
     print(f"Mode         : {payload.get('job_mode', '')}")
-    print(f"Status       : {payload.get('status', '')}")
+    print(f"Engine       : {engine_status}")
+    print(f"Report       : {report_status}")
+    print(f"Delivery     : {delivery_status}")
+    print(f"Overall      : {overall_status}")
     print(f"Stage        : {payload.get('current_stage', '')}")
     print(f"Exit code    : {payload.get('exit_code', '')}")
-    print(f"Telegram     : {payload.get('telegram_status', '') or 'DATA_NOT_AVAILABLE'}")
 
     reason = details.get("reason") or payload.get("broker_readiness_status") or details.get("status") or ""
     if reason:

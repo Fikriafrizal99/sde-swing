@@ -39,7 +39,11 @@ class SourceConfig:
     priority: int = 100
     timeout: float = 30.0
     retry: int = 2
+    backoff_base_seconds: float = 0.2
+    rate_limit_per_second: float = 0.0
+    cache_ttl_seconds: float = 0.0
     maximum_stale_seconds: float = 172800.0
+    minimum_coverage_ratio: float = 0.0
     fallback_policy: str = FALLBACK_DENY
     conflict_tolerance: float = 0.0
     required_fields: tuple[str, ...] = ()
@@ -131,7 +135,11 @@ def parse_config(payload: dict[str, Any]) -> DataSourceConfig:
             priority=int(raw.get("priority", 100) or 100),
             timeout=float(raw.get("timeout", 30.0) or 30.0),
             retry=int(raw.get("retry", 2) or 0),
+            backoff_base_seconds=float(raw.get("backoff_base_seconds", 0.2) or 0.0),
+            rate_limit_per_second=float(raw.get("rate_limit_per_second", 0.0) or 0.0),
+            cache_ttl_seconds=float(raw.get("cache_ttl_seconds", 0.0) or 0.0),
             maximum_stale_seconds=float(raw.get("maximum_stale_seconds", 172800.0) or 0.0),
+            minimum_coverage_ratio=float(raw.get("minimum_coverage_ratio", 0.0) or 0.0),
             fallback_policy=policy,
             conflict_tolerance=float(raw.get("conflict_tolerance", 0.0) or 0.0),
             required_fields=tuple(raw.get("required_fields", []) or ()),

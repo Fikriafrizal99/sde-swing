@@ -6,9 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pandas as pd
-
-from modules.data_sources.yahoo_zapi_validator import validate_yahoo_against_zapi
 from modules.job_runner.delivery import deliver
 from modules.job_runner.enhanced_runtime_bridge import (
     broker_multiday_payloads,
@@ -39,14 +36,27 @@ ENHANCED_JOBS = {
     "full_manual",
 }
 
-RECONCILIATION_JOBS = {"post_market", "final_watchlist", "full_manual"}
-
+SUPPORTED_JOBS = (
+    "pre_market",
+    "market_outlook",
+    "post_market",
+    "technical_snapshot",
+    "broker_summary",
+    "broker_multi_day",
+    "universe_selection",
+    "candidate_selection",
+    "final_watchlist",
+    "final_decision",
+    "telegram_delivery",
+    "job_status",
+    "full_manual",
+)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="SDE Swing V1.7 integrated runner: deterministic engine + source validation + Gemini interpretation + Telegram UI"
     )
-    parser.add_argument("--job", required=True)
+    parser.add_argument("--job", required=True, choices=SUPPORTED_JOBS)
     parser.add_argument("--config", default="config/pipeline.json")
     parser.add_argument("--scheduler-config", default="config/scheduler.json")
     parser.add_argument("--trade-date", default="")
@@ -104,99 +114,23 @@ def _load_post_manifest(ctx) -> dict:
     return read_json(path)
 
 
-def _watchlist_symbols(ctx) -> list[str]:
-    paths = ctx.config.get("paths", {})
-    candidate_paths = [
-        resolve(paths.get("normalized_watchlist", "modules/historical_downloader/Stockbit_Watchlist_2026-07-19_normalized.csv")),
-        resolve(paths.get("broker_navigator_symbols", "data/output/candidates/BROKER_NAVIGATOR_SYMBOLS.csv")),
-        resolve("data/output/candidates/broker_symbols.csv"),
-    ]
-    aliases = {"symbol", "emiten", "ticker", "code", "stockcode"}
-    for path in candidate_paths:
-        if not path.exists() or path.stat().st_size == 0:
-            continue
-        try:
-            frame = pd.read_csv(path, low_memory=False)
-        except Exception:
-            continue
-        column = next((col for col in frame.columns if str(col).strip().lower().replace("_", "") in aliases), None)
-        if column is None and len(frame.columns):
-            column = frame.columns[0]
-        if column is None:
-            continue
-        symbols = [str(item).strip().upper().replace(".JK", "") for item in frame[column].dropna().tolist()]
-        symbols = [item for item in dict.fromkeys(symbols) if item]
-        if symbols:
-            return symbols
-    return []
+def _expected_nonreportable_warning(job: str, engine_status: str, errors: list[str]) -> bool:
+    if job != "market_outlook" or engine_status not in {"SUCCESS_WITH_WARNING", "PARTIAL"}:
+        return False
+    allowed_prefixes = ("SECTOR_ROTATION_STATUS:INSUFFICIENT_DATA", "FIELD_EMPTY:sector_rotation.")
+    return bool(errors) and all(any(str(error).startswith(prefix) for prefix in allowed_prefixes) for error in errors)
 
 
 def _run_source_reconciliation(ctx, job: str) -> dict:
-    if job not in RECONCILIATION_JOBS:
+    if job not in {"post_market", "final_watchlist", "full_manual"}:
         return {}
-    config = ctx.scheduler_config.get("source_validation", {})
-    if not bool(config.get("enabled", True)):
-        return {"status": "DISABLED"}
-    symbols = _watchlist_symbols(ctx)
-    if not symbols:
-        result = {"status": "SKIPPED", "reason": "SYMBOL_UNIVERSE_NOT_FOUND"}
-        append_job_log(ctx, "YAHOO_ZAPI_RECONCILIATION_SKIPPED", str(result))
-        if not bool(config.get("non_blocking", False)):
-            reconciliation_config = str(ctx.config.get("data_sources_config", "config/data_sources.json"))
-            raise ReportSourceValidationError(
-                "source_reconciliation",
-                [result["reason"]],
-                input_paths=[resolve(ctx.config.get("paths", {}).get("normalized_watchlist", "modules/historical_downloader/Stockbit_Watchlist_2026-07-19_normalized.csv"))],
-                source_of_truth=[reconciliation_config],
-                details=result,
-            )
-        return result
-    paths = ctx.config.get("paths", {})
-    historical_dir = resolve(paths.get("historical_dir", "data/output/historical/by_symbol"))
-    output_dir = resolve(config.get("output_dir", "data/output/source_validation"))
-    try:
-        result = validate_yahoo_against_zapi(
-            historical_dir=historical_dir,
-            symbols=symbols,
-            market_date=ctx.trade_date.isoformat(),
-            output_dir=output_dir,
-            config_path=ctx.config.get("data_sources_config", "config/data_sources.json"),
-            price_tolerance_pct=float(config.get("price_tolerance_pct", 0.005)),
-            volume_tolerance_pct=float(config.get("volume_tolerance_pct", 0.20)),
-            max_symbols=int(config.get("max_symbols", 0) or 0),
-        )
-        append_job_log(ctx, "YAHOO_ZAPI_RECONCILIATION", str({
-            "status": result.get("status"),
-            "validated": result.get("validated"),
-            "matched": result.get("matched"),
-            "conflicted": result.get("conflicted"),
-            "coverage_ratio": result.get("coverage_ratio"),
+    manifest = _load_post_manifest(ctx)
+    result = manifest.get("reconciliation") if isinstance(manifest.get("reconciliation"), dict) else {}
+    if result:
+        append_job_log(ctx, "YAHOO_ZAPI_RECONCILIATION_REUSED", str({
+            "status": result.get("status"), "run_id": result.get("run_id")
         }))
-        if str(result.get("status", "")).upper().startswith("FAILED") and not bool(config.get("non_blocking", False)):
-            reconciliation_config = str(ctx.config.get("data_sources_config", "config/data_sources.json"))
-            raise ReportSourceValidationError(
-                "source_reconciliation",
-                [str(result.get("reason") or result.get("status"))],
-                input_paths=[historical_dir],
-                source_of_truth=[reconciliation_config],
-                details=result,
-            )
-        return result
-    except ReportSourceValidationError:
-        raise
-    except Exception as exc:
-        result = {"status": "FAILED_NON_BLOCKING", "reason": f"{type(exc).__name__}: {exc}"}
-        append_job_log(ctx, "YAHOO_ZAPI_RECONCILIATION_FAILED", str(result))
-        if not bool(config.get("non_blocking", False)):
-            reconciliation_config = str(ctx.config.get("data_sources_config", "config/data_sources.json"))
-            raise ReportSourceValidationError(
-                "source_reconciliation",
-                [result["reason"]],
-                input_paths=[historical_dir],
-                source_of_truth=[reconciliation_config],
-                details=result,
-            ) from exc
-        return result
+    return result
 
 
 def _enhanced_payloads(ctx, job: str):
@@ -265,7 +199,32 @@ def main() -> int:
         interactive_broker=args.interactive_broker,
     )
     engine = subprocess.run(_engine_command(args, ctx.run_id), cwd=Path(__file__).resolve().parent)
+    engine_payload = read_json(ctx.status_root / f"{args.job}_latest.json")
+    engine_status = str(
+        engine_payload.get("legacy_status")
+        or engine_payload.get("status_v1_7")
+        or engine_payload.get("status")
+        or "SUCCESS"
+    ).upper()
     if engine.returncode != 0:
+        engine_details = engine_payload.get("details", {})
+        if not isinstance(engine_details, dict):
+            engine_details = {}
+        write_status(
+            ctx,
+            str(engine_payload.get("legacy_status") or engine_payload.get("status") or "FAILED"),
+            str(engine_payload.get("current_stage") or "ENGINE_EXIT"),
+            int(engine.returncode),
+            {
+                **engine_details,
+                "engine_status": engine_status,
+                "report_status": "NOT_RUN_ENGINE_EXIT",
+                "delivery_status": "SKIPPED_ENGINE_NOT_SUCCESSFUL",
+                "telegram_status": "SKIPPED",
+                "warnings": engine_payload.get("warnings", engine_details.get("warnings", [])),
+                "errors": engine_payload.get("errors", engine_details.get("errors", [])),
+            },
+        )
         return int(engine.returncode)
     if args.job not in ENHANCED_JOBS:
         return int(engine.returncode)
@@ -286,6 +245,18 @@ def main() -> int:
         preview_paths = write_payloads(ctx, payloads)
     except ReportSourceValidationError as exc:
         record_validation_error(ctx, exc)
+        if _expected_nonreportable_warning(args.job, engine_status, exc.errors):
+            write_status(ctx, "SUCCESS_WITH_WARNING", "REPORT_SKIPPED_INSUFFICIENT_DATA", EXIT_SUCCESS, {
+                "engine_status": engine_status,
+                "report_status": "SKIPPED_INSUFFICIENT_DATA",
+                "delivery_status": "SKIPPED_NO_PAYLOAD",
+                "telegram_status": "SKIPPED",
+                "warnings": exc.errors,
+                "report_type": exc.report_type,
+                "input_paths": exc.input_paths,
+                "source_of_truth": exc.source_of_truth,
+            })
+            return EXIT_SUCCESS
         write_status(ctx, "FAILED", "REPORT_SOURCE_VALIDATION", 1, {
             "errors": exc.errors,
             "report_type": exc.report_type,
@@ -312,9 +283,25 @@ def main() -> int:
         "source_reconciliation": reconciliation,
         "execution_source": "YAHOO_HISTORICAL",
         "validation_source": reconciliation.get("validation_source") or "NOT_APPLICABLE",
+        "engine_status": engine_status,
+        "report_status": "SUCCESS" if payloads else "SKIPPED_NO_PAYLOAD",
     }
     if args.no_telegram:
-        write_status(ctx, "SUCCESS", "ENHANCED_REPORT_PREVIEW", EXIT_SUCCESS, common_status)
+        overall = "SUCCESS_WITH_WARNING" if engine_status in {"SUCCESS_WITH_WARNING", "PARTIAL"} else "SUCCESS"
+        write_status(ctx, overall, "ENHANCED_REPORT_PREVIEW", EXIT_SUCCESS, {
+            **common_status,
+            "delivery_status": "SKIPPED_DISABLED",
+            "telegram_status": "SKIPPED",
+        })
+        return EXIT_SUCCESS
+
+    if not payloads:
+        write_status(ctx, "SUCCESS_WITH_WARNING", "ENHANCED_REPORT_NO_PAYLOAD", EXIT_SUCCESS, {
+            **common_status,
+            "delivery_status": "SKIPPED_NO_PAYLOAD",
+            "telegram_status": "SKIPPED",
+            "warnings": ["REPORT_PAYLOAD_EMPTY_TELEGRAM_NOT_CALLED"],
+        })
         return EXIT_SUCCESS
 
     delivery = deliver(ctx, payloads)
@@ -326,7 +313,7 @@ def main() -> int:
         delivery_status,
         "ENHANCED_REPORT_DELIVERY",
         EXIT_DELIVERY_FAILED if failed else EXIT_SUCCESS,
-        {**common_status, "delivery": delivery},
+        {**common_status, "delivery_status": delivery_status, "delivery": delivery},
     )
     return EXIT_DELIVERY_FAILED if failed else EXIT_SUCCESS
 

@@ -26,6 +26,15 @@ IMMUTABLE_FIELDS = {
     "provider",
     "source_mode",
     "coverage",
+    "yahoo_status",
+    "historical_status",
+    "zapi_status",
+    "zapi_coverage",
+    "zapi_freshness_days",
+    "reconciliation_status",
+    "stockbit_status",
+    "broker_status",
+    "degraded_reason",
 }
 
 
@@ -104,6 +113,9 @@ class GeminiInterpreter:
             "state_1d", "state_3d", "state_5d", "rotating_in", "leading",
             "weakening", "rotating_out", "ihsg_change", "ihsg_trend",
             "ihsg_momentum", "breadth", "execution_mode",
+            "yahoo_status", "historical_status", "zapi_status", "zapi_coverage",
+            "zapi_freshness_days", "reconciliation_status", "stockbit_status",
+            "broker_status", "degraded_reason",
         }
         return {key: value for key, value in facts.items() if key in allowed}
 

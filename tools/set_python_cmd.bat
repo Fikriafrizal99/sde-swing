@@ -18,4 +18,11 @@ if not errorlevel 1 (
   goto :eof
 )
 
+for %%V in (313 312 311 310) do (
+  if exist "%LocalAppData%\Programs\Python\Python%%V\python.exe" (
+    set "SDE_PYTHON_CMD="%LocalAppData%\Programs\Python\Python%%V\python.exe""
+    goto :eof
+  )
+)
+
 goto :eof

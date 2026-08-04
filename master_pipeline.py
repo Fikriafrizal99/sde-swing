@@ -264,7 +264,7 @@ def main() -> int:
                 "--market-close", freshness.get("market_close", "16:15"),
                 "--after-midnight-cutoff", freshness.get("after_midnight_cutoff", "06:00"),
                 "--data-source", data_source,
-                "--incremental-overlap-days", str(freshness.get("yahoo_incremental_overlap_days", 5)),
+                "--repair-overlap-sessions", str(freshness.get("yahoo_repair_overlap_sessions", 5)),
                 "--batch-size", str(freshness.get("yahoo_batch_size", 50)),
                 "--max-workers", str(freshness.get("yahoo_max_workers", 4)),
                 "--request-delay-seconds", str(freshness.get("yahoo_request_delay_seconds", 1)),
@@ -286,6 +286,8 @@ def main() -> int:
                 downloader_cmd.append("--interactive")
             for holiday in freshness.get("market_holidays", []):
                 downloader_cmd += ["--market-holiday", str(holiday)]
+            for special_day in freshness.get("special_trading_days", []):
+                downloader_cmd += ["--special-trading-day", str(special_day)]
             run_command(stage, downloader_cmd, log)
             yahoo_manifest = latest_manifest(manifest_dir, "YAHOO_REFRESH_MANIFEST", run_id)
             data_quality = quality_from(yahoo_manifest.get("Data_Quality_Status", "VALID"))

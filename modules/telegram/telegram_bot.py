@@ -585,6 +585,13 @@ def main() -> int:
             return 0
 
     except Exception as exc:
+        if args.command == "test" and str(exc) in {
+            "TELEGRAM_BOT_TOKEN belum diisi.",
+            "TELEGRAM_CHAT_ID belum diisi.",
+        }:
+            append_log(log_path, "test", "SKIPPED_NOT_CONFIGURED", str(exc))
+            print(f"SKIPPED_NOT_CONFIGURED: {exc}", file=sys.stderr)
+            return 10
         append_log(log_path, args.command or "unknown", "FAILED", str(exc))
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
