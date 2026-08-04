@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import socket
 import threading
 from contextlib import contextmanager
@@ -43,6 +44,40 @@ class ResourceLocked(JobAlreadyRunning):
 def resolve(value: str | Path) -> Path:
     path = Path(os.path.expandvars(str(value)))
     return path if path.is_absolute() else ROOT / path
+
+
+_ENV_LINE = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
+
+
+def load_environment_file(path: str | Path | None = None) -> Path | None:
+    """Load local ``.env`` values into the process without logging secrets.
+
+    Explicit process environment values always win.  The file is intentionally
+    a small dependency-free dotenv subset because the runtime does not require
+    python-dotenv just to start a job from the Windows launcher.
+    """
+    env_path = resolve(path or ".env")
+    if not env_path.exists() or not env_path.is_file():
+        return None
+    try:
+        lines = env_path.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return None
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _ENV_LINE.match(line)
+        if not match:
+            continue
+        key, value = match.groups()
+        if key in os.environ:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ[key] = value
+    return env_path
 
 
 def read_json(path: Path, default: Any | None = None) -> Any:
@@ -187,6 +222,7 @@ def load_context(
     debug: bool,
     interactive_broker: bool = False,
 ) -> RunnerContext:
+    load_environment_file()
     cfg_path = resolve(config_path)
     sched_path = resolve(scheduler_config_path)
     scheduler_cfg = read_json(sched_path)

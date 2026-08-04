@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from modules.data_sources.canonical import (
@@ -11,6 +12,7 @@ from modules.data_sources.canonical import (
     now_wib,
 )
 from modules.data_sources.config import load_data_source_config
+from modules.job_runner.runtime import load_environment_file
 from modules.data_sources.constants import SCHEMA_VERSION, WIB
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,3 +99,21 @@ def test_api_key_only_from_environment(monkeypatch):
     assert zapi.api_key() is None
     monkeypatch.setenv("ZAPI_IDX_API_KEY", "secret-from-env")
     assert zapi.api_key() == "secret-from-env"
+
+
+def test_local_environment_file_loads_only_missing_process_values(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "ZAPI_TEST_URL=https://example.test\n"
+        "ZAPI_TEST_KEY='from-file'\n"
+        "export ZAPI_TEST_EXPORT=exported\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("ZAPI_TEST_URL", raising=False)
+    monkeypatch.setenv("ZAPI_TEST_KEY", "from-process")
+    monkeypatch.delenv("ZAPI_TEST_EXPORT", raising=False)
+
+    assert load_environment_file(env_file) == env_file
+    assert os.environ["ZAPI_TEST_URL"] == "https://example.test"
+    assert os.environ["ZAPI_TEST_KEY"] == "from-process"
+    assert os.environ["ZAPI_TEST_EXPORT"] == "exported"
