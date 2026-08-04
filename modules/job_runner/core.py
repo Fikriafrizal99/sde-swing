@@ -313,6 +313,7 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
                     event_callback=zapi_event,
                     market_holidays=freshness.get("market_holidays", []),
                     special_trading_days=freshness.get("special_trading_days", []),
+                    bulk_page_size=int(validation_cfg.get("bulk_page_size", 100) or 100),
                 )
         except Exception as exc:
             append_job_log(ctx, "ZAPI_RECONCILIATION_EXCEPTION", __import__("traceback").format_exc())

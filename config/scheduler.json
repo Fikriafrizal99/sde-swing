@@ -34,6 +34,7 @@
     "maximum_stale_days": 1,
     "minimum_coverage_ratio": 0.9,
     "max_symbols": 0,
+    "bulk_page_size": 100,
     "non_blocking": false
   },
   "enhanced_reporting": {

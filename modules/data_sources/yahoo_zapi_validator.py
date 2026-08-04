@@ -143,6 +143,7 @@ def validate_yahoo_against_zapi(
     market_holidays: Iterable[Any] = (),
     special_trading_days: Iterable[Any] = (),
     max_date_fallback_sessions: int = 10,
+    bulk_page_size: int = 100,
 ) -> dict[str, Any]:
     """Validate Yahoo bars against live ZAPI and persist per-run lineage."""
     folder = Path(historical_dir)
@@ -238,7 +239,10 @@ def validate_yahoo_against_zapi(
         )
         first_row = smoke_raw["data"][0]
         required = ("StockCode", "Date", "Close", "Volume")
-        missing = [field for field in required if field not in first_row or first_row[field] is None]
+        missing = [
+            field for field in required
+            if field not in first_row or first_row[field] is None or str(first_row[field]).strip() == ""
+        ]
         if missing:
             raise SourceUnavailable("ZAPI_RESPONSE_INVALID:missing:" + ",".join(missing))
         smoke_symbol = canonical_symbol(first_row["StockCode"])
@@ -258,6 +262,7 @@ def validate_yahoo_against_zapi(
             request_attempts=zapi_client.request_attempt_count,
         )
     except Exception as exc:
+        endpoint_counts["/stock-summary"] = zapi_client.request_attempt_count
         reason = f"{type(exc).__name__}: {exc}"
         emit(
             "ZAPI_SMOKE_TEST_FAILED",
@@ -286,12 +291,79 @@ def validate_yahoo_against_zapi(
         return result
 
     resolved_iso_date = resolved_session.isoformat()
+    bulk_page_size = max(1, int(bulk_page_size or 100))
     emit(
         "ZAPI_BATCH_START",
         symbol_count=len(normalized),
         start_index=1,
         resolved_source_date=resolved_query_date,
+        mode="BULK_PAGINATED",
+        page_size=bulk_page_size,
     )
+
+    # The stock-summary endpoint exposes the complete dataset through
+    # ``length``/``start`` pagination.  Fetching that dataset once per page is
+    # materially faster than issuing one HTTP request for every symbol.  The
+    # smoke request remains separate and unfiltered so authentication/schema
+    # failures are detected before this batch begins.
+    bulk_records: dict[str, Any] = {}
+    bulk_available = False
+    emit(
+        "ZAPI_BULK_START",
+        page_size=bulk_page_size,
+        records_total=records_total,
+        resolved_source_date=resolved_query_date,
+    )
+    try:
+        page_start = 0
+        pages = 0
+        max_pages = max(1, (max(records_total, 1) + bulk_page_size - 1) // bulk_page_size + 1)
+        while page_start < max(records_total, 1) and pages < max_pages:
+            raw_page = zapi_client.fetch_raw(
+                "DailyBar", "", market_date=resolved_iso_date,
+                date=resolved_query_date, length=bulk_page_size, start=page_start,
+            )
+            page_rows = raw_page.get("data") if isinstance(raw_page, Mapping) else None
+            if not isinstance(page_rows, list):
+                raise SourceUnavailable("ZAPI_RESPONSE_INVALID")
+            if not page_rows:
+                break
+            mapped_page = adapter.to_canonical(
+                "DailyBar", raw_page, market_date=resolved_iso_date,
+            )
+            for record in mapped_page:
+                symbol = canonical_symbol(getattr(record, "symbol", ""))
+                if symbol and symbol in normalized:
+                    bulk_records.setdefault(symbol, record)
+            pages += 1
+            page_count = len(page_rows)
+            page_start += page_count
+            endpoint_counts["/stock-summary"] = zapi_client.request_attempt_count
+            emit(
+                "ZAPI_BULK_PROGRESS",
+                page_start=page_start,
+                page_size=bulk_page_size,
+                records_indexed=len(bulk_records),
+                records_total=records_total,
+                request_count=zapi_client.request_attempt_count,
+            )
+            if page_count < bulk_page_size or page_start >= records_total:
+                break
+        if not bulk_records and normalized:
+            raise SourceUnavailable("ZAPI_BULK_NO_REQUESTED_SYMBOLS")
+        bulk_available = True
+    except Exception as exc:
+        endpoint_counts["/stock-summary"] = zapi_client.request_attempt_count
+        emit(
+            "ZAPI_BULK_FAILED",
+            reason=f"{type(exc).__name__}: {exc}",
+            request_count=zapi_client.request_attempt_count,
+        )
+        emit(
+            "ZAPI_BATCH_FALLBACK_PER_SYMBOL",
+            reason="BULK_UNAVAILABLE",
+            remaining_symbols=len(normalized),
+        )
 
     for index, symbol in enumerate(normalized, start=1):
         yahoo = _latest_yahoo_bar(folder, symbol)
@@ -299,21 +371,29 @@ def validate_yahoo_against_zapi(
         error = ""
         error_status = ""
         try:
-            raw = smoke_raw_by_symbol.get(symbol) or zapi_client.fetch_raw(
-                "DailyBar", symbol, market_date=resolved_iso_date,
-                date=resolved_query_date, length=10, start=0,
-            )
-            endpoint_counts["/stock-summary"] = zapi_client.request_attempt_count
-            mapped = adapter.to_canonical(
-                "DailyBar", raw, symbol=symbol, market_date=resolved_iso_date
-            )
-            candidates = [item for item in mapped if canonical_symbol(item.symbol) == symbol]
-            zapi_record = max(candidates or mapped, key=lambda item: item.market_date, default=None)
-            if zapi_record is None:
-                error_status = "INVALID_SCHEMA" if mapped else "MISSING_ZAPI"
-                failure_count += 1
+            if bulk_available:
+                zapi_record = bulk_records.get(symbol)
+                if zapi_record is None:
+                    error_status = "MISSING_ZAPI"
+                    failure_count += 1
+                else:
+                    success_count += 1
             else:
-                success_count += 1
+                raw = smoke_raw_by_symbol.get(symbol) or zapi_client.fetch_raw(
+                    "DailyBar", symbol, market_date=resolved_iso_date,
+                    date=resolved_query_date, length=10, start=0,
+                )
+                endpoint_counts["/stock-summary"] = zapi_client.request_attempt_count
+                mapped = adapter.to_canonical(
+                    "DailyBar", raw, symbol=symbol, market_date=resolved_iso_date
+                )
+                candidates = [item for item in mapped if canonical_symbol(item.symbol) == symbol]
+                zapi_record = max(candidates or mapped, key=lambda item: item.market_date, default=None)
+                if zapi_record is None:
+                    error_status = "INVALID_SCHEMA" if mapped else "MISSING_ZAPI"
+                    failure_count += 1
+                else:
+                    success_count += 1
         except SourceNotConfigured as exc:
             error, error_status = str(exc), "MISSING_ZAPI"
             failure_count += 1
@@ -384,6 +464,7 @@ def validate_yahoo_against_zapi(
                 success_count=success_count,
                 failure_count=failure_count,
                 request_count=zapi_client.request_attempt_count,
+                mode="BULK_PAGINATED" if bulk_available else "PER_SYMBOL_FALLBACK",
             )
 
     validated = sum(row["status"] in {"MATCH", "MATCH_WITH_TOLERANCE", "PRICE_MISMATCH"} for row in rows)
@@ -404,6 +485,9 @@ def validate_yahoo_against_zapi(
         "resolved_source_date": resolved_query_date,
         "date_fallback_reason": fallback_reason or "NONE",
         "records_total": records_total,
+        "batch_mode": "BULK_PAGINATED" if bulk_available else "PER_SYMBOL_FALLBACK",
+        "bulk_page_size": bulk_page_size,
+        "bulk_symbols_indexed": len(bulk_records),
         "config_version": cfg.config_version,
         "status": status,
         "reason": "MINIMUM_COVERAGE_NOT_MET" if coverage_failed else "",
