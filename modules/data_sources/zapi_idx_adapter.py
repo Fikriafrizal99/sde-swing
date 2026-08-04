@@ -248,11 +248,16 @@ class HttpZapiTransport(Transport):
         api_key: str,
         timeout: float = 15.0,
         *,
+        connect_timeout: float | None = None,
+        read_timeout: float | None = None,
         request_fn: Any | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
-        self._timeout = timeout
+        self._timeout = (
+            float(connect_timeout if connect_timeout is not None else timeout),
+            float(read_timeout if read_timeout is not None else timeout),
+        )
         self._request_fn = request_fn
 
     def request(
@@ -335,6 +340,8 @@ class ZapiIdxClient(SourceClient):
         self._source_config = source_config
         self._explicit_mock = isinstance(transport, MockZapiTransport) if explicit_mock is None else bool(explicit_mock)
         self.last_response: dict[str, Any] = {}
+        self.request_attempt_count = 0
+        self._event_callback: Any | None = None
         self._cache: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[float, dict[str, Any]]] = {}
         self._last_request_at = 0.0
 
@@ -352,6 +359,8 @@ class ZapiIdxClient(SourceClient):
                 source_config.base_url() or "",
                 source_config.api_key() or "",
                 source_config.timeout,
+                connect_timeout=source_config.connect_timeout_seconds,
+                read_timeout=source_config.read_timeout_seconds,
             ),
             source_config,
         )
@@ -363,6 +372,13 @@ class ZapiIdxClient(SourceClient):
             and self._source_config.has_credentials()
             and not isinstance(self._transport, MockZapiTransport)
         )
+
+    def set_event_callback(self, callback: Any | None) -> None:
+        self._event_callback = callback
+
+    def _emit(self, event: str, **detail: Any) -> None:
+        if self._event_callback is not None:
+            self._event_callback(event, detail)
 
     def fetch_raw(self, record_type: str, symbol: str, **kwargs: Any) -> Any:
         if not self._source_config.enabled:
@@ -406,8 +422,22 @@ class ZapiIdxClient(SourceClient):
             remaining = (1.0 / rate) - (time.monotonic() - self._last_request_at)
             if remaining > 0:
                 time.sleep(remaining)
+        def request_once() -> TransportResponse:
+            self.request_attempt_count += 1
+            request_timeout: Any = self.timeout
+            if isinstance(self._transport, HttpZapiTransport):
+                request_timeout = self._transport._timeout
+            return self._transport.request("GET", spec.path, params=params, timeout=request_timeout)
+
         response = self.with_retry(
-            lambda: self._transport.request("GET", spec.path, params=params, timeout=self.timeout)
+            request_once,
+            on_retry=lambda attempt, delay, exc: self._emit(
+                "ZAPI_RETRY",
+                attempt=attempt,
+                max_retries=self.retry,
+                backoff_seconds=delay,
+                error_type=type(exc).__name__,
+            ),
         )
         self._last_request_at = time.monotonic()
         body = _unwrap_payload(response.payload)

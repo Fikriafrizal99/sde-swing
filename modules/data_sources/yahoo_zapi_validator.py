@@ -10,7 +10,7 @@ or overwrites a Yahoo candle and never changes an engine score.
 import json
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -131,6 +131,7 @@ def validate_yahoo_against_zapi(
     max_symbols: int = 0,
     run_id: str = "",
     client: ZapiIdxClient | None = None,
+    event_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Validate Yahoo bars against live ZAPI and persist per-run lineage."""
     folder = Path(historical_dir)
@@ -142,15 +143,37 @@ def validate_yahoo_against_zapi(
         normalized = normalized[:max_symbols]
     run_id = run_id or f"ZAPI-{market_date}-{datetime.now().strftime('%H%M%S')}"
 
+    def emit(event: str, **detail: Any) -> None:
+        if event_callback is not None:
+            event_callback(event, detail)
+
     cfg = load_data_source_config(config_path)
     source_cfg = cfg.sources.get("ZAPI_IDX")
     if source_cfg is None:
-        return _write_skipped(out, run_id, market_date, normalized, "ZAPI_SOURCE_CONFIG_NOT_FOUND", blocking=blocking)
+        emit("ZAPI_CREDENTIAL_STATUS", status="ZAPI_SOURCE_CONFIG_NOT_FOUND")
+        emit("ZAPI_SMOKE_TEST_START", symbol=normalized[0] if normalized else "")
+        emit("ZAPI_SMOKE_TEST_FAILED", reason="ZAPI_SOURCE_CONFIG_NOT_FOUND", request_performed=False)
+        result = _write_skipped(out, run_id, market_date, normalized, "ZAPI_SOURCE_CONFIG_NOT_FOUND", status="ZAPI_MISSING_CREDENTIAL", blocking=blocking)
+        emit("ZAPI_RECONCILIATION_COMPLETE", status=result["status"], request_count=0)
+        return result
     if not source_cfg.enabled:
-        return _write_skipped(out, run_id, market_date, normalized, "ZAPI_DISABLED", status="ZAPI_DISABLED", blocking=blocking)
+        emit("ZAPI_CREDENTIAL_STATUS", status="ZAPI_DISABLED")
+        emit("ZAPI_SMOKE_TEST_START", symbol=normalized[0] if normalized else "")
+        emit("ZAPI_SMOKE_TEST_FAILED", reason="ZAPI_DISABLED", request_performed=False)
+        result = _write_skipped(out, run_id, market_date, normalized, "ZAPI_DISABLED", status="ZAPI_DISABLED", blocking=blocking)
+        emit("ZAPI_RECONCILIATION_COMPLETE", status=result["status"], request_count=0)
+        return result
     zapi_client = client or ZapiIdxClient.from_config(source_cfg)
     if not zapi_client.is_configured() and client is None:
-        return _write_skipped(out, run_id, market_date, normalized, "ZAPI_MISSING_CREDENTIAL", blocking=blocking)
+        emit("ZAPI_CREDENTIAL_STATUS", status="ZAPI_MISSING_CREDENTIAL")
+        emit("ZAPI_SMOKE_TEST_START", symbol=normalized[0] if normalized else "")
+        emit("ZAPI_SMOKE_TEST_FAILED", reason="ZAPI_MISSING_CREDENTIAL", request_performed=False)
+        result = _write_skipped(out, run_id, market_date, normalized, "ZAPI_MISSING_CREDENTIAL", status="ZAPI_MISSING_CREDENTIAL", blocking=blocking)
+        emit("ZAPI_RECONCILIATION_COMPLETE", status=result["status"], request_count=0)
+        return result
+
+    zapi_client.set_event_callback(event_callback)
+    emit("ZAPI_CREDENTIAL_STATUS", status="CONFIGURED")
 
     adapter = ZapiIdxAdapter(zapi_client)
     rows: list[dict[str, Any]] = []
@@ -158,16 +181,66 @@ def validate_yahoo_against_zapi(
     success_count = 0
     failure_count = 0
 
-    for symbol in normalized:
+    smoke_symbol = normalized[0] if normalized else ""
+    smoke_raw: Any | None = None
+    emit("ZAPI_SMOKE_TEST_START", symbol=smoke_symbol)
+    if smoke_symbol:
+        try:
+            smoke_raw = zapi_client.fetch_raw(
+                "DailyBar", smoke_symbol, market_date=market_date, date=market_date, length=10, start=0
+            )
+            smoke_mapped = adapter.to_canonical(
+                "DailyBar", smoke_raw, symbol=smoke_symbol, market_date=market_date
+            )
+            if not smoke_mapped:
+                raise SourceUnavailable("ZAPI_SMOKE_EMPTY_OR_INVALID_SCHEMA")
+            emit(
+                "ZAPI_SMOKE_TEST_SUCCESS",
+                symbol=smoke_symbol,
+                request_attempts=zapi_client.request_attempt_count,
+            )
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            emit(
+                "ZAPI_SMOKE_TEST_FAILED",
+                symbol=smoke_symbol,
+                reason=reason,
+                request_performed=zapi_client.request_attempt_count > 0,
+                request_attempts=zapi_client.request_attempt_count,
+            )
+            result = _write_skipped(
+                out,
+                run_id,
+                market_date,
+                normalized,
+                f"ZAPI_SMOKE_TEST_FAILED:{reason}",
+                status="FAILED_BLOCKING" if blocking else "ZAPI_RECONCILIATION_WARNING",
+                blocking=blocking,
+                request_count=zapi_client.request_attempt_count,
+                failure_count=zapi_client.request_attempt_count,
+            )
+            emit(
+                "ZAPI_RECONCILIATION_COMPLETE",
+                status=result["status"],
+                request_count=result["request_count"],
+                failure_count=result["failure_count"],
+            )
+            return result
+    else:
+        emit("ZAPI_SMOKE_TEST_FAILED", reason="SYMBOL_UNIVERSE_EMPTY", request_performed=False)
+
+    emit("ZAPI_BATCH_START", symbol_count=len(normalized), start_index=1)
+
+    for index, symbol in enumerate(normalized, start=1):
         yahoo = _latest_yahoo_bar(folder, symbol)
         zapi_record = None
         error = ""
         error_status = ""
         try:
-            raw = zapi_client.fetch_raw(
+            raw = smoke_raw if index == 1 and smoke_raw is not None else zapi_client.fetch_raw(
                 "DailyBar", symbol, market_date=market_date, date=market_date, length=10, start=0
             )
-            endpoint_counts["/stock-summary"] += 1
+            endpoint_counts["/stock-summary"] = zapi_client.request_attempt_count
             mapped = adapter.to_canonical("DailyBar", raw, symbol=symbol, market_date=market_date)
             candidates = [item for item in mapped if canonical_symbol(item.symbol) == symbol]
             zapi_record = max(candidates or mapped, key=lambda item: item.market_date, default=None)
@@ -236,6 +309,15 @@ def validate_yahoo_against_zapi(
             "endpoint": getattr(zapi_record, "source_record_id", "").split(":", 1)[0] if zapi_record else "/stock-summary",
             "error": error,
         })
+        if index == 1 or index % 10 == 0 or index == len(normalized):
+            emit(
+                "ZAPI_BATCH_PROGRESS",
+                processed=index,
+                total=len(normalized),
+                success_count=success_count,
+                failure_count=failure_count,
+                request_count=zapi_client.request_attempt_count,
+            )
 
     validated = sum(row["status"] in {"MATCH", "MATCH_WITH_TOLERANCE", "PRICE_MISMATCH"} for row in rows)
     coverage = validated / len(rows) if rows else 0.0
@@ -260,7 +342,7 @@ def validate_yahoo_against_zapi(
         "source_mode": "LIVE",
         "endpoint_logical_names": list(endpoint_counts),
         "endpoint_request_counts": endpoint_counts,
-        "request_count": sum(endpoint_counts.values()),
+        "request_count": zapi_client.request_attempt_count,
         "success_count": success_count,
         "failure_count": failure_count,
         "symbols_requested": len(rows),
@@ -280,7 +362,16 @@ def validate_yahoo_against_zapi(
         "input_paths": [str(folder), str(Path(config_path))],
         "rows": rows,
     }
-    return _write_outputs(out, run_id, market_date, rows, summary)
+    result = _write_outputs(out, run_id, market_date, rows, summary)
+    emit(
+        "ZAPI_RECONCILIATION_COMPLETE",
+        status=result["status"],
+        request_count=result["request_count"],
+        success_count=result["success_count"],
+        failure_count=result["failure_count"],
+        coverage_ratio=result["coverage_ratio"],
+    )
+    return result
 
 
 def _write_skipped(
@@ -290,8 +381,10 @@ def _write_skipped(
     symbols: list[str],
     reason: str,
     *,
-    status: str = "SKIPPED_NOT_CONFIGURED",
+    status: str = "ZAPI_MISSING_CREDENTIAL",
     blocking: bool = False,
+    request_count: int = 0,
+    failure_count: int = 0,
 ) -> dict[str, Any]:
     rows = [{
         "run_id": run_id,
@@ -310,12 +403,16 @@ def _write_skipped(
         "provider": "ZAPI_IDX",
         "execution_source": "YAHOO",
         "validation_source": "ZAPI_IDX",
-        "source_mode": "DISABLED" if status == "ZAPI_DISABLED" else "NOT_CONFIGURED",
+        "source_mode": (
+            "DISABLED" if status == "ZAPI_DISABLED"
+            else "NOT_CONFIGURED" if status == "ZAPI_MISSING_CREDENTIAL"
+            else "LIVE_FAILED"
+        ),
         "endpoint_logical_names": ["/stock-summary"],
-        "endpoint_request_counts": {"/stock-summary": 0},
-        "request_count": 0,
+        "endpoint_request_counts": {"/stock-summary": request_count},
+        "request_count": request_count,
         "success_count": 0,
-        "failure_count": 0,
+        "failure_count": failure_count,
         "symbols_requested": len(symbols),
         "symbols_successful": 0,
         "validated": 0,

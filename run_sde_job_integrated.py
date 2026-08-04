@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 from modules.job_runner.delivery import deliver
@@ -18,7 +19,13 @@ from modules.job_runner.reports import write_payloads
 from modules.job_runner.report_validation import ReportSourceValidationError, record_validation_error
 from modules.job_runner.runtime import (
     EXIT_DELIVERY_FAILED,
+    EXIT_FAILED,
+    EXIT_RESOURCE_LOCKED,
+    EXIT_SKIPPED,
     EXIT_SUCCESS,
+    FileLock,
+    JobAlreadyRunning,
+    ResourceLocked,
     append_job_log,
     load_context,
     read_json,
@@ -66,6 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-telegram", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--reuse-yahoo-refresh", action="store_true", help="Reuse latest valid Yahoo refresh manifest")
     return parser.parse_args()
 
 
@@ -84,6 +92,7 @@ def _engine_command(args: argparse.Namespace, run_id: str) -> list[str]:
         "--engine-only",
         "--run-id",
         run_id,
+        "--parent-managed-lifecycle",
     ]
     if args.trade_date:
         command.extend(["--trade-date", args.trade_date])
@@ -97,6 +106,8 @@ def _engine_command(args: argparse.Namespace, run_id: str) -> list[str]:
         command.append("--force")
     if args.debug:
         command.append("--debug")
+    if args.reuse_yahoo_refresh:
+        command.append("--reuse-yahoo-refresh")
     return command
 
 
@@ -184,27 +195,14 @@ def _optional_broker_multiday_payloads(ctx):
         return []
 
 
-def main() -> int:
-    args = parse_args()
-    ctx = load_context(
-        job=args.job,
-        config_path=args.config,
-        scheduler_config_path=args.scheduler_config,
-        trade_date=args.trade_date or None,
-        dry_run=args.dry_run,
-        preview_existing=args.preview_existing,
-        no_telegram=args.no_telegram,
-        force=args.force,
-        debug=args.debug,
-        interactive_broker=args.interactive_broker,
-    )
+def _run_integrated(args: argparse.Namespace, ctx) -> int:
     engine = subprocess.run(_engine_command(args, ctx.run_id), cwd=Path(__file__).resolve().parent)
-    engine_payload = read_json(ctx.status_root / f"{args.job}_latest.json")
+    engine_payload = read_json(ctx.status_root / f"engine_result_{ctx.run_id}.json")
     engine_status = str(
         engine_payload.get("legacy_status")
         or engine_payload.get("status_v1_7")
         or engine_payload.get("status")
-        or "SUCCESS"
+        or ("SUCCESS" if engine.returncode == 0 else "FAILED")
     ).upper()
     if engine.returncode != 0:
         engine_details = engine_payload.get("details", {})
@@ -212,8 +210,8 @@ def main() -> int:
             engine_details = {}
         write_status(
             ctx,
-            str(engine_payload.get("legacy_status") or engine_payload.get("status") or "FAILED"),
-            str(engine_payload.get("current_stage") or "ENGINE_EXIT"),
+            str(engine_payload.get("status") or ("WAITING_DATA" if engine.returncode == 20 else "SKIPPED" if engine.returncode == 10 else "FAILED")),
+            str(engine_payload.get("stage") or "ENGINE_EXIT"),
             int(engine.returncode),
             {
                 **engine_details,
@@ -316,6 +314,57 @@ def main() -> int:
         {**common_status, "delivery_status": delivery_status, "delivery": delivery},
     )
     return EXIT_DELIVERY_FAILED if failed else EXIT_SUCCESS
+
+
+def main() -> int:
+    args = parse_args()
+    ctx = load_context(
+        job=args.job,
+        config_path=args.config,
+        scheduler_config_path=args.scheduler_config,
+        trade_date=args.trade_date or None,
+        dry_run=args.dry_run,
+        preview_existing=args.preview_existing,
+        no_telegram=args.no_telegram,
+        force=args.force,
+        debug=args.debug,
+        interactive_broker=args.interactive_broker,
+    )
+
+    def execute() -> int:
+        try:
+            return _run_integrated(args, ctx)
+        except Exception as exc:
+            trace_dir = resolve("data/output/job_status/tracebacks")
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            trace_path = trace_dir / f"{ctx.run_id}-integrated.txt"
+            rendered = traceback.format_exc()
+            trace_path.write_text(rendered, encoding="utf-8")
+            append_job_log(ctx, "INTEGRATED_RUN_EXCEPTION", rendered)
+            if ctx.debug:
+                print(rendered, file=sys.stderr, flush=True)
+            write_status(ctx, "FAILED", "INTEGRATED_EXCEPTION", EXIT_FAILED, {
+                "error": str(exc), "errors": [str(exc)], "traceback_path": str(trace_path),
+            })
+            return EXIT_FAILED
+
+    try:
+        with FileLock(ctx):
+            try:
+                needs_resource_lock = ctx.job in {"post_market", "final_watchlist", "full_manual"}
+                if needs_resource_lock and ctx.scheduler_config.get("runtime", {}).get("global_resource_lock_enabled", True):
+                    lock_name = ctx.scheduler_config.get("locks", {}).get("global_resource_lock_name", "sde_pipeline_write.lock")
+                    with FileLock(ctx, str(lock_name), kind="global_resource"):
+                        return execute()
+                return execute()
+            except ResourceLocked as exc:
+                write_status(ctx, exc.status, "GLOBAL_RESOURCE_LOCK", EXIT_RESOURCE_LOCKED, {
+                    "error": str(exc), "global_resource_lock_status": "BUSY",
+                })
+                return EXIT_RESOURCE_LOCKED
+    except JobAlreadyRunning as exc:
+        write_status(ctx, exc.status, "LOCK", EXIT_SKIPPED, {"error": str(exc), "lock_status": "BUSY"})
+        return EXIT_SKIPPED
 
 
 if __name__ == "__main__":

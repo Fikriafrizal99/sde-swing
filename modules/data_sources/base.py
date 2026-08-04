@@ -90,7 +90,13 @@ class SourceClient(ABC):
     def fetch_raw(self, record_type: str, symbol: str, **kwargs: Any) -> Any:
         raise NotImplementedError
 
-    def with_retry(self, fn: Callable[[], Any], *, sleep: Callable[[float], None] = time.sleep) -> Any:
+    def with_retry(
+        self,
+        fn: Callable[[], Any],
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        on_retry: Callable[[int, float, Exception], None] | None = None,
+    ) -> Any:
         """Run ``fn`` with bounded retry/backoff on transient errors.
 
         ``sleep`` is injectable so tests never actually block.
@@ -105,6 +111,8 @@ class SourceClient(ABC):
                     break
                 retry_after = getattr(exc, "retry_after", None)
                 delay = float(retry_after) if retry_after is not None else self.backoff_base * (2 ** attempt)
+                if on_retry is not None:
+                    on_retry(attempt + 1, max(0.0, delay), exc)
                 sleep(max(0.0, delay))
         if last_exc is not None:
             raise last_exc

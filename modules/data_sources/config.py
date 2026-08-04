@@ -38,6 +38,8 @@ class SourceConfig:
     enabled: bool = False
     priority: int = 100
     timeout: float = 30.0
+    connect_timeout_seconds: float = 5.0
+    read_timeout_seconds: float = 30.0
     retry: int = 2
     backoff_base_seconds: float = 0.2
     rate_limit_per_second: float = 0.0
@@ -134,6 +136,8 @@ def parse_config(payload: dict[str, Any]) -> DataSourceConfig:
             enabled=_as_bool(raw.get("enabled"), False),
             priority=int(raw.get("priority", 100) or 100),
             timeout=float(raw.get("timeout", 30.0) or 30.0),
+            connect_timeout_seconds=float(raw.get("connect_timeout_seconds", min(float(raw.get("timeout", 30.0) or 30.0), 5.0)) or 0.0),
+            read_timeout_seconds=float(raw.get("read_timeout_seconds", raw.get("timeout", 30.0)) or 0.0),
             retry=int(raw.get("retry", 2) or 0),
             backoff_base_seconds=float(raw.get("backoff_base_seconds", 0.2) or 0.0),
             rate_limit_per_second=float(raw.get("rate_limit_per_second", 0.0) or 0.0),

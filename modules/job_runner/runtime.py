@@ -4,6 +4,8 @@ import json
 import hashlib
 import os
 import socket
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -225,14 +227,40 @@ def append_job_log(ctx: RunnerContext, event: str, detail: str = "") -> None:
         handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
 
 
+@contextmanager
+def stage_watchdog(ctx: RunnerContext, stage: str, interval_seconds: float = 30.0):
+    """Emit a heartbeat while a potentially blocking stage is running."""
+    interval = max(0.05, float(interval_seconds))
+    stopped = threading.Event()
+    started = now_wib()
+
+    def heartbeat() -> None:
+        while not stopped.wait(interval):
+            elapsed = (now_wib() - started).total_seconds()
+            append_job_log(ctx, "STAGE_STILL_RUNNING", json.dumps({
+                "elapsed_seconds": round(elapsed, 1),
+                "current_stage": stage,
+            }))
+
+    worker = threading.Thread(target=heartbeat, name=f"watchdog-{stage}", daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        worker.join(timeout=min(interval, 1.0))
+
+
 def _normalized_runtime_status(status: str) -> str:
     value = str(status or "FAILED").strip().upper()
-    if value in {"SUCCESS", "SUCCESS_WITH_WARNING", "PARTIAL", "SKIPPED", "FAILED", "NOT_CONFIGURED"}:
+    if value in {"SUCCESS", "SUCCESS_WITH_WARNING", "SKIPPED", "FAILED", "WAITING_DATA"}:
         return value
-    if value.startswith("SKIP") or value in {"DUPLICATE_SUPPRESSED", "WAITING_DATA", "WAITING_DATA_TIMEOUT"}:
+    if value.startswith("SKIP") or value == "DUPLICATE_SUPPRESSED":
         return "SKIPPED"
+    if value.startswith("WAITING") or value == "NOT_CONFIGURED":
+        return "WAITING_DATA"
     if value.startswith("PARTIAL"):
-        return "PARTIAL"
+        return "SUCCESS_WITH_WARNING"
     return "FAILED"
 
 
@@ -245,6 +273,7 @@ def write_status(
 ) -> Path:
     finished_at = now_wib()
     final_status = status != "RUNNING"
+    terminal_status = _normalized_runtime_status(status)
     duration = (finished_at - ctx.started_at).total_seconds() if final_status else None
     detail_payload = details or {}
     official_runtime = ctx.config_provenance.get("config_version") == RUNTIME_CONFIG_VERSION
@@ -267,8 +296,8 @@ def write_status(
         # Legacy hand-built contexts retain the historical status string for
         # regression compatibility; official 1.7 contexts expose the unified
         # finite status vocabulary and keep the old value in legacy_status.
-        "status": _normalized_runtime_status(status) if official_runtime else status,
-        "status_v1_7": _normalized_runtime_status(status),
+        "status": terminal_status if official_runtime else status,
+        "status_v1_7": terminal_status,
         "current_stage": stage,
         "exit_code": exit_code,
         "trade_date": ctx.trade_date.isoformat(),
@@ -340,7 +369,10 @@ def write_status(
     latest = ctx.status_root / f"{ctx.job}_latest.json"
     write_json(target, payload)
     write_json(latest, payload)
-    append_job_log(ctx, f"STATUS_{status}", stage)
+    append_job_log(ctx, "STATUS_RUNNING" if not final_status else f"STATUS_{terminal_status}", stage)
+    if final_status:
+        append_job_log(ctx, "FINAL_EXIT_CODE", str(exit_code))
+        setattr(ctx, "_terminal_status_written", True)
     return target
 
 
@@ -423,6 +455,12 @@ class FileLock:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         try:
+            if self.kind == "job" and not bool(getattr(self.ctx, "_terminal_status_written", False)):
+                append_job_log(
+                    self.ctx,
+                    "LOCK_RELEASE_WITHOUT_TERMINAL_STATUS",
+                    f"exception={getattr(exc_type, '__name__', '')}",
+                )
             if self._fd is not None:
                 os.close(self._fd)
             if self.path.exists():

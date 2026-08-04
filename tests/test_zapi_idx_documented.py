@@ -168,6 +168,8 @@ def test_http_transport_uses_x_api_key_and_never_bearer_header():
     transport = HttpZapiTransport(
         "https://api.zpi.web.id/v1/finance:idx",
         "fixture-key",
+        connect_timeout=5,
+        read_timeout=12,
         request_fn=request,
     )
     response = transport.request(
@@ -180,6 +182,7 @@ def test_http_transport_uses_x_api_key_and_never_bearer_header():
     assert seen["url"] == "https://api.zpi.web.id/v1/finance:idx/stock-summary"
     headers = seen["kwargs"]["headers"]
     assert headers == {"x-api-key": "fixture-key"}
+    assert seen["kwargs"]["timeout"] == (5.0, 12.0)
 
 
 def test_http_transport_exposes_retry_after_for_rate_limit():

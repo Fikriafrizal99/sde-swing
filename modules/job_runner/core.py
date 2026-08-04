@@ -11,12 +11,22 @@ from typing import Any
 import pandas as pd
 
 from swing_utils import file_sha256, find_col, read_json as read_json_safely, write_json
+from modules.data_sources.config import load_data_source_config
 from modules.data_sources.yahoo_zapi_validator import validate_yahoo_against_zapi
 
-from .runtime import RunnerContext, append_job_log, now_wib, resolve
+from .runtime import RunnerContext, append_job_log, now_wib, resolve, stage_watchdog
 
 
 READY = "READY"
+
+
+class SourceValidationBlocked(RuntimeError):
+    def __init__(self, result: dict[str, Any]):
+        self.result = result
+        super().__init__(
+            "ZAPI_SOURCE_VALIDATION_BLOCKED: "
+            + str(result.get("reason") or result.get("status") or "UNKNOWN")
+        )
 
 
 def run_command(ctx: RunnerContext, name: str, command: list[str]) -> None:
@@ -233,9 +243,26 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
         downloader_cmd += ["--market-holiday", str(holiday)]
     for special_day in freshness.get("special_trading_days", []):
         downloader_cmd += ["--special-trading-day", str(special_day)]
-    run_command(ctx, "POST MARKET HISTORICAL DOWNLOADER", downloader_cmd)
-
-    yahoo_manifest = read_json_safely(manifest_dir / f"YAHOO_REFRESH_MANIFEST_{ctx.run_id}.json")
+    if bool(getattr(ctx, "reuse_yahoo_refresh", False)):
+        candidates = sorted(
+            manifest_dir.glob("YAHOO_REFRESH_MANIFEST_*.json"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        if not candidates:
+            raise RuntimeError("YAHOO_REFRESH_MANIFEST_NOT_FOUND_FOR_REUSE")
+        yahoo_manifest_path = candidates[0]
+        yahoo_manifest = read_json_safely(yahoo_manifest_path)
+        if str(yahoo_manifest.get("Data_Quality_Status", "")).upper() != "VALID":
+            raise RuntimeError("YAHOO_REFRESH_MANIFEST_NOT_VALID_FOR_REUSE")
+        append_job_log(
+            ctx,
+            "COMMAND_OK",
+            f"POST MARKET HISTORICAL DOWNLOADER (REUSED_EXISTING): {yahoo_manifest_path}",
+        )
+    else:
+        run_command(ctx, "POST MARKET HISTORICAL DOWNLOADER", downloader_cmd)
+        yahoo_manifest = read_json_safely(manifest_dir / f"YAHOO_REFRESH_MANIFEST_{ctx.run_id}.json")
     data_quality = str(yahoo_manifest.get("Data_Quality_Status", "VALID"))
     validation_cfg = ctx.scheduler_config.get("source_validation", {})
     reconciliation: dict[str, Any] = {"status": "ZAPI_DISABLED", "reason": "SOURCE_VALIDATION_DISABLED"}
@@ -250,20 +277,44 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
             or ctx.trade_date.isoformat()
         )
         non_blocking = bool(validation_cfg.get("non_blocking", False))
-        reconciliation = validate_yahoo_against_zapi(
-            historical_dir=stage_paths["historical_by_symbol"],
-            symbols=symbols,
-            market_date=closed_date,
-            output_dir=resolve(validation_cfg.get("output_dir", "data/output/source_validation")),
-            config_path=ctx.config.get("data_sources_config", "config/data_sources.json"),
-            price_tolerance_pct=float(validation_cfg.get("price_tolerance_pct", 0.005)),
-            volume_tolerance_pct=float(validation_cfg.get("volume_tolerance_pct", 0.20)),
-            maximum_stale_days=int(validation_cfg.get("maximum_stale_days", 1) or 1),
-            minimum_coverage_ratio=float(validation_cfg.get("minimum_coverage_ratio", 0.90)),
-            blocking=not non_blocking,
-            max_symbols=int(validation_cfg.get("max_symbols", 0) or 0),
-            run_id=ctx.run_id,
-        )
+        source_config_path = ctx.config.get("data_sources_config", "config/data_sources.json")
+        source_cfg = load_data_source_config(source_config_path).source("ZAPI_IDX")
+        start_detail = {
+            "enabled": bool(source_cfg and source_cfg.enabled),
+            "blocking_mode": not non_blocking,
+            "base_url_configured": "YES" if source_cfg and source_cfg.base_url() else "NO",
+            "api_key_configured": "YES" if source_cfg and source_cfg.api_key() else "NO",
+            "symbol_count": len(symbols),
+            "connect_timeout_seconds": source_cfg.connect_timeout_seconds if source_cfg else None,
+            "read_timeout_seconds": source_cfg.read_timeout_seconds if source_cfg else None,
+            "retries": source_cfg.retry if source_cfg else 0,
+            "backoff_base_seconds": source_cfg.backoff_base_seconds if source_cfg else 0,
+        }
+        append_job_log(ctx, "ZAPI_VALIDATION_START", __import__("json").dumps(start_detail))
+
+        def zapi_event(event: str, detail: dict[str, Any]) -> None:
+            append_job_log(ctx, event, __import__("json").dumps(detail, default=str))
+
+        try:
+            with stage_watchdog(ctx, "ZAPI_VALIDATION", 30.0):
+                reconciliation = validate_yahoo_against_zapi(
+                    historical_dir=stage_paths["historical_by_symbol"],
+                    symbols=symbols,
+                    market_date=closed_date,
+                    output_dir=resolve(validation_cfg.get("output_dir", "data/output/source_validation")),
+                    config_path=source_config_path,
+                    price_tolerance_pct=float(validation_cfg.get("price_tolerance_pct", 0.005)),
+                    volume_tolerance_pct=float(validation_cfg.get("volume_tolerance_pct", 0.20)),
+                    maximum_stale_days=int(validation_cfg.get("maximum_stale_days", 1) or 1),
+                    minimum_coverage_ratio=float(validation_cfg.get("minimum_coverage_ratio", 0.90)),
+                    blocking=not non_blocking,
+                    max_symbols=int(validation_cfg.get("max_symbols", 0) or 0),
+                    run_id=ctx.run_id,
+                    event_callback=zapi_event,
+                )
+        except Exception as exc:
+            append_job_log(ctx, "ZAPI_RECONCILIATION_EXCEPTION", __import__("traceback").format_exc())
+            raise RuntimeError(f"ZAPI_RECONCILIATION_EXCEPTION:{type(exc).__name__}:{exc}") from exc
         append_job_log(ctx, "YAHOO_ZAPI_RECONCILIATION", str({
             "status": reconciliation.get("status"),
             "symbols_requested": reconciliation.get("symbols_requested"),
@@ -273,13 +324,10 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
         }))
         failed = str(reconciliation.get("status", "")).upper() == "FAILED_BLOCKING"
         skipped = str(reconciliation.get("status", "")).upper() in {
-            "SKIPPED_NOT_CONFIGURED", "ZAPI_DISABLED"
+            "ZAPI_MISSING_CREDENTIAL", "ZAPI_DISABLED"
         }
         if not non_blocking and (failed or skipped):
-            raise RuntimeError(
-                "ZAPI_SOURCE_VALIDATION_BLOCKED: "
-                + str(reconciliation.get("reason") or reconciliation.get("status"))
-            )
+            raise SourceValidationBlocked(reconciliation)
         if str(reconciliation.get("status", "")).upper() == "ZAPI_RECONCILIATION_WARNING":
             data_quality = "VALID_WITH_ZAPI_WARNING"
     if data_source != "FIXTURE":

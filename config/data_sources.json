@@ -56,6 +56,8 @@
       "enabled": true,
       "priority": 10,
       "timeout": 15,
+      "connect_timeout_seconds": 5,
+      "read_timeout_seconds": 15,
       "retry": 3,
       "backoff_base_seconds": 0.5,
       "rate_limit_per_second": 4,

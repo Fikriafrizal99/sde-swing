@@ -19,6 +19,7 @@ from modules.job_runner.core import (
     run_broker_fusion_from_snapshot,
     run_broker_multiday_stage,
     run_post_market_technical_stage,
+    SourceValidationBlocked,
     run_final_from_snapshot,
     run_master_pipeline,
     sync_outcome_tracker,
@@ -67,6 +68,30 @@ from modules.runtime.jobs import INTEGRATED_JOB_NAMES, JOB_DEPENDENCIES, validat
 
 
 def _finish(ctx, status: str, stage: str, code: int, details: dict | None = None) -> int:
+    if bool(getattr(ctx, "_suppress_terminal_status", False)) or bool(
+        getattr(ctx, "_full_manual_child_stage", False)
+    ):
+        result = {
+            "status": status, "stage": stage, "exit_code": code, "details": details or {},
+        }
+        # Reconciliation rows can contain hundreds of symbols.  Keep the
+        # durable result complete, but make the operational log bounded so a
+        # terminal event is never delayed or buried by a multi-megabyte row
+        # dump.
+        log_result = dict(result)
+        log_details = dict(result["details"])
+        reconciliation = log_details.get("source_reconciliation")
+        if isinstance(reconciliation, dict):
+            compact = {key: value for key, value in reconciliation.items() if key != "rows"}
+            compact["row_count"] = len(reconciliation.get("rows", []))
+            log_details["source_reconciliation"] = compact
+        log_result["details"] = log_details
+        append_job_log(ctx, "ENGINE_STAGE_RESULT", str(log_result))
+        if bool(getattr(ctx, "_suppress_terminal_status", False)) and not bool(
+            getattr(ctx, "_full_manual_child_stage", False)
+        ):
+            write_json(ctx.status_root / f"engine_result_{ctx.run_id}.json", result)
+        return code
     write_status(ctx, status, stage, code, details)
     return code
 
@@ -314,6 +339,16 @@ def job_post_market(ctx) -> int:
         print("[1/4] Refresh Yahoo saham dan membangun snapshot teknikal...", flush=True)
         try:
             manifest = run_post_market_technical_stage(ctx)
+        except SourceValidationBlocked as exc:
+            return _finish(ctx, "WAITING_DATA", "ZAPI_SOURCE_VALIDATION", EXIT_WAITING_DATA, {
+                "error": str(exc),
+                "errors": [str(exc)],
+                "source_reconciliation": exc.result,
+                "provider_status": exc.result.get("status", "ZAPI_MISSING_CREDENTIAL"),
+                "data_source_mode": exc.result.get("source_mode", "NOT_CONFIGURED"),
+                "symbols_requested": exc.result.get("symbols_requested", 0),
+                "source_coverage_ratio": exc.result.get("coverage_ratio", 0.0),
+            })
         except Exception as exc:
             allow_fallback = (
                 not _official_runtime(ctx)
@@ -326,7 +361,15 @@ def job_post_market(ctx) -> int:
                 print("[fallback] Refresh gagal; snapshot teknikal existing hari ini dipakai.", flush=True)
                 manifest = _manifest_from_existing_snapshot(ctx, snapshot, warning=warning)
             else:
-                raise
+                trace_dir = resolve("data/output/job_status/tracebacks")
+                trace_dir.mkdir(parents=True, exist_ok=True)
+                trace_path = trace_dir / f"{ctx.run_id}-post-market.txt"
+                rendered = traceback.format_exc()
+                trace_path.write_text(rendered, encoding="utf-8")
+                append_job_log(ctx, "POST_MARKET_STAGE_EXCEPTION", rendered)
+                return _finish(ctx, "FAILED", "POST_MARKET_EXCEPTION", EXIT_FAILED, {
+                    "error": str(exc), "errors": [str(exc)], "traceback_path": str(trace_path),
+                })
     stage_manifest_path = ctx.path("manifest_dir", "data/output/manifests") / f"SWING_RUN_MANIFEST_{ctx.run_id}.json"
     manifest["Run_ID"] = ctx.run_id
     manifest["Manifest_Path"] = str(stage_manifest_path)
@@ -524,11 +567,14 @@ def job_full_manual(ctx) -> int:
                 if handler is None:
                     raise RuntimeError(f"FULL_MANUAL_HANDLER_MISSING:{stage_name}")
                 ctx.job = stage_name
+                setattr(ctx, "_full_manual_child_stage", True)
                 code = handler(ctx)
+                setattr(ctx, "_full_manual_child_stage", False)
                 stage_results.append({"job": stage_name, "exit_code": code})
                 if code not in {EXIT_SUCCESS, EXIT_DUPLICATE}:
                     ctx.job = original_job
-                    return _finish(ctx, "FAILED", "FULL_MANUAL_STAGE", code, {
+                    terminal = "WAITING_DATA" if code == EXIT_WAITING_DATA else "SKIPPED" if code == EXIT_SKIPPED else "FAILED"
+                    return _finish(ctx, terminal, "FULL_MANUAL_STAGE", code, {
                         "failed_stage": stage_name,
                         "stage_results": stage_results,
                     })
@@ -536,6 +582,7 @@ def job_full_manual(ctx) -> int:
             ctx.job = original_job
             ctx.no_telegram = original_no_telegram
             setattr(ctx, "_suppress_reports", original_suppress_reports)
+            setattr(ctx, "_full_manual_child_stage", False)
             if hasattr(ctx, "_prepared_global_snapshot"):
                 delattr(ctx, "_prepared_global_snapshot")
 
@@ -989,6 +1036,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--engine-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--run-id", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--reuse-yahoo-refresh", action="store_true", help="Reuse latest valid Yahoo refresh manifest")
+    parser.add_argument("--parent-managed-lifecycle", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -1010,6 +1059,9 @@ def main() -> int:
         ctx.run_id = str(args.run_id)
     if args.engine_only:
         setattr(ctx, "_suppress_reports", True)
+    if args.parent_managed_lifecycle:
+        setattr(ctx, "_suppress_terminal_status", True)
+    setattr(ctx, "reuse_yahoo_refresh", bool(args.reuse_yahoo_refresh))
     manifest_dir = resolve(ctx.config.get("paths", {}).get("manifest_dir", "data/output/manifests"))
     config_audit_path = manifest_dir / f"RUNTIME_CONFIG_{ctx.run_id}.json"
     write_runtime_config_audit(config_audit_path, ctx.config_provenance, ctx.config)
@@ -1019,34 +1071,53 @@ def main() -> int:
         is_trading, reason = trading_day_status(ctx)
         if not is_trading:
             return _finish(ctx, reason, "TRADING_CALENDAR", EXIT_SKIPPED, {"reason": reason})
-    try:
-        with FileLock(ctx):
-            needs_resource_lock = ctx.job in {"post_market", "final_watchlist", "full_manual"}
-            if needs_resource_lock and ctx.scheduler_config.get("runtime", {}).get("global_resource_lock_enabled", True):
-                lock_name = ctx.scheduler_config.get("locks", {}).get("global_resource_lock_name", "sde_pipeline_write.lock")
-                with FileLock(ctx, str(lock_name), kind="global_resource"):
-                    return JOBS[ctx.job](ctx)
+    def execute_job() -> int:
+        try:
             return JOBS[ctx.job](ctx)
-    except ResourceLocked as exc:
-        return _finish(ctx, exc.status, "GLOBAL_RESOURCE_LOCK", EXIT_RESOURCE_LOCKED, {"error": str(exc), "global_resource_lock_status": "BUSY"})
+        except ReportSourceValidationError as exc:
+            record_validation_error(ctx, exc)
+            return _finish(ctx, "FAILED", "REPORT_SOURCE_VALIDATION", EXIT_FAILED, {
+                "report_type": exc.report_type,
+                "errors": exc.errors,
+                "input_paths": exc.input_paths,
+                "source_of_truth": exc.source_of_truth,
+                "details": exc.details,
+            })
+        except Exception as exc:
+            trace_dir = resolve("data/output/job_status/tracebacks")
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            trace_path = trace_dir / f"{ctx.run_id}.txt"
+            rendered = traceback.format_exc()
+            trace_path.write_text(rendered, encoding="utf-8")
+            append_job_log(ctx, "UNHANDLED_JOB_EXCEPTION", rendered)
+            if ctx.debug:
+                print(rendered, file=sys.stderr, flush=True)
+            return _finish(ctx, "FAILED", "EXCEPTION", EXIT_FAILED, {
+                "error": str(exc), "errors": [str(exc)], "traceback_path": str(trace_path),
+            })
+
+    try:
+        if args.parent_managed_lifecycle:
+            return execute_job()
+        with FileLock(ctx):
+            try:
+                needs_resource_lock = ctx.job in {"post_market", "final_watchlist", "full_manual"}
+                if needs_resource_lock and ctx.scheduler_config.get("runtime", {}).get("global_resource_lock_enabled", True):
+                    lock_name = ctx.scheduler_config.get("locks", {}).get("global_resource_lock_name", "sde_pipeline_write.lock")
+                    with FileLock(ctx, str(lock_name), kind="global_resource"):
+                        return execute_job()
+                return execute_job()
+            except ResourceLocked as exc:
+                return _finish(ctx, exc.status, "GLOBAL_RESOURCE_LOCK", EXIT_RESOURCE_LOCKED, {"error": str(exc), "global_resource_lock_status": "BUSY"})
     except JobAlreadyRunning as exc:
         return _finish(ctx, exc.status, "LOCK", EXIT_SKIPPED, {"error": str(exc), "lock_status": "BUSY"})
-    except ReportSourceValidationError as exc:
-        record_validation_error(ctx, exc)
-        return _finish(ctx, "FAILED", "REPORT_SOURCE_VALIDATION", EXIT_FAILED, {
-            "report_type": exc.report_type,
-            "errors": exc.errors,
-            "input_paths": exc.input_paths,
-            "source_of_truth": exc.source_of_truth,
-            "details": exc.details,
-        })
     except Exception as exc:
-        if ctx.debug:
-            raise
         trace_dir = resolve("data/output/job_status/tracebacks")
         trace_dir.mkdir(parents=True, exist_ok=True)
         trace_path = trace_dir / f"{ctx.run_id}.txt"
-        trace_path.write_text(traceback.format_exc(), encoding="utf-8")
+        rendered = traceback.format_exc()
+        trace_path.write_text(rendered, encoding="utf-8")
+        append_job_log(ctx, "LOCK_BOUNDARY_EXCEPTION", rendered)
         return _finish(ctx, "FAILED", "EXCEPTION", EXIT_FAILED, {"error": str(exc), "errors": [str(exc)], "traceback_path": str(trace_path)})
 
 

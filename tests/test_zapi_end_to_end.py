@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -70,6 +71,7 @@ def test_raw_fixture_to_reconciliation_lineage_and_report(tmp_path: Path):
     _yahoo(historical / "BBCA.JK.csv")
     cfg = tmp_path / "sources.json"
     _config(cfg)
+    events: list[tuple[str, dict]] = []
 
     result = validate_yahoo_against_zapi(
         historical_dir=historical,
@@ -81,6 +83,7 @@ def test_raw_fixture_to_reconciliation_lineage_and_report(tmp_path: Path):
         minimum_coverage_ratio=1.0,
         run_id="RUN-E2E",
         client=_client(),
+        event_callback=lambda event, detail: events.append((event, detail)),
     )
 
     assert result["status"] == "ZAPI_VALIDATED"
@@ -91,6 +94,17 @@ def test_raw_fixture_to_reconciliation_lineage_and_report(tmp_path: Path):
     assert result["rows"][0]["enrichment_source"] == "ZAPI_IDX"
     assert Path(result["json_path"]).exists()
     assert Path(result["audit_path"]).exists()
+    event_names = [event for event, _ in events]
+    assert event_names == [
+        "ZAPI_CREDENTIAL_STATUS",
+        "ZAPI_SMOKE_TEST_START",
+        "ZAPI_SMOKE_TEST_SUCCESS",
+        "ZAPI_BATCH_START",
+        "ZAPI_BATCH_PROGRESS",
+        "ZAPI_RECONCILIATION_COMPLETE",
+    ]
+    assert events[4][1]["processed"] == 1
+    assert events[4][1]["total"] == 1
 
     message = format_post_market({
         "process_status": "SUCCESS", "symbols_requested": 1, "symbols_loaded": 1,
@@ -141,9 +155,38 @@ def test_missing_credentials_is_explicit_and_makes_no_request(tmp_path: Path, mo
         historical_dir=tmp_path, symbols=["BBCA"], market_date="2026-01-02",
         output_dir=tmp_path / "out", config_path=cfg, run_id="NO-CREDS",
     )
-    assert result["status"] == "SKIPPED_NOT_CONFIGURED"
+    assert result["status"] == "ZAPI_MISSING_CREDENTIAL"
     assert result["reason"] == "ZAPI_MISSING_CREDENTIAL"
     assert result["request_count"] == 0
+
+
+def test_missing_credentials_is_immediate_and_emits_no_request_smoke_failure(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("TEST_ZAPI_KEY_NOT_SET", raising=False)
+    monkeypatch.delenv("TEST_ZAPI_URL_NOT_SET", raising=False)
+    cfg = tmp_path / "sources.json"
+    _config(cfg)
+    events: list[tuple[str, dict]] = []
+    started = time.monotonic()
+    result = validate_yahoo_against_zapi(
+        historical_dir=tmp_path,
+        symbols=["BBCA"],
+        market_date="2026-01-02",
+        output_dir=tmp_path / "out",
+        config_path=cfg,
+        run_id="NO-WAIT",
+        blocking=True,
+        event_callback=lambda event, detail: events.append((event, detail)),
+    )
+    assert time.monotonic() - started < 1.0
+    assert result["request_count"] == 0
+    assert result["blocking_failures"] == 1
+    assert [event for event, _ in events] == [
+        "ZAPI_CREDENTIAL_STATUS",
+        "ZAPI_SMOKE_TEST_START",
+        "ZAPI_SMOKE_TEST_FAILED",
+        "ZAPI_RECONCILIATION_COMPLETE",
+    ]
+    assert events[2][1]["request_performed"] is False
 
 
 def test_gemini_and_telegram_preserve_zapi_facts():
