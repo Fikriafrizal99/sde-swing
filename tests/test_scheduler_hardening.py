@@ -257,6 +257,70 @@ class SchedulerHardeningTests(unittest.TestCase):
                 code = run_sde_job.job_final_watchlist(ctx)
             self.assertEqual(code, 0)
 
+    def test_interactive_broker_can_recover_broker_dependency_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            ctx = make_ctx(
+                tmp,
+                interactive_broker=True,
+                config_provenance={"config_version": "1.7.0-multisource"},
+            )
+            dependency = {
+                "required": ["market_outlook", "post_market", "broker_summary", "broker_multi_day"],
+                "valid": False,
+                "dependencies": {
+                    "market_outlook": {
+                        "status": "SUCCESS", "fresh": True, "date_match": True, "config_match": True,
+                    },
+                    "post_market": {
+                        "status": "SUCCESS", "fresh": True, "date_match": True, "config_match": True,
+                    },
+                    "broker_summary": {
+                        "status": "FAILED", "fresh": False, "date_match": True, "config_match": True,
+                    },
+                    "broker_multi_day": {
+                        "status": "SKIPPED", "fresh": False, "date_match": True, "config_match": True,
+                    },
+                },
+            }
+            with patch("run_sde_job._require_integrated_dependencies", return_value=dependency), \
+                 patch("run_sde_job.broker_readiness", return_value=(False, {"status": "DATE_MISMATCH"})), \
+                 patch("run_sde_job.run_interactive_broker_break", return_value=(False, {"status": "WAITING_DATA"})) as manual_break, \
+                 patch("run_sde_job.broker_waiting_payload", return_value=[]), \
+                 patch("run_sde_job.write_payloads", return_value=[]), \
+                 patch("run_sde_job.deliver", return_value=[]):
+                code = run_sde_job.job_final_watchlist(ctx)
+            self.assertEqual(code, 20)
+            manual_break.assert_called_once()
+            events = [line for line in ctx.log_path.read_text(encoding="utf-8").splitlines() if line]
+            self.assertTrue(any("INTERACTIVE_BROKER_DEPENDENCY_RECOVERY" in line for line in events))
+
+    def test_interactive_broker_does_not_bypass_invalid_market_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            ctx = make_ctx(
+                tmp,
+                interactive_broker=True,
+                config_provenance={"config_version": "1.7.0-multisource"},
+            )
+            dependency = {
+                "required": ["market_outlook", "post_market", "broker_summary", "broker_multi_day"],
+                "valid": False,
+                "dependencies": {
+                    "market_outlook": {
+                        "status": "FAILED", "fresh": False, "date_match": True, "config_match": True,
+                    },
+                    "post_market": {
+                        "status": "SUCCESS", "fresh": True, "date_match": True, "config_match": True,
+                    },
+                },
+            }
+            with patch("run_sde_job._require_integrated_dependencies", return_value=dependency), \
+                 patch("run_sde_job.run_interactive_broker_break") as manual_break:
+                code = run_sde_job.job_final_watchlist(ctx)
+            self.assertEqual(code, 10)
+            manual_break.assert_not_called()
+
     def test_global_resource_lock_blocks_second_writer(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
@@ -311,4 +375,3 @@ class SchedulerHardeningTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

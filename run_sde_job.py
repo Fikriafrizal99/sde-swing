@@ -457,6 +457,14 @@ def job_final_watchlist(ctx) -> int:
     print("[1/6] Memeriksa snapshot teknikal dan Broker Summary...", flush=True)
     preview_dependency = _validate_preview_existing_dependencies(ctx) if ctx.preview_existing else None
     dependency = _require_integrated_dependencies(ctx, "final_watchlist")
+    if dependency and _interactive_broker_dependency_recovery_allowed(ctx, dependency):
+        append_job_log(
+            ctx,
+            "INTERACTIVE_BROKER_DEPENDENCY_RECOVERY",
+            json.dumps({"blocked_dependencies": ["broker_summary", "broker_multi_day"]}),
+        )
+        print("[2/6] Dependency broker belum siap; melanjutkan ke broker break interaktif...", flush=True)
+        dependency = None
     if dependency:
         return _finish(ctx, "SKIPPED", "DEPENDENCY_VALIDATION", EXIT_SKIPPED, {
             "dependency_status": dependency,
@@ -705,6 +713,34 @@ def _require_integrated_dependencies(ctx, job_name: str) -> dict | None:
     if check.get("valid"):
         return None
     return check
+
+
+def _interactive_broker_dependency_recovery_allowed(ctx, dependency: dict | None) -> bool:
+    """Allow the manual broker break to repair only broker dependencies.
+
+    ``--interactive-broker`` is an input-recovery mode. A stale/failed broker
+    summary is expected before today's export arrives, so it must not be
+    rejected by the predecessor gate. Market and technical dependencies still
+    have to be fresh and config-compatible.
+    """
+
+    if not ctx.interactive_broker or not isinstance(dependency, dict):
+        return False
+    required = {str(item) for item in dependency.get("required", [])}
+    if not {"broker_summary", "broker_multi_day"}.issubset(required):
+        return False
+    dependencies = dependency.get("dependencies", {})
+    if not isinstance(dependencies, dict):
+        return False
+    for name in ("market_outlook", "post_market"):
+        item = dependencies.get(name)
+        if not isinstance(item, dict):
+            return False
+        if str(item.get("status", "")).upper() not in {"SUCCESS", "SUCCESS_WITH_WARNING", "PARTIAL"}:
+            return False
+        if not all(bool(item.get(key)) for key in ("fresh", "date_match", "config_match")):
+            return False
+    return True
 
 
 def _validate_preview_existing_dependencies(ctx) -> dict:
