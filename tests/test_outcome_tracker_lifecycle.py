@@ -169,6 +169,26 @@ def test_export_reports_writes_lifecycle_and_portfolio_artifacts(tmp_path: Path)
         assert (output / name).exists()
 
 
+def test_export_reports_formats_active_recommendation_prices(tmp_path: Path) -> None:
+    db = tmp_path / "history.db"
+    output = tmp_path / "performance"
+    historical = tmp_path / "prices"
+    historical.mkdir()
+    decisions, plans = _write_signal_files(tmp_path)
+    _write_prices(historical, [106, 108])
+    conn = connect(db)
+    register_decision_file(conn, decisions, plans, "RUN-1", "2026-08-01")
+    update_outcomes(conn, historical)
+
+    export_reports(conn, output, historical)
+    telegram = (output / "ACTIVE_RECOMMENDATIONS_TELEGRAM.txt").read_text(encoding="utf-8")
+    assert "BBCA" in telegram
+    assert "Entry mesin  : 103" in telegram
+    assert "Harga kini   : 104" in telegram
+    assert "TP1          : 110" in telegram
+    conn.close()
+
+
 def _delivery_context(tmp_path: Path, db: Path) -> RunnerContext:
     return RunnerContext(
         job="final_watchlist",

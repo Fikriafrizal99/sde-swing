@@ -1274,6 +1274,19 @@ def fmt(value: Any, digits: int = 1, suffix: str = "") -> str:
     return f"{float(value):.{digits}f}{suffix}".replace(".", ",")
 
 
+def fmt_price(value: Any, missing: str = "belum tersedia") -> str:
+    """Format a price for lifecycle artifacts without relying on report helpers."""
+    if value is None:
+        return missing
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return missing
+    if math.isnan(numeric):
+        return missing
+    return f"{numeric:,.0f}".replace(",", ".")
+
+
 def sample_note(closed: int) -> str:
     if closed < 20:
         return "Sampel masih terlalu kecil; belum layak menyimpulkan kualitas sistem."
@@ -1346,23 +1359,23 @@ def _active_recommendations_telegram(active: pd.DataFrame) -> str:
         for _, row in subset.iterrows():
             symbol = html.escape(str(row.get("symbol") or ""))
             signal_date = html.escape(str(row.get("signal_date") or ""))
-            current = fmt_num(row.get("current_price"), 0)
+            current = fmt_price(row.get("current_price"))
             if status == "OPEN":
-                entry = fmt_num(row.get("entry_price") or row.get("reference_price"), 0)
+                entry = fmt_price(row.get("entry_price") or row.get("reference_price"))
                 pnl = fmt(row.get("simulated_return_pct"), 2, "%")
                 lines.extend([
                     "", symbol, f"Sinyal       : {signal_date}",
                     f"Entry mesin  : {entry}", f"Harga kini   : {current}",
                     f"P/L simulasi : {pnl}",
-                    f"TP1          : {fmt_num(row.get('take_profit_1'), 0)}",
-                    f"TP2          : {fmt_num(row.get('take_profit_2'), 0)}",
-                    f"SL           : {fmt_num(row.get('stop_loss'), 0)}",
+                    f"TP1          : {fmt_price(row.get('take_profit_1'))}",
+                    f"TP2          : {fmt_price(row.get('take_profit_2'))}",
+                    f"SL           : {fmt_price(row.get('stop_loss'))}",
                     f"Umur posisi  : {int(row.get('age_sessions') or 0)} sesi",
                 ])
             else:
-                low = fmt_num(row.get("entry_zone_low"), 0, "")
-                high = fmt_num(row.get("entry_zone_high"), 0, "")
-                entry = f"{low}–{high}" if low != "belum tersedia" and high != "belum tersedia" else (low or high)
+                low = fmt_price(row.get("entry_zone_low"), missing="")
+                high = fmt_price(row.get("entry_zone_high"), missing="")
+                entry = f"{low}–{high}" if low and high else (low or high or "belum tersedia")
                 lines.extend([
                     "", symbol, f"Sinyal      : {signal_date}", f"Entry       : {entry}",
                     f"Harga kini  : {current}",
@@ -1381,7 +1394,7 @@ def _status_changes_telegram(events: list[sqlite3.Row]) -> str:
         previous = html.escape(str(event["previous_status"] or "-").replace("_", " "))
         new = html.escape(str(event["new_status"] or "-").replace("_", " "))
         reason = html.escape(str(event["event_reason"] or event["event_type"] or ""))
-        price = fmt_num(event["event_price"], 0)
+        price = fmt_price(event["event_price"])
         lines.extend(["", f"✅ {symbol}", f"{previous} → {new}", f"{reason} di {price}"])
     return "\n".join(lines)
 
