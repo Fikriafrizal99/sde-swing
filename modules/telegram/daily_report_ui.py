@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 SEPARATOR = "━━━━━━━━━━━━━━━━━━━━"
 
@@ -16,9 +16,12 @@ def _upper(value: Any, fallback: str = "") -> str:
     return text.replace("_", " ").upper() if text else fallback
 
 
-def _pct(value: Any, decimals: int = 1) -> str:
+def _pct(value: Any, decimals: int = 1, *, ratio_aware: bool = False) -> str:
     try:
-        return f"{float(value):.{decimals}f}%".replace(".", ",")
+        number = float(value)
+        if ratio_aware and 0 <= abs(number) <= 1:
+            number *= 100.0
+        return f"{number:.{decimals}f}%".replace(".", ",")
     except Exception:
         return ""
 
@@ -35,6 +38,49 @@ def _price(value: Any) -> str:
         return f"{float(value):,.0f}".replace(",", ".")
     except Exception:
         return ""
+
+
+def _number(value: Any, decimals: int = 2) -> str:
+    try:
+        text = f"{float(value):.{decimals}f}".rstrip("0").rstrip(".")
+        return text.replace(".", ",")
+    except Exception:
+        return str(value or "").strip()
+
+
+def _money(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        number = float(str(value).replace(",", ""))
+    except Exception:
+        return str(value).strip()
+    sign = "-" if number < 0 else ""
+    absolute = abs(number)
+    if absolute >= 1_000_000_000_000:
+        rendered = f"{absolute / 1_000_000_000_000:.2f}".rstrip("0").rstrip(".")
+        return f"{sign}Rp{rendered.replace('.', ',')} triliun"
+    if absolute >= 1_000_000_000:
+        rendered = f"{absolute / 1_000_000_000:.2f}".rstrip("0").rstrip(".")
+        return f"{sign}Rp{rendered.replace('.', ',')} miliar"
+    if absolute >= 1_000_000:
+        rendered = f"{absolute / 1_000_000:.2f}".rstrip("0").rstrip(".")
+        return f"{sign}Rp{rendered.replace('.', ',')} juta"
+    return f"{sign}Rp{absolute:,.0f}".replace(",", ".")
+
+
+def _rr(value: Any) -> str:
+    if value in (None, ""):
+        return "PENDING_TRIGGER"
+    text = str(value).strip().replace(",", ".")
+    if ":" in text:
+        text = text.split(":")[-1].strip()
+    try:
+        number = float(text)
+    except Exception:
+        return str(value).replace(".", ",")
+    rendered = f"{number:.2f}".rstrip("0").rstrip(".").replace(".", ",")
+    return f"1:{rendered}"
 
 
 def _dt(value: Any) -> datetime | None:
@@ -66,9 +112,16 @@ def _items(values: Iterable[Any]) -> str:
     return "\n".join(f"• {value}" for value in clean) if clean else "• Tidak ada"
 
 
+def _as_list(value: Any) -> list[Any]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, (list, tuple)):
+        return [item for item in value if item not in (None, "")]
+    return [value]
+
+
 def _source_block(data: dict[str, Any], *, detail: bool = False) -> str:
     rows: list[str] = []
-    compatibility: list[str] = []
     for label, value in (
         ("Yahoo Technical", data.get("yahoo_status") or data.get("historical_status")),
         ("ZAPI IDX", data.get("zapi_status") or data.get("reconciliation_status")),
@@ -77,13 +130,6 @@ def _source_block(data: dict[str, Any], *, detail: bool = False) -> str:
     ):
         if value:
             rows.append(f"• {label:<16}: {_upper(value)}")
-    if data.get("yahoo_status") or data.get("historical_status"):
-        compatibility.append(f"Yahoo: {_upper(data.get('yahoo_status') or data.get('historical_status'))}")
-    if data.get("zapi_status") or data.get("reconciliation_status"):
-        compatibility.append(f"ZAPI IDX: {_upper(data.get('zapi_status') or data.get('reconciliation_status'))}")
-    if data.get("broker_status") or data.get("stockbit_status"):
-        compatibility.append(f"Stockbit: {_upper(data.get('broker_status') or data.get('stockbit_status'))}")
-    rows.extend(compatibility)
     if data.get("zapi_coverage") not in (None, ""):
         value = float(data["zapi_coverage"])
         rows.append(f"• ZAPI Coverage   : {_pct(value * 100 if value <= 1 else value)}")
@@ -206,6 +252,64 @@ def format_market_outlook(data: dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
+def _section_values(data: dict[str, Any], fields: list[tuple[str, str]]) -> list[str]:
+    rows: list[str] = []
+    for label, key in fields:
+        value = data.get(key)
+        if value not in (None, ""):
+            rows.append(f"• {label:<14}: {_upper(value)}")
+    return rows
+
+
+def _source_status_lines(data: dict[str, Any]) -> list[str]:
+    groups = [
+        (
+            "Yahoo Technical",
+            data.get("historical_status") or data.get("yahoo_status"),
+            data.get("yahoo_data_date") or data.get("technical_data_date"),
+            data.get("coverage"),
+            "",
+        ),
+        (
+            "ZAPI IDX",
+            data.get("zapi_status") or data.get("reconciliation_status"),
+            data.get("zapi_data_date"),
+            data.get("zapi_coverage"),
+            data.get("zapi_note") or data.get("degraded_reason"),
+        ),
+        (
+            "Stockbit Broker",
+            data.get("stockbit_status") or data.get("broker_status"),
+            data.get("stockbit_data_date"),
+            data.get("stockbit_coverage"),
+            "",
+        ),
+        (
+            "Global Market",
+            data.get("global_market_status"),
+            data.get("global_data_date"),
+            data.get("global_coverage"),
+            "",
+        ),
+    ]
+    lines: list[str] = []
+    for label, status, data_date, coverage, note in groups:
+        if all(value in (None, "") for value in (status, data_date, coverage, note)):
+            continue
+        if lines:
+            lines.append("")
+        lines.append(f"• {label}")
+        if status not in (None, ""):
+            lines.append(f"  Status    : {_upper(status)}")
+        if data_date not in (None, ""):
+            lines.append(f"  Data date : {_date(data_date)}")
+        if coverage not in (None, ""):
+            lines.append(f"  Coverage  : {_pct(coverage, ratio_aware=True)}")
+        if note not in (None, ""):
+            lines.append(f"  Note      : {note}")
+    return lines
+
+
 def format_post_market(data: dict[str, Any]) -> str:
     status = _upper(data.get("process_status"))
     icon = "✅" if status == "SUCCESS" else "🟡" if status in {"PARTIAL", "SUCCESS WITH WARNING"} else "🔴"
@@ -213,30 +317,58 @@ def format_post_market(data: dict[str, Any]) -> str:
     loaded = int(data.get("symbols_loaded") or 0)
     valid = int(data.get("symbols_valid") or 0)
     skipped = int(data.get("symbols_skipped") or 0)
-    not_loaded = max(0, requested - loaded)
-    invalid = max(0, loaded - valid)
-    impact = "Tidak material" if float(data.get("coverage") or 0) >= 90 else "Perlu ditinjau"
+    not_loaded = int(data.get("symbols_not_loaded") if data.get("symbols_not_loaded") not in (None, "") else max(0, requested - loaded))
+    invalid = int(data.get("symbols_invalid") if data.get("symbols_invalid") not in (None, "") else max(0, loaded - valid))
+    impact = str(data.get("data_impact") or ("TIDAK MATERIAL" if float(data.get("coverage") or 0) >= 90 else "MATERIAL")).upper()
+    finished_at = data.get("finished_at") or data.get("generated_at") or data.get("finished_time")
 
-    lines = ["🌆 SDE SWING — POST MARKET", f"📅 {_date(data.get('trade_date'), long=True)}", SEPARATOR, "", f"{icon} PROCESS STATUS", status]
-    if data.get("market_regime") or data.get("execution_mode"):
-        lines += ["", "📊 MARKET SUMMARY"]
-        for label, value in (
-            ("Regime", data.get("market_regime")), ("Execution Mode", data.get("execution_mode")),
-            ("Global Tone", data.get("global_tone")), ("IHSG Trend", data.get("ihsg_trend")),
-            ("Breadth", data.get("breadth")),
-        ):
-            if value:
-                lines.append(f"• {label:<14}: {_upper(value)}")
+    lines = [
+        "🌆 SDE SWING — POST MARKET",
+        f"📅 {_date(data.get('trade_date'), long=True)}",
+    ]
+    if _time(finished_at):
+        lines.append(f"🕒 Proses selesai: {_time(finished_at)} WIB")
+    lines += [
+        SEPARATOR,
+        "",
+        f"{icon} PROCESS STATUS",
+        status,
+        "",
+        "📊 MARKET SUMMARY",
+    ]
+    market_rows = _section_values(data, [
+        ("Regime", "market_regime"),
+        ("Execution Mode", "execution_mode"),
+        ("Global Tone", "global_tone"),
+        ("IHSG Trend", "ihsg_trend"),
+        ("Breadth", "breadth"),
+    ])
+    lines += market_rows or ["• Belum tersedia dari artifact engine"]
 
-    groups = [("Leading", data.get("leading", [])), ("Rotating In", data.get("rotating_in", [])), ("Weakening", data.get("weakening", []))]
-    if any(values for _, values in groups):
-        lines += ["", "🔄 SECTOR BIAS"]
-        for label, values in groups:
-            if values:
-                lines.append(f"• {label:<11}: {', '.join(str(value) for value in values)}")
+    sector_groups = [
+        ("Leading", data.get("leading", [])),
+        ("Rotating In", data.get("rotating_in", [])),
+        ("Weakening", data.get("weakening", [])),
+        ("Lagging", data.get("lagging", data.get("rotating_out", []))),
+    ]
+    lines += ["", "🔄 SECTOR BIAS"]
+    has_sector = False
+    for label, values in sector_groups:
+        clean = [str(value).strip() for value in values or [] if str(value).strip()]
+        if not clean:
+            continue
+        has_sector = True
+        lines += [f"• {label}", f"  {', '.join(clean)}", ""]
+    if lines[-1] == "":
+        lines.pop()
+    if not has_sector:
+        lines.append("• Belum tersedia dari artifact engine")
 
     lines += [
-        "", SEPARATOR, "📦 DATA QUALITY",
+        "",
+        SEPARATOR,
+        "📦 DATA QUALITY",
+        "",
         f"• Universe        : {requested} saham",
         f"• Loaded          : {loaded} saham",
         f"• Not Loaded      : {not_loaded} saham",
@@ -245,49 +377,100 @@ def format_post_market(data: dict[str, Any]) -> str:
         f"• Skipped         : {skipped} saham",
         f"• Usable Coverage : {_pct(data.get('coverage'))}",
         f"• Impact          : {impact}",
-        "", "⚠️ DATA NOTE",
+        "",
+        "⚠️ DATA NOTE",
         str(data.get("data_note") or "Coverage masih digunakan sesuai guardrail engine."),
+        "",
+        SEPARATOR,
+        "🔎 CANDIDATE FUNNEL",
+        "",
     ]
-
     funnel = [
-        ("Universe awal", data.get("funnel_universe")), ("Lolos likuiditas", data.get("funnel_liquidity")),
-        ("Lolos Technical Quality", data.get("funnel_technical")), ("Setup valid", data.get("funnel_setup")),
-        ("Entry Readiness layak", data.get("funnel_entry_ready")), ("Broker data tersedia", data.get("funnel_broker")),
+        ("Universe awal", data.get("funnel_universe", requested if requested else None)),
+        ("Lolos likuiditas", data.get("funnel_liquidity")),
+        ("Lolos Technical Quality", data.get("funnel_technical")),
+        ("Setup valid", data.get("funnel_setup")),
+        ("Entry Readiness layak", data.get("funnel_entry_ready")),
+        ("Broker data tersedia", data.get("funnel_broker")),
         ("Siap Final Watchlist", data.get("funnel_final")),
     ]
-    funnel = [(name, value) for name, value in funnel if value not in (None, "")]
-    if funnel:
-        lines += ["", SEPARATOR, "🔎 CANDIDATE FUNNEL"] + [f"• {name:<24}: {value}" for name, value in funnel]
+    available_funnel = [(name, value) for name, value in funnel if value not in (None, "")]
+    lines += [f"• {name:<24}: {value}" for name, value in available_funnel]
+    if len(available_funnel) <= 1:
+        lines.append("• Tahap rinci belum tersedia dari artifact engine")
 
+    lines += ["", "🚧 FILTER DOMINAN"]
+    dominant_filters = [item for item in data.get("dominant_filters", []) or [] if isinstance(item, Mapping)]
+    if dominant_filters:
+        for item in dominant_filters[:3]:
+            label = item.get("label") or item.get("reason") or item.get("name")
+            count = item.get("count")
+            if label not in (None, "") and count not in (None, ""):
+                lines.append(f"• {label}: {count}")
+    else:
+        lines.append("• Belum tersedia dari artifact engine")
+
+    lines += ["", SEPARATOR, "📊 SCREENING RESULT", ""]
     screening = [
-        ("BUY READY", data.get("buy_ready_count")), ("BUY CANDIDATE", data.get("buy_candidate_count")),
-        ("WATCH", data.get("watch_count")), ("WAIT", data.get("wait_count")),
-        ("AVOID", data.get("avoid_count")), ("Final-ready", data.get("final_ready_count")),
+        ("BUY READY", data.get("buy_ready_count")),
+        ("BUY CANDIDATE", data.get("buy_candidate_count")),
+        ("WATCH", data.get("watch_count")),
+        ("WAIT", data.get("wait_count")),
+        ("AVOID", data.get("avoid_count")),
+        ("Final-ready", data.get("final_ready_count")),
     ]
-    screening = [(name, value) for name, value in screening if value not in (None, "")]
-    if screening:
-        lines += ["", SEPARATOR, "📊 SCREENING RESULT"] + [f"• {name:<14}: {value}" for name, value in screening]
+    available_screening = [(name, value) for name, value in screening if value not in (None, "")]
+    lines += [f"• {name:<14}: {value}" for name, value in available_screening]
+    if not available_screening:
+        lines.append("• Belum tersedia dari artifact engine")
 
-    market_outlook = data.get("market_outlook_status") or ("READY" if data.get("market_regime") else "NOT ATTACHED")
     lines += [
-        "", SEPARATOR, "📈 PIPELINE STATUS",
-        f"• Technical Snapshot : {data.get('technical_status') or ''}",
-        f"• Universe Selection : {data.get('universe_status') or ''}",
-        f"• Candidate Screening: {data.get('candidate_status') or ''}",
-        f"• Broker Dependency  : {data.get('broker_status') or ''}",
-        f"• Market Outlook     : {market_outlook}",
-        "", SEPARATOR, "📡 SOURCE STATUS",
-        f"• Yahoo Technical : {_upper(data.get('historical_status') or 'VALID')} — coverage {_pct(data.get('coverage'))}",
-        f"• ZAPI IDX        : {_upper(data.get('zapi_status'))} — coverage {_pct(data.get('zapi_coverage'))}",
-        f"• Stockbit Broker : {_upper(data.get('stockbit_status') or data.get('broker_status'))}",
+        "",
+        "📌 INTERPRETASI",
+        str(data.get("screening_interpretation") or "Hasil screening akan diteruskan ke Final Watchlist setelah seluruh artifact keputusan tersedia."),
+        "",
+        "Prioritas Final Watchlist:",
+        "• Technical Quality kuat",
+        "• Entry Readiness memadai",
+        "• Harga belum terlalu jauh dari area entry",
+        "• Broker flow mendukung",
+        "• Risk/reward masih layak",
+        "",
+        SEPARATOR,
+        "📈 PIPELINE STATUS",
+        "",
+        f"• Technical Snapshot : {data.get('technical_status') or 'NOT AVAILABLE'}",
+        f"• Universe Selection : {data.get('universe_status') or 'NOT AVAILABLE'}",
+        f"• Candidate Screening: {data.get('candidate_status') or 'NOT AVAILABLE'}",
+        f"• Broker Dependency  : {data.get('broker_status') or 'NOT AVAILABLE'}",
+        f"• Market Outlook     : {data.get('market_outlook_status') or ('READY' if data.get('market_regime') else 'NOT AVAILABLE')}",
+        f"• Final Watchlist    : {data.get('final_watchlist_status') or ('READY TO RUN' if data.get('funnel_final') not in (None, '', 0, '0') else 'WAITING')}",
+        "",
+        SEPARATOR,
+        "📡 SOURCE STATUS",
+        "",
     ]
-    if data.get("global_market_status"):
-        lines.append(f"• Global Market   : {_upper(data.get('global_market_status'))}")
+    source_lines = _source_status_lines(data)
+    lines += source_lines or ["• Belum tersedia dari artifact engine"]
+
     lines += [
-        "", SEPARATOR, "🎯 NEXT PROCESS",
-        str(data.get("next_process") or "Final Watchlist menentukan saham prioritas, status eksekusi, area entry, trigger, target, stop loss, risiko, dan invalidation."),
+        "",
+        SEPARATOR,
+        "🎯 NEXT PROCESS",
+        "",
+        "Final Watchlist akan menentukan:",
+        "",
+        "• saham prioritas;",
+        "• status keputusan dan eksekusi;",
+        "• area entry;",
+        "• trigger yang harus terpenuhi;",
+        "• target dan stop loss;",
+        "• alasan utama;",
+        "• risiko dan invalidation.",
     ]
-    return "\n".join(lines).strip() + _source_block(data)
+    if data.get("run_id"):
+        lines += ["", f"Run ID: {data['run_id']}"]
+    return "\n".join(lines).strip()
 
 
 def format_broker_summary(data: dict[str, Any]) -> str:
@@ -321,27 +504,73 @@ def _decision(value: Any) -> str:
     return str(value or "").upper().replace("_", " ").strip()
 
 
+def _ui_decision(value: Any) -> str:
+    decision = _decision(value)
+    return "BUY CANDIDATE" if decision == "BUY ON TRIGGER" else decision
+
+
 def _decision_icon(value: str) -> str:
-    return {"BUY": "🟢", "BUY READY": "🟢", "BUY CONFIRMED": "🟢", "BUY ON TRIGGER": "🟠", "BUY CANDIDATE": "🟠", "WATCH HIGH": "🟡", "WATCH": "🔵", "WAIT": "🟠", "AVOID": "🔴"}.get(value, "")
+    return {
+        "BUY": "🟢",
+        "BUY READY": "🟢",
+        "BUY CONFIRMED": "🟢",
+        "BUY ON TRIGGER": "🟠",
+        "BUY CANDIDATE": "🟠",
+        "WATCH HIGH": "🟡",
+        "WATCH": "🔵",
+        "WAIT": "🟠",
+        "AVOID": "🔴",
+    }.get(value, "")
+
+
+def _rank_marker(value: Any) -> str:
+    try:
+        rank = int(value)
+    except Exception:
+        rank = 0
+    return {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, f"#{rank}" if rank > 0 else "📌")
 
 
 def format_final_watchlist_summary(data: dict[str, Any]) -> str:
     rows = [row for row in data.get("rows", []) or [] if isinstance(row, dict)]
     counts = data.get("decision_counts") if isinstance(data.get("decision_counts"), dict) else {}
     top = data.get("top_priority") or rows[:3]
+    created_at = data.get("generated_at") or data.get("created_at")
     lines = [
-        "🎯 SDE SWING — FINAL WATCHLIST", f"📅 {_date(data.get('trade_date'), long=True)}", SEPARATOR, "",
-        "🟢 MARKET", f"{_upper(data.get('market_regime') or 'MARKET CONTEXT READY')} | {_upper(data.get('execution_mode') or 'SELECTIVE')}", "",
-        "📊 HASIL FINAL", f"• BUY READY      : {counts.get('BUY_READY', 0)}", f"• BUY CANDIDATE  : {counts.get('BUY_CANDIDATE', 0)}",
-        f"• WATCH          : {counts.get('WATCH', 0)}", f"• WAIT           : {counts.get('WAIT', 0)}", f"• AVOID          : {counts.get('AVOID', 0)}",
-        f"• Total aktif    : {len(rows)}", "", "🎯 PRIORITAS EKSEKUSI",
+        "🎯 SDE SWING — FINAL WATCHLIST",
+        f"📅 {_date(data.get('trade_date'), long=True)}",
+    ]
+    if _time(created_at):
+        lines.append(f"🕒 Dibuat: {_time(created_at)} WIB")
+    lines += [
+        SEPARATOR,
+        "",
+        "🟢 MARKET",
+        f"{_upper(data.get('market_regime') or 'MARKET CONTEXT READY')} | {_upper(data.get('execution_mode') or 'SELECTIVE')}",
+        "",
+        "📊 HASIL FINAL",
+        f"• BUY READY      : {counts.get('BUY_READY', 0)}",
+        f"• BUY CANDIDATE  : {counts.get('BUY_CANDIDATE', 0)}",
+        f"• WATCH          : {counts.get('WATCH', 0)}",
+        f"• WAIT           : {counts.get('WAIT', 0)}",
+        f"• AVOID          : {counts.get('AVOID', 0)}",
+        f"• Total aktif    : {len(rows)}",
+        "",
+        "🎯 PRIORITAS EKSEKUSI",
     ]
     for index, row in enumerate(top[:3], 1):
-        confidence = f" — {row.get('confidence')}%" if row.get("confidence") not in (None, "") else ""
-        lines.append(f"{index}. {str(row.get('symbol', '')).upper()} — {_decision(row.get('decision'))}{confidence}")
+        confidence = f" — {_number(row.get('confidence'), 1)}%" if row.get("confidence") not in (None, "") else ""
+        lines.append(f"{index}. {str(row.get('symbol', '')).upper()} — {_ui_decision(row.get('decision'))}{confidence}")
     if not top:
         lines.append("Belum ada saham aktif dalam Final Watchlist.")
-    lines += ["", "Prioritas ditentukan berdasarkan kesiapan eksekusi, bukan hanya final score.", "", f"📎 CSV lengkap dilampirkan: {data.get('csv_filename') or 'sde-final-watchlist.csv'}"]
+    lines += [
+        "",
+        "Prioritas ditentukan berdasarkan kesiapan eksekusi,",
+        "bukan hanya final score.",
+        "",
+        "📎 CSV lengkap dilampirkan:",
+        str(data.get("csv_filename") or "sde-final-watchlist.csv"),
+    ]
     return "\n".join(lines).strip()
 
 
@@ -360,57 +589,153 @@ def _detail_line(lines: list[str], label: str, value: Any, transform=None) -> No
         return
     rendered = transform(value) if transform else str(value)
     if rendered:
-        lines.append(f"{label:<12}: {rendered}")
+        lines.append(f"{label:<14}: {rendered}")
+
+
+def _participant_line(index: int, item: Any) -> str:
+    if isinstance(item, Mapping):
+        broker = str(item.get("broker") or item.get("code") or item.get("name") or "").strip()
+        value = _money(item.get("value") or item.get("net_value") or item.get("amount"))
+        average = _price(item.get("avg_price") or item.get("average_price") or item.get("avg"))
+        classification = str(item.get("classification") or item.get("origin") or item.get("foreign_local") or "").strip()
+        parts = [broker or "UNKNOWN"]
+        if value:
+            parts.append(value)
+        if average:
+            parts.append(f"Avg {average}")
+        if classification:
+            parts.append(classification)
+        head, *tail = parts
+        return f"{index}. {head}" + (f" — {' | '.join(tail)}" if tail else "")
+    return f"{index}. {str(item).strip()}"
+
+
+def _text_items(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [
+        item.strip(" •-\t")
+        for item in str(value).replace("\r", "").split("\n")
+        for item in item.split(";")
+        if item.strip(" •-\t")
+    ]
+
+
+def _reason_items(data: dict[str, Any]) -> list[str]:
+    structured = [
+        data.get("main_reason_technical"),
+        data.get("main_reason_broker"),
+        data.get("main_reason_entry"),
+    ]
+    items = [str(item).strip() for item in structured if str(item or "").strip()]
+    if items:
+        return items
+    return _text_items(data.get("reason_items") or data.get("main_reason"))
+
+
+def _risk_items(data: dict[str, Any]) -> list[str]:
+    return _text_items(data.get("risk_items") or data.get("main_risk"))
 
 
 def format_watchlist_detail(data: dict[str, Any]) -> str:
-    decision = _decision(data.get("decision"))
-    confidence = f" | {data.get('confidence')}%" if data.get("confidence") not in (None, "") else ""
+    raw_decision = _decision(data.get("decision"))
+    decision = _ui_decision(raw_decision)
+    confidence = f" | {_number(data.get('confidence'), 1)}%" if data.get("confidence") not in (None, "") else ""
     low, high = _price(data.get("entry_low")), _price(data.get("entry_high"))
-    entry = f"{low}–{high}" if low and high else low or high or "Menunggu area valid"
-    rr = data.get("risk_reward")
-    rr_text = f"1:{str(rr).replace('.', ',')}" if rr not in (None, "") else "PENDING_TRIGGER"
+    entry = f"{low}–{high}" if low and high else low or high or "PENDING_TRIGGER"
+    created_at = data.get("generated_at") or data.get("created_at")
+    rank = _rank_marker(data.get("rank"))
+
     lines = [
-        f"📊 {str(data.get('symbol', '')).upper()} | {_decision_icon(decision)} {decision}{confidence}",
-        f"⏳ Execution: {_execution(data, decision)}", f"📅 {_date(data.get('trade_date'), long=True)}", SEPARATOR, "", "📈 TEKNIKAL",
+        SEPARATOR,
+        f"{rank} {str(data.get('symbol', '')).upper()} | {_decision_icon(raw_decision)} {decision}{confidence}",
+        f"📅 {_date(data.get('trade_date'), long=True)}" + (f" | 🕒 {_time(created_at)} WIB" if _time(created_at) else ""),
+        "",
+        "📈 TEKNIKAL",
     ]
-    _detail_line(lines, "Setup", _label(data.get("setup")))
-    _detail_line(lines, "Trend", _label(data.get("technical_state")))
-    _detail_line(lines, "Quality", data.get("technical_score"), _pct)
+    _detail_line(lines, "Setup", _upper(data.get("setup")))
+    _detail_line(lines, "Trend", _upper(data.get("trend")))
+    _detail_line(lines, "Quality", data.get("technical_quality", data.get("technical_score")), _pct)
     _detail_line(lines, "Readiness", data.get("entry_readiness"), _pct)
-    _detail_line(lines, "Momentum", data.get("momentum_status"))
-    _detail_line(lines, "RSI", data.get("rsi"))
-    if data.get("volume_ratio_ma20") not in (None, ""):
-        _detail_line(lines, "Volume", f"{data['volume_ratio_ma20']}x MA20")
+
+    momentum = str(data.get("momentum_status") or "").strip()
+    rsi = _number(data.get("rsi"), 1) if data.get("rsi") not in (None, "") else ""
+    if momentum or rsi:
+        _detail_line(lines, "Momentum", f"{momentum or 'N/A'}" + (f" — RSI {rsi}" if rsi else ""))
+
+    volume_description = str(data.get("volume_description") or "").strip()
+    volume_ratio = _number(data.get("volume_ratio_ma20"), 2) if data.get("volume_ratio_ma20") not in (None, "") else ""
+    if volume_description or volume_ratio:
+        _detail_line(lines, "Volume", f"{volume_description or 'N/A'}" + (f" — {volume_ratio}x MA20" if volume_ratio else ""))
 
     lines += ["", "🌊 BROKER SUMMARY"]
-    _detail_line(lines, "Status", _label(data.get("broker_state")))
-    _detail_line(lines, "Confidence", data.get("broker_score"), _pct)
-    _detail_line(lines, "Net Flow", data.get("broker_net_flow"))
+    _detail_line(lines, "Status", _upper(data.get("broker_status") or data.get("broker_state")))
+    _detail_line(lines, "Direction", _upper(data.get("broker_direction")))
+    _detail_line(lines, "Confidence", data.get("broker_confidence", data.get("broker_score")), _pct)
+    _detail_line(lines, "Net Flow", data.get("broker_net_flow"), _money)
     if data.get("broker_buy_ratio") not in (None, "") or data.get("broker_sell_ratio") not in (None, ""):
-        _detail_line(lines, "Buy / Sell", f"{_pct(data.get('broker_buy_ratio'))} / {_pct(data.get('broker_sell_ratio'))}")
-    _detail_line(lines, "Flow Status", _label(data.get("broker_alignment")))
+        _detail_line(
+            lines,
+            "Buy / Sell",
+            f"{_pct(data.get('broker_buy_ratio'), ratio_aware=True)} / {_pct(data.get('broker_sell_ratio'), ratio_aware=True)}",
+        )
+    _detail_line(lines, "Flow Status", _upper(data.get("broker_alignment")))
 
-    if data.get("sector_state") or data.get("market_regime"):
-        lines += ["", "🧭 MARKET CONTEXT"]
-        _detail_line(lines, "Sector", _label(data.get("sector_state")))
-        _detail_line(lines, "Market", _label(data.get("market_regime")))
+    lines += ["", "🟢 TOP BUYER"]
+    buyers = _as_list(data.get("top_buyers"))
+    lines += [_participant_line(index, item) for index, item in enumerate(buyers[:3], 1)] if buyers else ["• Belum tersedia dari artifact engine"]
 
-    lines += ["", "📊 VALIDASI DATA"]
-    _detail_line(lines, "Yahoo", _upper(data.get("yahoo_status")))
-    _detail_line(lines, "ZAPI IDX", _upper(data.get("zapi_status")))
-    if data.get("zapi_freshness_days") not in (None, ""):
-        _detail_line(lines, "Freshness", f"{data['zapi_freshness_days']} hari")
-    _detail_line(lines, "Data Status", _upper(data.get("data_status")))
-    _detail_line(lines, "Conflict", _upper(data.get("data_conflict")))
+    lines += ["", "🔴 TOP SELLER"]
+    sellers = _as_list(data.get("top_sellers"))
+    lines += [_participant_line(index, item) for index, item in enumerate(sellers[:3], 1)] if sellers else ["• Belum tersedia dari artifact engine"]
+
+    lines += ["", "💰 POSISI BROKER"]
+    position_start = len(lines)
+    _detail_line(lines, "Avg Buyer", data.get("avg_buyer_price"), lambda value: f"{_price(value)} — weighted")
+    _detail_line(lines, "Avg Seller", data.get("avg_seller_price"), lambda value: f"{_price(value)} — weighted")
+    _detail_line(lines, "Harga terakhir", data.get("last_price"), _price)
+    _detail_line(lines, "Jarak buy avg", data.get("distance_to_buyer_avg_pct"), _pct)
+    _detail_line(lines, "Raw coverage", data.get("broker_raw_coverage"), lambda value: _pct(value, ratio_aware=True))
+    if len(lines) == position_start:
+        lines.append("• Belum tersedia dari artifact engine")
 
     lines += [
-        "", "🎯 RENCANA", f"Status      : {_execution(data, decision)}", f"Entry       : {entry}",
-        f"Trigger     : {data.get('trigger_description') or data.get('execution_note') or 'Ikuti trigger engine dan jangan mengejar harga.'}",
-        f"TP1         : {_price(data.get('target_1')) or 'PENDING_TRIGGER'}", f"TP2         : {_price(data.get('target_2')) or 'PENDING_TRIGGER'}",
-        f"SL          : {_price(data.get('stop_loss')) or 'PENDING_TRIGGER'}", f"R:R         : {rr_text}", "",
-        "✅ ALASAN UTAMA", str(data.get("main_reason") or ""), "", "⚠️ RISIKO DAN INVALIDATION",
-        str(data.get("main_risk") or "Entry hanya dilakukan setelah trigger valid; hindari mengejar harga di luar zona entry."), "", "🧭 EKSEKUSI",
-        str(data.get("execution_note") or ("Boleh dieksekusi sesuai trade plan setelah trigger valid." if decision in {"BUY", "BUY READY", "BUY CONFIRMED"} else "Masukkan watchlist prioritas. Belum boleh entry sebelum area dan trigger terkonfirmasi.")),
+        "",
+        "🎯 RENCANA",
+        f"Status : {_execution(data, raw_decision)}",
+        f"Entry  : {entry}",
+        f"Trigger: {data.get('trigger_description') or 'PENDING_TRIGGER'}",
+        f"TP1    : {_price(data.get('target_1')) or 'PENDING_TRIGGER'}",
+        f"TP2    : {_price(data.get('target_2')) or 'PENDING_TRIGGER'}",
+        f"SL     : {_price(data.get('stop_loss')) or 'PENDING_TRIGGER'}",
+        f"R:R    : {_rr(data.get('risk_reward'))}",
+        "",
+        "🔔 YANG DITUNGGU",
     ]
-    return "\n".join(lines).strip() + _source_block(data, detail=True)
+    waiting = [str(item).strip() for item in _as_list(data.get("waiting_triggers")) if str(item).strip()]
+    lines += [f"• {item}" for item in waiting[:3]] if waiting else ["• Belum ada trigger rinci pada artifact engine"]
+
+    lines += ["", "✅ ALASAN UTAMA"]
+    reasons = _reason_items(data)
+    lines += [f"• {item}" for item in reasons[:3]] if reasons else ["• Belum tersedia dari artifact engine"]
+
+    lines += ["", "⚠️ RISIKO DAN INVALIDATION"]
+    risks = _risk_items(data)
+    lines += [f"• {item}" for item in risks[:2]] if risks else ["• Belum tersedia dari artifact engine"]
+    if data.get("invalidation"):
+        invalidation = str(data["invalidation"]).strip().rstrip(".")
+        lines.append(f"• Setup batal jika {invalidation}.")
+    lines.append("• Hindari entry jika harga membuka terlalu jauh di atas area entry.")
+
+    lines += [
+        "",
+        "🧭 EKSEKUSI",
+        str(data.get("execution_note") or (
+            "Boleh dieksekusi sesuai trade plan setelah trigger valid."
+            if raw_decision in {"BUY", "BUY READY", "BUY CONFIRMED"}
+            else "Masukkan watchlist prioritas. Belum boleh entry sebelum area dan trigger terkonfirmasi."
+        )),
+    ]
+    return "\n".join(lines).strip()
