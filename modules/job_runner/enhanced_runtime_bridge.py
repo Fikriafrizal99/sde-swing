@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -509,6 +510,63 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
     )) for artifact in artifacts]
 
 
+def lifecycle_payloads(ctx: RunnerContext) -> list[ReportPayload]:
+    """Load persistent recommendation/portfolio lifecycle reports.
+
+    The outcome tracker writes these files after the engine stage.  Keeping the
+    bridge file-backed means Telegram delivery cannot mutate engine decisions,
+    and a failed delivery leaves lifecycle events pending for the next retry.
+    """
+    analytics_root = resolve(
+        ctx.config.get("paths", {}).get("analytics_output_root", "data/output/analytics")
+    ) / "performance"
+    active_path = analytics_root / "ACTIVE_RECOMMENDATIONS_TELEGRAM.txt"
+    status_path = analytics_root / "STATUS_CHANGES_TELEGRAM.txt"
+    active_csv = analytics_root / "ACTIVE_RECOMMENDATIONS.csv"
+    events_csv = analytics_root / "LIFECYCLE_EVENTS.csv"
+    if not active_path.exists():
+        return []
+    source_paths = [analytics_root / "SIGNAL_OUTCOME_LEDGER.csv", active_csv, events_csv]
+    payloads: list[ReportPayload] = [
+        ReportPayload(
+            "active_recommendations",
+            "active_recommendations.txt",
+            active_path.read_text(encoding="utf-8"),
+            topic="report",
+            input_paths=tuple(str(path) for path in source_paths if path.exists()),
+            source_of_truth=tuple(str(path) for path in source_paths if path.exists()),
+        )
+    ]
+    if status_path.exists():
+        status_text = status_path.read_text(encoding="utf-8").strip()
+        if status_text:
+            event_ids: list[str] = []
+            row_count = None
+            if events_csv.exists():
+                try:
+                    events = pd.read_csv(events_csv, low_memory=False)
+                    pending = events[
+                        events.get("telegram_notified_at", pd.Series(index=events.index)).fillna("").astype(str).str.strip().eq("")
+                    ]
+                    event_ids = [str(value) for value in pending.get("event_id", pd.Series(dtype=str)).tolist() if str(value).strip()]
+                    row_count = len(pending)
+                except Exception:
+                    event_ids = []
+            status_payload = ReportPayload(
+                "status_changes",
+                "status_changes.txt",
+                status_text,
+                topic="report",
+                signal_version=hashlib.sha256("|".join(sorted(event_ids)).encode("utf-8")).hexdigest()[:24],
+                input_paths=tuple(str(path) for path in source_paths if path.exists()),
+                source_of_truth=tuple(str(path) for path in source_paths if path.exists()),
+                row_count=row_count,
+            )
+            setattr(status_payload, "lifecycle_event_ids", tuple(event_ids))
+            payloads.append(status_payload)
+    return payloads
+
+
 def complete_daily_payloads(
     ctx: RunnerContext,
     *,
@@ -530,4 +588,5 @@ def complete_daily_payloads(
         payloads.extend(broker_multiday_payloads(ctx))
     if include_final:
         payloads.extend(final_watchlist_payloads(ctx))
+        payloads.extend(lifecycle_payloads(ctx))
     return payloads

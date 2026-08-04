@@ -24,6 +24,8 @@ echo [5] Evaluasi berdasarkan broker confidence
 echo [6] Evaluasi berdasarkan market regime
 echo [7] Lihat Signal Outcome Ledger
 echo [8] Kirim laporan performance ke Telegram
+echo [9] Register semua keputusan BUY mesin
+echo [10] Maintain portfolio aktual
 echo [0] Kembali
 echo.
 set "PERF_CHOICE="
@@ -37,6 +39,8 @@ if "%PERF_CHOICE%"=="5" goto SHOW_BROKER
 if "%PERF_CHOICE%"=="6" goto SHOW_REGIME
 if "%PERF_CHOICE%"=="7" goto SHOW_LEDGER
 if "%PERF_CHOICE%"=="8" goto SEND_TELEGRAM
+if "%PERF_CHOICE%"=="9" goto REGISTER_BUY
+if "%PERF_CHOICE%"=="10" goto PORTFOLIO
 if "%PERF_CHOICE%"=="0" exit /b 0
 goto MENU
 
@@ -104,4 +108,12 @@ if /I not "%CONFIRM_SEND%"=="Y" goto MENU
 set "RC=%ERRORLEVEL%"
 if not "%RC%"=="0" echo Pengiriman gagal. Exit code %RC%.
 pause
+goto MENU
+
+:REGISTER_BUY
+call maintenance\RECORD_BUY_SIGNALS.bat
+goto MENU
+
+:PORTFOLIO
+call maintenance\RECORD_PORTFOLIO_BUY.bat
 goto MENU

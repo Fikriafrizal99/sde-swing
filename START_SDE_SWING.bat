@@ -44,6 +44,8 @@ echo  8. Final Watchlist - Preview Existing
 echo  9. Jalankan Test Validasi
 echo 10. Buka Folder Output
 echo 11. Test Telegram Terpisah
+echo 12. Register Semua BUY Mesin
+echo 13. Maintain Portfolio Aktual
 echo  0. Keluar
 echo.
 set "CHOICE="
@@ -60,6 +62,8 @@ if "%CHOICE%"=="8" goto PREVIEW
 if "%CHOICE%"=="9" goto TESTS
 if "%CHOICE%"=="10" goto OUTPUT
 if "%CHOICE%"=="11" goto TELEGRAM_TEST
+if "%CHOICE%"=="12" goto REGISTER_BUY
+if "%CHOICE%"=="13" goto PORTFOLIO
 if "%CHOICE%"=="0" goto END
 
 echo.
@@ -144,6 +148,16 @@ if "!EXIT_CODE!"=="0" (
 call :LOG "selected_menu=11 delivery_status=!EXIT_CODE! exit_code=!EXIT_CODE!"
 echo Log: %SDE_LOG%
 pause
+goto MENU
+
+:REGISTER_BUY
+call :LOG "selected_menu=12 action=REGISTER_BUY_SIGNALS"
+call maintenance\RECORD_BUY_SIGNALS.bat
+goto MENU
+
+:PORTFOLIO
+call :LOG "selected_menu=13 action=MAINTAIN_PORTFOLIO"
+call maintenance\RECORD_PORTFOLIO_BUY.bat
 goto MENU
 
 :RUN_JOB

@@ -61,6 +61,7 @@ from modules.job_runner.enhanced_runtime_bridge import (
     broker_multiday_payloads as enhanced_broker_multiday_payloads,
     broker_summary_payloads as enhanced_broker_summary_payloads,
     final_watchlist_payloads as enhanced_final_watchlist_payloads,
+    lifecycle_payloads as enhanced_lifecycle_payloads,
     market_outlook_payloads as enhanced_market_outlook_payloads,
     post_market_payloads as enhanced_post_market_payloads,
 )
@@ -537,6 +538,7 @@ def job_final_watchlist(ctx) -> int:
     if _reports_enabled(ctx):
         payloads = (
             enhanced_final_watchlist_payloads(ctx, manifest)
+            + enhanced_lifecycle_payloads(ctx)
             if _official_runtime(ctx)
             else final_watchlist_payloads(ctx, manifest)
         )
@@ -625,6 +627,7 @@ def job_full_manual(ctx) -> int:
                 + enhanced_broker_summary_payloads(ctx)
                 + enhanced_broker_multiday_payloads(ctx)
                 + enhanced_final_watchlist_payloads(ctx, run_manifest)
+                + enhanced_lifecycle_payloads(ctx)
             )
         preview_paths = write_payloads(ctx, payloads) if _reports_enabled(ctx) else []
         delivery = deliver(ctx, payloads) if _reports_enabled(ctx) else []

@@ -247,6 +247,37 @@ def init_schema(conn: sqlite3.Connection) -> None:
             data_quality_status TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS lifecycle_events (
+            event_id TEXT PRIMARY KEY,
+            signal_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            previous_status TEXT,
+            new_status TEXT,
+            event_date TEXT NOT NULL,
+            event_price REAL,
+            event_reason TEXT,
+            telegram_notified_at TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS portfolio_positions (
+            position_id TEXT PRIMARY KEY,
+            signal_id TEXT,
+            symbol TEXT NOT NULL,
+            buy_date TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            buy_price REAL NOT NULL,
+            current_status TEXT NOT NULL DEFAULT 'OPEN',
+            sell_date TEXT,
+            sell_price REAL,
+            realized_return_pct REAL,
+            notes TEXT,
+            source_run_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS telegram_logs (
             run_id TEXT,
             message_type TEXT,

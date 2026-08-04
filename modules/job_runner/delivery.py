@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,10 @@ def _idempotency_key(ctx: RunnerContext, payload: ReportPayload) -> str:
         status = (payload.signal_status or "UNKNOWN").upper()
         version = payload.signal_version or ctx.run_id
         return f"{ctx.trade_date.isoformat()}:{report}:{symbol}:{status}:{version}"
+    if report == "STATUS_CHANGES":
+        return f"{ctx.trade_date.isoformat()}:{report}:{payload.signal_version or payload.signature[:24]}"
+    if report == "ACTIVE_RECOMMENDATIONS":
+        return f"{ctx.trade_date.isoformat()}:{report}"
     return f"{ctx.trade_date.isoformat()}:{report}"
 
 
@@ -49,6 +54,26 @@ def _state_paths(ctx: RunnerContext) -> tuple[Path, Path]:
     index = resolve(delivery_cfg.get("idempotency_index", "data/state/scheduler/telegram_idempotency.json"))
     log = resolve(delivery_cfg.get("delivery_log", "data/state/scheduler/delivery_log.jsonl"))
     return index, log
+
+
+def _mark_lifecycle_events_notified(ctx: RunnerContext, event_ids: tuple[str, ...] | list[str]) -> int:
+    identifiers = [str(item).strip() for item in event_ids if str(item).strip()]
+    if not identifiers:
+        return 0
+    db_path = resolve(ctx.config.get("paths", {}).get("swing_database", "data/database/sde_swing_history.db"))
+    if not db_path.exists():
+        return 0
+    conn = sqlite3.connect(db_path, timeout=30)
+    try:
+        placeholders = ",".join("?" for _ in identifiers)
+        cursor = conn.execute(
+            f"UPDATE lifecycle_events SET telegram_notified_at=? WHERE event_id IN ({placeholders}) AND (telegram_notified_at IS NULL OR telegram_notified_at='')",
+            [now_wib().isoformat(timespec="seconds"), *identifiers],
+        )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
 
 
 def should_send(ctx: RunnerContext, payload: ReportPayload) -> tuple[bool, str]:
@@ -279,8 +304,20 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
                     append_jsonl(log_path, part_event)
                     part_events.append(part_event)
             event = {**base, "status": "SENT", "telegram_message_ids": message_ids, "parts": part_events}
-            index[key] = event
-            write_json(index_path, index)
+            lifecycle_ack_failed = False
+            lifecycle_ids = tuple(getattr(payload, "lifecycle_event_ids", ()) or ())
+            if lifecycle_ids:
+                try:
+                    _mark_lifecycle_events_notified(ctx, lifecycle_ids)
+                except Exception as exc:
+                    # Telegram succeeded; leave events pending if the local
+                    # acknowledgement fails so the next maintenance run can
+                    # retry the acknowledgement safely.
+                    lifecycle_ack_failed = True
+                    append_jsonl(log_path, {**base, "status": "LIFECYCLE_ACK_FAILED", "error": str(exc)})
+            if not lifecycle_ack_failed:
+                index[key] = event
+                write_json(index_path, index)
             append_jsonl(log_path, event)
             results.append(event)
         except Exception as exc:

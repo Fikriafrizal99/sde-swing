@@ -12,6 +12,7 @@ from modules.job_runner.enhanced_runtime_bridge import (
     broker_multiday_payloads,
     broker_summary_payloads,
     final_watchlist_payloads,
+    lifecycle_payloads,
     market_outlook_payloads,
     post_market_payloads,
 )
@@ -155,7 +156,12 @@ def _enhanced_payloads(ctx, job: str):
     if job == "broker_multi_day":
         return broker_multiday_payloads(ctx)
     if job == "final_watchlist":
-        return broker_summary_payloads(ctx) + _optional_broker_multiday_payloads(ctx) + final_watchlist_payloads(ctx)
+        return (
+            broker_summary_payloads(ctx)
+            + _optional_broker_multiday_payloads(ctx)
+            + final_watchlist_payloads(ctx)
+            + lifecycle_payloads(ctx)
+        )
     if job == "full_manual":
         global_snapshot, market_status = _load_market_artifacts(ctx)
         return (
@@ -164,6 +170,7 @@ def _enhanced_payloads(ctx, job: str):
             + broker_summary_payloads(ctx)
             + _optional_broker_multiday_payloads(ctx)
             + final_watchlist_payloads(ctx)
+            + lifecycle_payloads(ctx)
         )
     return []
 

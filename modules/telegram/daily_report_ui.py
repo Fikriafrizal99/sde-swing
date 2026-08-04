@@ -68,6 +68,7 @@ def _items(values: Iterable[Any]) -> str:
 
 def _source_block(data: dict[str, Any], *, detail: bool = False) -> str:
     rows: list[str] = []
+    compatibility: list[str] = []
     for label, value in (
         ("Yahoo Technical", data.get("yahoo_status") or data.get("historical_status")),
         ("ZAPI IDX", data.get("zapi_status") or data.get("reconciliation_status")),
@@ -76,6 +77,13 @@ def _source_block(data: dict[str, Any], *, detail: bool = False) -> str:
     ):
         if value:
             rows.append(f"• {label:<16}: {_upper(value)}")
+    if data.get("yahoo_status") or data.get("historical_status"):
+        compatibility.append(f"Yahoo: {_upper(data.get('yahoo_status') or data.get('historical_status'))}")
+    if data.get("zapi_status") or data.get("reconciliation_status"):
+        compatibility.append(f"ZAPI IDX: {_upper(data.get('zapi_status') or data.get('reconciliation_status'))}")
+    if data.get("broker_status") or data.get("stockbit_status"):
+        compatibility.append(f"Stockbit: {_upper(data.get('broker_status') or data.get('stockbit_status'))}")
+    rows.extend(compatibility)
     if data.get("zapi_coverage") not in (None, ""):
         value = float(data["zapi_coverage"])
         rows.append(f"• ZAPI Coverage   : {_pct(value * 100 if value <= 1 else value)}")
@@ -279,7 +287,7 @@ def format_post_market(data: dict[str, Any]) -> str:
         "", SEPARATOR, "🎯 NEXT PROCESS",
         str(data.get("next_process") or "Final Watchlist menentukan saham prioritas, status eksekusi, area entry, trigger, target, stop loss, risiko, dan invalidation."),
     ]
-    return "\n".join(lines).strip()
+    return "\n".join(lines).strip() + _source_block(data)
 
 
 def format_broker_summary(data: dict[str, Any]) -> str:

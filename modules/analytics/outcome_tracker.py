@@ -31,6 +31,7 @@ ACTIVE_STATUSES = {"WAITING_TRIGGER", "OPEN"}
 FINAL_OUTCOMES = {"WIN", "LOSS", "AMBIGUOUS"}
 TRACKED_DECISIONS = {"STRONG BUY", "BUY", "BUY CANDIDATE", "BUY READY", "BUY ON TRIGGER", "BUY CONFIRMED"}
 CURRENT_RECOMMENDATION_DECISIONS = set(TRACKED_DECISIONS)
+TERMINAL_STATUSES = {"CLOSED", "EXPIRED", "INVALIDATED_BEFORE_ENTRY"}
 VALID_SIGNAL_QUALITY = {
     "VALID",
     "PARTIAL_COVERAGE",
@@ -47,6 +48,7 @@ DEFAULT_PLANS = PROJECT_ROOT / "data/output/exit/ENTRY_PLANS.csv"
 
 LEDGER_COLUMNS = [
     "signal_id", "run_id", "symbol", "signal_date", "last_seen_date",
+    "latest_scan_status", "latest_scan_date", "latest_scan_run_id",
     "signal_type", "raw_decision", "setup_type", "score",
     "technical_quality", "entry_readiness", "broker_confidence",
     "broker_confidence_bucket", "broker_direction", "market_regime",
@@ -70,6 +72,9 @@ CREATE TABLE IF NOT EXISTS signal_outcome_ledger (
     symbol TEXT NOT NULL,
     signal_date TEXT NOT NULL,
     last_seen_date TEXT,
+    latest_scan_status TEXT,
+    latest_scan_date TEXT,
+    latest_scan_run_id TEXT,
     signal_type TEXT,
     raw_decision TEXT,
     setup_type TEXT,
@@ -125,6 +130,45 @@ CREATE INDEX IF NOT EXISTS idx_signal_ledger_symbol_status
     ON signal_outcome_ledger(symbol, current_status);
 CREATE INDEX IF NOT EXISTS idx_signal_ledger_signal_date
     ON signal_outcome_ledger(signal_date);
+
+CREATE TABLE IF NOT EXISTS lifecycle_events (
+    event_id TEXT PRIMARY KEY,
+    signal_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    previous_status TEXT,
+    new_status TEXT,
+    event_date TEXT NOT NULL,
+    event_price REAL,
+    event_reason TEXT,
+    telegram_notified_at TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_events_pending
+    ON lifecycle_events(telegram_notified_at, event_date);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_events_signal
+    ON lifecycle_events(signal_id, created_at);
+
+CREATE TABLE IF NOT EXISTS portfolio_positions (
+    position_id TEXT PRIMARY KEY,
+    signal_id TEXT,
+    symbol TEXT NOT NULL,
+    buy_date TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    buy_price REAL NOT NULL,
+    current_status TEXT NOT NULL DEFAULT 'OPEN',
+    sell_date TEXT,
+    sell_price REAL,
+    realized_return_pct REAL,
+    notes TEXT,
+    source_run_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_portfolio_positions_symbol_status
+    ON portfolio_positions(symbol, current_status);
+CREATE INDEX IF NOT EXISTS idx_portfolio_positions_buy_date
+    ON portfolio_positions(buy_date);
 """
 
 
@@ -137,6 +181,89 @@ class RegisterResult:
 
 def now_text() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def event_id(
+    signal_id: str,
+    event_type: str,
+    event_date: str,
+    event_price: Any = None,
+    event_reason: str = "",
+) -> str:
+    """Return a deterministic lifecycle event key for idempotent re-runs."""
+    raw = "|".join([
+        norm_text(signal_id),
+        norm_text(event_type).upper(),
+        norm_text(event_date),
+        norm_text(event_price),
+        norm_text(event_reason),
+    ])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def record_lifecycle_event(
+    conn: sqlite3.Connection,
+    *,
+    signal_id: str,
+    symbol: str,
+    event_type: str,
+    previous_status: str,
+    new_status: str,
+    event_date: str,
+    event_price: Any = None,
+    event_reason: str = "",
+) -> str:
+    """Persist one lifecycle transition/milestone without duplicating it."""
+    event_type = norm_text(event_type).upper()
+    event_date = parse_date(event_date) or norm_text(event_date)
+    identifier = event_id(signal_id, event_type, event_date, event_price, event_reason)
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO lifecycle_events (
+            event_id, signal_id, symbol, event_type, previous_status, new_status,
+            event_date, event_price, event_reason, telegram_notified_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+        """,
+        (
+            identifier,
+            signal_id,
+            normalize_symbol(symbol),
+            event_type,
+            norm_text(previous_status),
+            norm_text(new_status),
+            event_date,
+            as_float(event_price),
+            norm_text(event_reason),
+            now_text(),
+        ),
+    )
+    return identifier
+
+
+def pending_lifecycle_events(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT * FROM lifecycle_events
+        WHERE telegram_notified_at IS NULL OR telegram_notified_at=''
+        ORDER BY event_date, created_at, symbol
+        """
+    ).fetchall()
+
+
+def mark_lifecycle_events_notified(db_path: Path, event_ids: Iterable[str]) -> int:
+    identifiers = [norm_text(item) for item in event_ids if norm_text(item)]
+    if not identifiers:
+        return 0
+    conn = connect(db_path)
+    placeholders = ",".join("?" for _ in identifiers)
+    cursor = conn.execute(
+        f"UPDATE lifecycle_events SET telegram_notified_at=? WHERE event_id IN ({placeholders}) AND (telegram_notified_at IS NULL OR telegram_notified_at='')",
+        [now_text(), *identifiers],
+    )
+    conn.commit()
+    count = cursor.rowcount
+    conn.close()
+    return count
 
 
 def norm_text(value: Any, default: str = "") -> str:
@@ -201,6 +328,10 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA_SQL)
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(signal_outcome_ledger)")}
+    for name in ("latest_scan_status", "latest_scan_date", "latest_scan_run_id"):
+        if name not in existing:
+            conn.execute(f"ALTER TABLE signal_outcome_ledger ADD COLUMN {name} TEXT")
     conn.commit()
     return conn
 
@@ -258,8 +389,8 @@ def trigger_spec(plan: pd.Series, setup_type: str) -> tuple[str, float | None]:
         if setup_type in {"BREAKOUT", "TREND CONTINUATION"}:
             trigger = as_float(row_value(plan, "Minor_Resistance", "Nearest_Resistance"))
             return ("CLOSE_ABOVE", trigger) if trigger is not None else ("INVALID", None)
-    # REJECT/MISSING plans are kept in the ledger for audit, but are never
-    # treated as executed recommendations until a later run upgrades them.
+    # A BUY without a valid executable plan is retained as an explicit terminal
+    # invalidation, never silently converted into a loss or deleted.
     return "INVALID", None
 
 
@@ -310,13 +441,16 @@ def build_signal_record(
         str(entry_zone_high or ""),
     ])
     signal_id = hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
-    current_status = "WAITING_TRIGGER" if trigger_type != "INVALID" else "INVALID_DATA"
+    current_status = "WAITING_TRIGGER" if trigger_type != "INVALID" else "INVALIDATED_BEFORE_ENTRY"
     return {
         "signal_id": signal_id,
         "run_id": run_id,
         "symbol": symbol,
         "signal_date": signal_date,
         "last_seen_date": signal_date,
+        "latest_scan_status": raw_decision,
+        "latest_scan_date": signal_date,
+        "latest_scan_run_id": run_id,
         "signal_type": signal_type,
         "raw_decision": raw_decision,
         "setup_type": setup_type,
@@ -345,7 +479,7 @@ def build_signal_record(
         "entry_price": None,
         "exit_date": None,
         "exit_price": None,
-        "exit_reason": "MISSING_TRIGGER_DATA" if trigger_type == "INVALID" else None,
+        "exit_reason": "INVALID_PLAN_BEFORE_ENTRY" if trigger_type == "INVALID" else None,
         "holding_days": None,
         "close_d1": None,
         "close_d3": None,
@@ -362,7 +496,7 @@ def build_signal_record(
         "tp1_hit": 0,
         "tp2_hit": 0,
         "sl_hit": 0,
-        "final_outcome": None,
+        "final_outcome": "INVALIDATED" if trigger_type == "INVALID" else None,
         "realized_return_pct": None,
         "created_at": now_text(),
         "updated_at": now_text(),
@@ -370,14 +504,31 @@ def build_signal_record(
     }
 
 
+def _update_scan_metadata(
+    conn: sqlite3.Connection,
+    *,
+    signal_id: str,
+    status: str,
+    scan_date: str,
+    run_id: str,
+) -> None:
+    conn.execute(
+        """
+        UPDATE signal_outcome_ledger
+        SET latest_scan_status=?, latest_scan_date=?, latest_scan_run_id=?, updated_at=?
+        WHERE signal_id=?
+        """,
+        (norm_text(status, "NOT_IN_LATEST_SCAN").upper(), parse_date(scan_date) or scan_date, run_id, now_text(), signal_id),
+    )
+
+
 def upsert_signal(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
+    """Insert a signal once, or refresh the same active lifecycle in place."""
     exact = conn.execute(
-        "SELECT signal_id FROM signal_outcome_ledger WHERE signal_id=?",
+        "SELECT * FROM signal_outcome_ledger WHERE signal_id=?",
         (record["signal_id"],),
     ).fetchone()
-    if exact:
-        return "SKIPPED"
-    active = conn.execute(
+    active = None if exact else conn.execute(
         """
         SELECT * FROM signal_outcome_ledger
         WHERE symbol=? AND current_status IN ('WAITING_TRIGGER','OPEN')
@@ -385,40 +536,96 @@ def upsert_signal(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
         """,
         (record["symbol"],),
     ).fetchone()
-    if active:
+    target = exact or active
+    if target:
+        signal_id = target["signal_id"]
+        previous_status = norm_text(target["current_status"])
         updates: dict[str, Any] = {
-            "last_seen_date": max(norm_text(active["last_seen_date"]), record["signal_date"]),
+            "latest_scan_status": record.get("latest_scan_status") or record.get("raw_decision"),
+            "latest_scan_date": record.get("latest_scan_date") or record.get("signal_date"),
+            "latest_scan_run_id": record.get("latest_scan_run_id") or record.get("run_id"),
+            "run_id": record.get("run_id"),
+            "last_seen_date": max(norm_text(target["last_seen_date"]), record["signal_date"]),
             "updated_at": now_text(),
-            "score": record["score"],
-            "technical_quality": record["technical_quality"],
-            "entry_readiness": record["entry_readiness"],
-            "broker_confidence": record["broker_confidence"],
-            "broker_confidence_bucket": record["broker_confidence_bucket"],
-            "broker_direction": record["broker_direction"],
-            "market_regime": record["market_regime"],
         }
-        # A live candidate may be upgraded to confirmed before it triggers. Keep
-        # the original signal date, but adopt the newly validated plan.
-        if active["current_status"] == "WAITING_TRIGGER" and record["signal_type"] == "BUY CONFIRMED":
-            for name in [
-                "signal_type", "raw_decision", "plan_status", "trigger_type", "trigger_price",
-                "entry_zone_low", "entry_zone_high", "reference_price", "stop_loss",
-                "take_profit_1", "take_profit_2", "max_hold_days", "source_json",
-            ]:
-                updates[name] = record[name]
+        if previous_status in ACTIVE_STATUSES:
+            updates.update({
+                "raw_decision": record["raw_decision"],
+                "data_quality_status": record["data_quality_status"],
+                "score": record["score"],
+                "technical_quality": record["technical_quality"],
+                "entry_readiness": record["entry_readiness"],
+                "broker_confidence": record["broker_confidence"],
+                "broker_confidence_bucket": record["broker_confidence_bucket"],
+                "broker_direction": record["broker_direction"],
+                "market_regime": record["market_regime"],
+            })
+            # A waiting candidate can be upgraded to a confirmed plan.  Once
+            # OPEN, the original engine-owned plan is immutable.
+            if previous_status == "WAITING_TRIGGER" and record["current_status"] == "INVALIDATED_BEFORE_ENTRY":
+                updates.update({
+                    "current_status": "INVALIDATED_BEFORE_ENTRY",
+                    "final_outcome": "INVALIDATED",
+                    "exit_reason": "INVALID_PLAN_BEFORE_ENTRY",
+                })
+            elif previous_status == "WAITING_TRIGGER" and record["signal_type"] == "BUY CONFIRMED":
+                for name in [
+                    "signal_type", "raw_decision", "plan_status", "trigger_type", "trigger_price",
+                    "entry_zone_low", "entry_zone_high", "reference_price", "stop_loss",
+                    "take_profit_1", "take_profit_2", "max_hold_days", "source_json",
+                ]:
+                    updates[name] = record[name]
         assignments = ",".join(f"{key}=?" for key in updates)
         conn.execute(
             f"UPDATE signal_outcome_ledger SET {assignments} WHERE signal_id=?",
-            [*updates.values(), active["signal_id"]],
+            [*updates.values(), signal_id],
         )
-        return "UPDATED_ACTIVE"
+        new_status = norm_text(updates.get("current_status", previous_status))
+        if previous_status in ACTIVE_STATUSES and record.get("current_status") != "INVALIDATED_BEFORE_ENTRY":
+            record_lifecycle_event(
+                conn,
+                signal_id=signal_id,
+                symbol=record["symbol"],
+                event_type="SIGNAL_RECONFIRMED",
+                previous_status=previous_status,
+                new_status=new_status,
+                event_date=record["signal_date"],
+                event_price=record.get("reference_price"),
+                event_reason=f"SCAN:{record.get('raw_decision', '')}",
+            )
+        elif previous_status == "WAITING_TRIGGER" and new_status == "INVALIDATED_BEFORE_ENTRY":
+            record_lifecycle_event(
+                conn,
+                signal_id=signal_id,
+                symbol=record["symbol"],
+                event_type="INVALIDATED_BEFORE_ENTRY",
+                previous_status=previous_status,
+                new_status=new_status,
+                event_date=record["signal_date"],
+                event_price=record.get("reference_price"),
+                event_reason="INVALID_PLAN_BEFORE_ENTRY",
+            )
+        return "UPDATED_ACTIVE" if active or exact else "SKIPPED"
     columns = LEDGER_COLUMNS
     placeholders = ",".join("?" for _ in columns)
     cursor = conn.execute(
         f"INSERT OR IGNORE INTO signal_outcome_ledger ({','.join(columns)}) VALUES ({placeholders})",
         [record.get(col) for col in columns],
     )
-    return "INSERTED" if cursor.rowcount > 0 else "SKIPPED"
+    if cursor.rowcount > 0:
+        record_lifecycle_event(
+            conn,
+            signal_id=record["signal_id"],
+            symbol=record["symbol"],
+            event_type="INVALIDATED_BEFORE_ENTRY" if record["current_status"] == "INVALIDATED_BEFORE_ENTRY" else "SIGNAL_CREATED",
+            previous_status="",
+            new_status=record["current_status"],
+            event_date=record["signal_date"],
+            event_price=record.get("reference_price"),
+            event_reason=record.get("exit_reason") or "BUY_SIGNAL_REGISTERED",
+        )
+        return "INSERTED"
+    return "SKIPPED"
 
 
 def register_decision_file(
@@ -433,6 +640,17 @@ def register_decision_file(
     plans = read_csv(plans_path)
     result = RegisterResult()
     if decisions.empty:
+        for active in conn.execute(
+            "SELECT signal_id FROM signal_outcome_ledger WHERE current_status IN ('WAITING_TRIGGER','OPEN')"
+        ).fetchall():
+            _update_scan_metadata(
+                conn,
+                signal_id=active["signal_id"],
+                status="NOT_IN_LATEST_SCAN",
+                scan_date=default_signal_date,
+                run_id=run_id,
+            )
+        conn.commit()
         return result
     plan_lookup = plan_map(plans)
     symbol_col = find_col(decisions, "Symbol", "Ticker", "EMITEN")
@@ -456,29 +674,22 @@ def register_decision_file(
         if record is not None:
             records.append(record)
 
-    # A recommendation that is explicitly downgraded before its trigger is not
-    # a LOSS. It is cancelled and excluded from win-rate calculations.
-    active_waiting = conn.execute(
-        "SELECT signal_id,symbol FROM signal_outcome_ledger WHERE current_status='WAITING_TRIGGER'"
-    ).fetchall()
-    for active in active_waiting:
-        state = current_state.get(active["symbol"])
-        if state is None:
-            continue
-        raw_decision, current_record = state
-        invalidated = raw_decision not in TRACKED_DECISIONS or (
-            current_record is not None and current_record.get("current_status") == "INVALID_DATA"
-        )
-        if invalidated:
-            conn.execute(
-                """
-                UPDATE signal_outcome_ledger
-                SET current_status='CANCELLED', final_outcome='CANCELLED',
-                    exit_reason='SIGNAL_DOWNGRADED_BEFORE_TRIGGER', updated_at=?
-                WHERE signal_id=?
-                """,
-                (now_text(), active["signal_id"]),
-            )
+    # Scanner visibility is metadata only.  A downgrade or disappearance from
+    # today's scan never cancels an active recommendation.
+    scan_date = norm_text(default_signal_date)
+    if not scan_date:
+        date_candidates = []
+        for alias in ("Technical_Data_Date", "Latest_Valid_Candle_Date", "Date", "Signal_Date"):
+            column = find_col(decisions, alias)
+            if column:
+                date_candidates.extend(pd.to_datetime(decisions[column], errors="coerce").dropna().tolist())
+        if date_candidates:
+            scan_date = max(date_candidates).date().isoformat()
+    for active in conn.execute(
+        "SELECT signal_id,symbol FROM signal_outcome_ledger WHERE current_status IN ('WAITING_TRIGGER','OPEN')"
+    ).fetchall():
+        raw_decision, _ = current_state.get(active["symbol"], ("NOT_IN_LATEST_SCAN", None))
+        _update_scan_metadata(conn, signal_id=active["signal_id"], status=raw_decision, scan_date=scan_date, run_id=run_id)
 
     for record in records:
         action = upsert_signal(conn, record)
@@ -501,8 +712,9 @@ def bootstrap_from_legacy_db(conn: sqlite3.Connection, trigger_expiry_days: int 
                    e.entry,e.stop_loss,e.take_profit_1,e.take_profit_2,e.entry_status,e.row_json AS plan_json
             FROM watchlist_history w
             LEFT JOIN entry_exit_results e ON e.run_id=w.run_id AND e.symbol=w.symbol
-            WHERE w.lifecycle='NEW'
-              AND UPPER(w.decision) IN ('STRONG BUY','BUY','BUY CANDIDATE')
+            WHERE UPPER(w.decision) IN (
+                'STRONG BUY','BUY','BUY CANDIDATE','BUY READY','BUY ON TRIGGER','BUY CONFIRMED'
+            )
             ORDER BY w.signal_date,w.run_id,w.symbol
             """
         ).fetchall()
@@ -628,35 +840,63 @@ def ret_pct(price: float | None, entry: float | None) -> float | None:
 
 
 def evaluate_record(record: sqlite3.Row, price: pd.DataFrame) -> dict[str, Any]:
-    signal_date = pd.Timestamp(record["signal_date"])
-    future = price[price["Date"] > signal_date].copy().reset_index(drop=True)
     update: dict[str, Any] = {"updated_at": now_text()}
-    if future.empty:
+    status = norm_text(record["current_status"]).upper()
+    if status not in ACTIVE_STATUSES or price.empty:
         return update
-    trigger = first_trigger(record, future)
-    expiry = max(as_int(record["trigger_expiry_days"], 7), 1)
-    if trigger is None:
-        if len(future) >= expiry:
-            update.update({
-                "current_status": "EXPIRED",
-                "final_outcome": "EXPIRED",
-                "exit_reason": "TRIGGER_NOT_REACHED_WITHIN_WINDOW",
-            })
-        return update
-    entry_idx, entry_price = trigger
-    entry_date = future.loc[entry_idx, "Date"].date().isoformat()
-    update.update({
-        "current_status": "OPEN",
-        "trigger_date": entry_date,
-        "entry_date": entry_date,
-        "entry_price": entry_price,
-    })
+
+    trigger_type = norm_text(record["trigger_type"]).upper()
+    newly_triggered = status == "WAITING_TRIGGER"
+    if newly_triggered:
+        signal_date = pd.Timestamp(record["signal_date"])
+        future = price[price["Date"] > signal_date].copy().reset_index(drop=True)
+        if future.empty:
+            return update
+        trigger = first_trigger(record, future)
+        expiry = max(as_int(record["trigger_expiry_days"], 7), 1)
+        if trigger is None:
+            if len(future) >= expiry:
+                bar = future.iloc[expiry - 1]
+                update.update({
+                    "current_status": "EXPIRED",
+                    "final_outcome": "EXPIRED",
+                    "exit_date": bar["Date"].date().isoformat(),
+                    "exit_price": float(bar["Close"]),
+                    "exit_reason": "TRIGGER_NOT_REACHED_WITHIN_WINDOW",
+                    "_event_type": "EXPIRED",
+                    "_event_date": bar["Date"].date().isoformat(),
+                    "_event_price": float(bar["Close"]),
+                    "_event_reason": "TRIGGER_NOT_REACHED_WITHIN_WINDOW",
+                })
+            return update
+        entry_idx, entry_price = trigger
+        entry_date = future.loc[entry_idx, "Date"].date().isoformat()
+        update.update({
+            "current_status": "OPEN",
+            "trigger_date": entry_date,
+            "entry_date": entry_date,
+            "entry_price": entry_price,
+            "_event_type": "ENTRY_TRIGGERED",
+            "_event_date": entry_date,
+            "_event_price": entry_price,
+            "_event_reason": trigger_type,
+        })
+    else:
+        entry_date = norm_text(record["entry_date"])
+        entry_price = as_float(record["entry_price"])
+        if not entry_date or entry_price is None:
+            return update
+        entry_timestamp = pd.Timestamp(entry_date)
+        future = price[price["Date"] >= entry_timestamp].copy().reset_index(drop=True)
+        if future.empty:
+            return update
+        entry_idx = 0
+
     for days in [1, 3, 5, 7]:
         close = close_after(future, entry_idx, days)
         update[f"close_d{days}"] = close
         update[f"return_d{days}"] = ret_pct(close, entry_price)
 
-    trigger_type = norm_text(record["trigger_type"]).upper()
     evaluation_start = entry_idx + 1 if trigger_type == "CLOSE_ABOVE" else entry_idx
     max_hold = max(as_int(record["max_hold_days"], 20), 1)
     evaluation_end = min(evaluation_start + max_hold - 1, len(future) - 1)
@@ -679,15 +919,20 @@ def evaluate_record(record: sqlite3.Row, price: pd.DataFrame) -> dict[str, Any]:
         # Conservative daily-candle rule: if stop and target are both touched in
         # the same candle, stop is assumed first.
         if hit_stop:
+            reason = "STOP_LOSS_HIT" if not (hit_tp1 or hit_tp2) else "STOP_AND_TARGET_SAME_CANDLE_CONSERVATIVE"
             update.update({
                 "current_status": "CLOSED",
                 "final_outcome": "LOSS",
                 "sl_hit": 1,
                 "exit_date": bar["Date"].date().isoformat(),
                 "exit_price": stop,
-                "exit_reason": "STOP_LOSS_HIT" if not (hit_tp1 or hit_tp2) else "STOP_AND_TARGET_SAME_CANDLE_CONSERVATIVE",
+                "exit_reason": reason,
                 "holding_days": holding_days,
                 "realized_return_pct": ret_pct(stop, entry_price),
+                "_event_type": "STOP_LOSS_HIT",
+                "_event_date": bar["Date"].date().isoformat(),
+                "_event_price": stop,
+                "_event_reason": reason,
             })
             return update
         if hit_tp2:
@@ -701,6 +946,10 @@ def evaluate_record(record: sqlite3.Row, price: pd.DataFrame) -> dict[str, Any]:
                 "exit_reason": "TP2_HIT",
                 "holding_days": holding_days,
                 "realized_return_pct": ret_pct(tp2, entry_price),
+                "_event_type": "TP2_HIT",
+                "_event_date": bar["Date"].date().isoformat(),
+                "_event_price": tp2,
+                "_event_reason": "TP2_HIT",
             })
             return update
         if hit_tp1:
@@ -713,6 +962,10 @@ def evaluate_record(record: sqlite3.Row, price: pd.DataFrame) -> dict[str, Any]:
                 "exit_reason": "TP1_HIT",
                 "holding_days": holding_days,
                 "realized_return_pct": ret_pct(tp1, entry_price),
+                "_event_type": "TP1_HIT",
+                "_event_date": bar["Date"].date().isoformat(),
+                "_event_price": tp1,
+                "_event_reason": "TP1_HIT",
             })
             return update
 
@@ -730,6 +983,10 @@ def evaluate_record(record: sqlite3.Row, price: pd.DataFrame) -> dict[str, Any]:
             "exit_reason": "MAX_HOLD_EXIT",
             "holding_days": max_hold,
             "realized_return_pct": realized,
+            "_event_type": "MAX_HOLD_EXIT",
+            "_event_date": exit_bar["Date"].date().isoformat(),
+            "_event_price": float(exit_bar["Close"]),
+            "_event_reason": "MAX_HOLD_EXIT",
         })
     return update
 
@@ -751,6 +1008,10 @@ def update_outcomes(conn: sqlite3.Connection, historical_dir: Path) -> dict[str,
             continue
         counters["evaluated"] += 1
         changes = evaluate_record(record, prices)
+        event_type = norm_text(changes.pop("_event_type", "")).upper()
+        event_date = norm_text(changes.pop("_event_date", ""))
+        event_price = changes.pop("_event_price", None)
+        event_reason = norm_text(changes.pop("_event_reason", ""))
         if len(changes) > 1:
             assignments = ",".join(f"{key}=?" for key in changes)
             conn.execute(
@@ -758,6 +1019,44 @@ def update_outcomes(conn: sqlite3.Connection, historical_dir: Path) -> dict[str,
                 [*changes.values(), record["signal_id"]],
             )
             counters["updated"] += 1
+        if event_type:
+            previous_status = norm_text(record["current_status"])
+            new_status = norm_text(changes.get("current_status", previous_status))
+            if previous_status == "WAITING_TRIGGER" and changes.get("entry_date"):
+                record_lifecycle_event(
+                    conn,
+                    signal_id=record["signal_id"],
+                    symbol=record["symbol"],
+                    event_type="ENTRY_TRIGGERED",
+                    previous_status="WAITING_TRIGGER",
+                    new_status="OPEN" if new_status != "INVALIDATED_BEFORE_ENTRY" else new_status,
+                    event_date=str(changes["entry_date"]),
+                    event_price=changes.get("entry_price"),
+                    event_reason=norm_text(record["trigger_type"]),
+                )
+            record_lifecycle_event(
+                conn,
+                signal_id=record["signal_id"],
+                symbol=record["symbol"],
+                event_type=event_type,
+                previous_status=previous_status,
+                new_status=new_status,
+                event_date=event_date or record["signal_date"],
+                event_price=event_price,
+                event_reason=event_reason,
+            )
+            if new_status == "CLOSED" and event_type in {"TP1_HIT", "TP2_HIT", "STOP_LOSS_HIT", "MAX_HOLD_EXIT"}:
+                record_lifecycle_event(
+                    conn,
+                    signal_id=record["signal_id"],
+                    symbol=record["symbol"],
+                    event_type="CLOSED",
+                    previous_status=previous_status,
+                    new_status="CLOSED",
+                    event_date=event_date or record["signal_date"],
+                    event_price=event_price,
+                    event_reason=event_reason,
+                )
     conn.commit()
     return counters
 
@@ -769,6 +1068,143 @@ def ledger_df(conn: sqlite3.Connection) -> pd.DataFrame:
     )
 
 
+def _latest_price(historical_dir: Path, symbol: str) -> float | None:
+    prices = load_prices(historical_dir / f"{symbol}.csv")
+    if prices.empty:
+        return None
+    return as_float(prices.iloc[-1]["Close"])
+
+
+def active_recommendations_df(conn: sqlite3.Connection, historical_dir: Path) -> pd.DataFrame:
+    rows = conn.execute(
+        """
+        SELECT * FROM signal_outcome_ledger
+        WHERE current_status IN ('WAITING_TRIGGER','OPEN')
+        ORDER BY CASE current_status WHEN 'OPEN' THEN 0 ELSE 1 END, signal_date, symbol
+        """
+    ).fetchall()
+    if not rows:
+        return pd.DataFrame(columns=[*LEDGER_COLUMNS, "current_price", "simulated_return_pct", "age_sessions"])
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        current = _latest_price(historical_dir, item["symbol"])
+        base_price = as_float(item.get("entry_price")) or as_float(item.get("reference_price"))
+        item["current_price"] = current
+        item["simulated_return_pct"] = ret_pct(current, base_price)
+        prices = load_prices(historical_dir / f"{item['symbol']}.csv")
+        signal_date = pd.Timestamp(item["signal_date"])
+        item["age_sessions"] = int(len(prices[prices["Date"] > signal_date])) if not prices.empty else 0
+        output.append(item)
+    return pd.DataFrame(output)
+
+
+def portfolio_df(conn: sqlite3.Connection) -> pd.DataFrame:
+    return pd.read_sql_query(
+        "SELECT * FROM portfolio_positions ORDER BY buy_date DESC, symbol, position_id",
+        conn,
+    )
+
+
+def _resolve_signal_id(conn: sqlite3.Connection, symbol: str, signal_id: str = "") -> str:
+    if norm_text(signal_id):
+        found = conn.execute(
+            "SELECT signal_id FROM signal_outcome_ledger WHERE signal_id=?",
+            (norm_text(signal_id),),
+        ).fetchone()
+        if not found:
+            raise ValueError(f"SIGNAL_ID_NOT_FOUND:{signal_id}")
+        return str(found[0])
+    found = conn.execute(
+        """
+        SELECT signal_id FROM signal_outcome_ledger
+        WHERE symbol=? AND current_status IN ('WAITING_TRIGGER','OPEN')
+        ORDER BY signal_date DESC LIMIT 1
+        """,
+        (normalize_symbol(symbol),),
+    ).fetchone()
+    return str(found[0]) if found else ""
+
+
+def record_portfolio_buy(
+    conn: sqlite3.Connection,
+    *,
+    symbol: str,
+    quantity: float,
+    buy_price: float,
+    buy_date: str = "",
+    signal_id: str = "",
+    notes: str = "",
+    source_run_id: str = "",
+) -> str:
+    symbol = normalize_symbol(symbol)
+    quantity = float(quantity)
+    buy_price = float(buy_price)
+    if not symbol:
+        raise ValueError("SYMBOL_REQUIRED")
+    if quantity <= 0 or buy_price <= 0:
+        raise ValueError("QUANTITY_AND_PRICE_MUST_BE_POSITIVE")
+    buy_date = parse_date(buy_date) or datetime.now().astimezone().date().isoformat()
+    linked_signal = _resolve_signal_id(conn, symbol, signal_id)
+    position_id = hashlib.sha256(
+        "|".join([linked_signal, symbol, buy_date, f"{quantity:.8f}", f"{buy_price:.8f}"]).encode("utf-8")
+    ).hexdigest()[:24]
+    timestamp = now_text()
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO portfolio_positions (
+            position_id, signal_id, symbol, buy_date, quantity, buy_price,
+            current_status, sell_date, sell_price, realized_return_pct, notes,
+            source_run_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'OPEN', NULL, NULL, NULL, ?, ?, ?, ?)
+        """,
+        (position_id, linked_signal, symbol, buy_date, quantity, buy_price, norm_text(notes), norm_text(source_run_id), timestamp, timestamp),
+    )
+    conn.commit()
+    return position_id
+
+
+def record_portfolio_sell(
+    conn: sqlite3.Connection,
+    *,
+    position_id: str = "",
+    symbol: str = "",
+    sell_price: float,
+    sell_date: str = "",
+) -> str:
+    sell_price = float(sell_price)
+    if sell_price <= 0:
+        raise ValueError("SELL_PRICE_MUST_BE_POSITIVE")
+    sell_date = parse_date(sell_date) or datetime.now().astimezone().date().isoformat()
+    if norm_text(position_id):
+        row = conn.execute(
+            "SELECT * FROM portfolio_positions WHERE position_id=? AND current_status='OPEN'",
+            (norm_text(position_id),),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT * FROM portfolio_positions
+            WHERE symbol=? AND current_status='OPEN'
+            ORDER BY buy_date DESC LIMIT 1
+            """,
+            (normalize_symbol(symbol),),
+        ).fetchone()
+    if not row:
+        raise ValueError("OPEN_PORTFOLIO_POSITION_NOT_FOUND")
+    realized = ret_pct(sell_price, as_float(row["buy_price"]))
+    conn.execute(
+        """
+        UPDATE portfolio_positions
+        SET current_status='CLOSED', sell_date=?, sell_price=?, realized_return_pct=?, updated_at=?
+        WHERE position_id=?
+        """,
+        (sell_date, sell_price, realized, now_text(), row["position_id"]),
+    )
+    conn.commit()
+    return str(row["position_id"])
+
+
 def safe_ratio(numerator: float, denominator: float) -> float | None:
     return numerator / denominator * 100.0 if denominator else None
 
@@ -777,8 +1213,12 @@ def performance_row(group: pd.DataFrame, label: str) -> dict[str, Any]:
     quality = group["data_quality_status"].astype(str).str.upper() if "data_quality_status" in group.columns else pd.Series("UNKNOWN", index=group.index)
     raw_decisions = group["raw_decision"].astype(str).str.upper() if "raw_decision" in group.columns else pd.Series("", index=group.index)
     current_recommendations = group[raw_decisions.isin(CURRENT_RECOMMENDATION_DECISIONS)].copy()
-    valid = group[(group["current_status"] != "INVALID_DATA") & quality.isin(VALID_SIGNAL_QUALITY)].copy()
+    valid = group[
+        ~group["current_status"].isin({"INVALID_DATA", "INVALIDATED_BEFORE_ENTRY"})
+        & quality.isin(VALID_SIGNAL_QUALITY)
+    ].copy()
     excluded = len(group) - len(valid)
+    invalidated = int((group["current_status"] == "INVALIDATED_BEFORE_ENTRY").sum())
     triggered = valid[valid["entry_date"].notna() & (valid["entry_date"].astype(str) != "")]
     closed = valid[valid["final_outcome"].isin(FINAL_OUTCOMES)]
     wins = int((closed["final_outcome"] == "WIN").sum())
@@ -793,6 +1233,7 @@ def performance_row(group: pd.DataFrame, label: str) -> dict[str, Any]:
         "Current_Recommendations": len(current_recommendations),
         "Historical_Evaluated_Signals": len(valid),
         "Excluded_Invalid_Data": excluded,
+        "Invalidated_Before_Entry": invalidated,
         "Triggered": len(triggered),
         "Triggered_Lifecycle": len(triggered),
         "Trigger_Rate_Pct": safe_ratio(len(triggered), len(valid)),
@@ -889,10 +1330,86 @@ def telegram_report(overall: dict[str, Any], by_setup: pd.DataFrame, by_signal: 
     return "\n".join(lines)
 
 
-def export_reports(conn: sqlite3.Connection, output_dir: Path) -> dict[str, Any]:
+def _active_recommendations_telegram(active: pd.DataFrame) -> str:
+    lines = [
+        "📌 REKOMENDASI AKTIF",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"Total aktif: {len(active)} saham",
+    ]
+    if active.empty:
+        return "\n".join(lines + ["", "Belum ada rekomendasi aktif."])
+    for status, heading in (("OPEN", "📈 ACTIVE"), ("WAITING_TRIGGER", "⏳ WAITING ENTRY")):
+        subset = active[active["current_status"].astype(str).str.upper() == status]
+        if subset.empty:
+            continue
+        lines.extend(["", heading])
+        for _, row in subset.iterrows():
+            symbol = html.escape(str(row.get("symbol") or ""))
+            signal_date = html.escape(str(row.get("signal_date") or ""))
+            current = fmt_num(row.get("current_price"), 0)
+            if status == "OPEN":
+                entry = fmt_num(row.get("entry_price") or row.get("reference_price"), 0)
+                pnl = fmt(row.get("simulated_return_pct"), 2, "%")
+                lines.extend([
+                    "", symbol, f"Sinyal       : {signal_date}",
+                    f"Entry mesin  : {entry}", f"Harga kini   : {current}",
+                    f"P/L simulasi : {pnl}",
+                    f"TP1          : {fmt_num(row.get('take_profit_1'), 0)}",
+                    f"TP2          : {fmt_num(row.get('take_profit_2'), 0)}",
+                    f"SL           : {fmt_num(row.get('stop_loss'), 0)}",
+                    f"Umur posisi  : {int(row.get('age_sessions') or 0)} sesi",
+                ])
+            else:
+                low = fmt_num(row.get("entry_zone_low"), 0, "")
+                high = fmt_num(row.get("entry_zone_high"), 0, "")
+                entry = f"{low}–{high}" if low != "belum tersedia" and high != "belum tersedia" else (low or high)
+                lines.extend([
+                    "", symbol, f"Sinyal      : {signal_date}", f"Entry       : {entry}",
+                    f"Harga kini  : {current}",
+                    f"Status scan : {html.escape(str(row.get('latest_scan_status') or 'NOT_IN_LATEST_SCAN'))}",
+                    f"Umur sinyal : {int(row.get('age_sessions') or 0)} sesi",
+                ])
+    return "\n".join(lines)
+
+
+def _status_changes_telegram(events: list[sqlite3.Row]) -> str:
+    if not events:
+        return ""
+    lines = ["🔄 PERUBAHAN STATUS", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+    for event in events:
+        symbol = html.escape(str(event["symbol"] or ""))
+        previous = html.escape(str(event["previous_status"] or "-").replace("_", " "))
+        new = html.escape(str(event["new_status"] or "-").replace("_", " "))
+        reason = html.escape(str(event["event_reason"] or event["event_type"] or ""))
+        price = fmt_num(event["event_price"], 0)
+        lines.extend(["", f"✅ {symbol}", f"{previous} → {new}", f"{reason} di {price}"])
+    return "\n".join(lines)
+
+
+def export_reports(
+    conn: sqlite3.Connection,
+    output_dir: Path,
+    historical_dir: Path = DEFAULT_HISTORICAL,
+) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     df = ledger_df(conn)
     df.to_csv(output_dir / "SIGNAL_OUTCOME_LEDGER.csv", index=False, encoding="utf-8-sig")
+    active = active_recommendations_df(conn, historical_dir)
+    active.to_csv(output_dir / "ACTIVE_RECOMMENDATIONS.csv", index=False, encoding="utf-8-sig")
+    events = pd.read_sql_query(
+        "SELECT * FROM lifecycle_events ORDER BY event_date, created_at, symbol",
+        conn,
+    )
+    events.to_csv(output_dir / "LIFECYCLE_EVENTS.csv", index=False, encoding="utf-8-sig")
+    portfolio = portfolio_df(conn)
+    portfolio.to_csv(output_dir / "PORTFOLIO_POSITIONS.csv", index=False, encoding="utf-8-sig")
+    pending = pending_lifecycle_events(conn)
+    (output_dir / "ACTIVE_RECOMMENDATIONS_TELEGRAM.txt").write_text(
+        _active_recommendations_telegram(active), encoding="utf-8"
+    )
+    (output_dir / "STATUS_CHANGES_TELEGRAM.txt").write_text(
+        _status_changes_telegram(pending), encoding="utf-8"
+    )
     overall = performance_row(df, "ALL")
     overall["Start_Date"] = df["signal_date"].min() if not df.empty else "-"
     overall["End_Date"] = df["signal_date"].max() if not df.empty else "-"
@@ -919,6 +1436,11 @@ def export_reports(conn: sqlite3.Connection, output_dir: Path) -> dict[str, Any]
             "by_broker_confidence": str((output_dir / "PERFORMANCE_BY_BROKER_CONFIDENCE.csv").resolve()),
             "by_market_regime": str((output_dir / "PERFORMANCE_BY_MARKET_REGIME.csv").resolve()),
             "telegram_preview": str((output_dir / "PERFORMANCE_TELEGRAM.txt").resolve()),
+            "active_recommendations": str((output_dir / "ACTIVE_RECOMMENDATIONS.csv").resolve()),
+            "lifecycle_events": str((output_dir / "LIFECYCLE_EVENTS.csv").resolve()),
+            "portfolio_positions": str((output_dir / "PORTFOLIO_POSITIONS.csv").resolve()),
+            "active_recommendations_telegram": str((output_dir / "ACTIVE_RECOMMENDATIONS_TELEGRAM.txt").resolve()),
+            "status_changes_telegram": str((output_dir / "STATUS_CHANGES_TELEGRAM.txt").resolve()),
         },
     }
     (output_dir / "PERFORMANCE_SUMMARY.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
@@ -944,6 +1466,7 @@ def print_table(path: Path, title: str, section: str = "") -> None:
         print(f"Open             : {int(row.get('Open', 0))}")
         print(f"Expired          : {int(row.get('Expired', 0))}")
         print(f"Cancelled        : {int(row.get('Cancelled', 0))}")
+        print(f"Invalidated pre  : {int(row.get('Invalidated_Before_Entry', 0))}")
         print(f"Closed Outcomes  : {int(row.get('Closed_Outcomes', row.get('Closed', 0)))}")
         print(f"Win / Loss       : {int(row.get('Win', 0))} / {int(row.get('Loss', 0))}")
         print(f"Ambiguous        : {int(row.get('Ambiguous', 0))}")
@@ -1046,7 +1569,7 @@ def sync(args: argparse.Namespace) -> int:
             args.trigger_expiry_days,
         )
     updates = update_outcomes(conn, Path(args.historical_dir))
-    payload = export_reports(conn, Path(args.output_dir))
+    payload = export_reports(conn, Path(args.output_dir), Path(args.historical_dir))
     conn.close()
     overall = payload["overall"]
     print("\nOutcome Tracker selesai")
@@ -1061,6 +1584,42 @@ def sync(args: argparse.Namespace) -> int:
     print(f"Win rate         : {fmt(overall['Win_Rate_Pct'], 1, '%')}")
     print(f"Output           : {Path(args.output_dir).resolve()}")
     return 0
+
+
+def portfolio_command(args: argparse.Namespace) -> int:
+    conn = connect(Path(args.db))
+    try:
+        if args.portfolio_action == "record-buy":
+            position_id = record_portfolio_buy(
+                conn,
+                symbol=args.symbol,
+                quantity=args.quantity,
+                buy_price=args.price,
+                buy_date=args.buy_date,
+                signal_id=args.signal_id,
+                notes=args.notes,
+                source_run_id=args.source_run_id,
+            )
+            print(f"Portfolio BUY tercatat: {normalize_symbol(args.symbol)} position_id={position_id}")
+            return 0
+        if args.portfolio_action == "record-sell":
+            position_id = record_portfolio_sell(
+                conn,
+                position_id=args.position_id,
+                symbol=args.symbol,
+                sell_price=args.price,
+                sell_date=args.sell_date,
+            )
+            print(f"Portfolio SELL tercatat: position_id={position_id}")
+            return 0
+        frame = portfolio_df(conn)
+        if frame.empty:
+            print("Belum ada posisi portfolio.")
+        else:
+            print(frame.to_string(index=False, na_rep="-"))
+        return 0
+    finally:
+        conn.close()
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -1078,6 +1637,24 @@ def make_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("--trigger-expiry-days", type=int, default=7)
     sync_parser.add_argument("--bootstrap-db", action="store_true")
 
+    portfolio = sub.add_parser("portfolio", help="Maintain portfolio actual pengguna")
+    portfolio.add_argument("--db", default=str(DEFAULT_DB))
+    portfolio_sub = portfolio.add_subparsers(dest="portfolio_action", required=True)
+    buy = portfolio_sub.add_parser("record-buy", help="Catat pembelian aktual dari watchlist")
+    buy.add_argument("--symbol", required=True)
+    buy.add_argument("--quantity", required=True, type=float)
+    buy.add_argument("--price", required=True, type=float)
+    buy.add_argument("--buy-date", default="")
+    buy.add_argument("--signal-id", default="")
+    buy.add_argument("--notes", default="")
+    buy.add_argument("--source-run-id", default="")
+    sell = portfolio_sub.add_parser("record-sell", help="Catat penjualan posisi aktual")
+    sell.add_argument("--position-id", default="")
+    sell.add_argument("--symbol", default="")
+    sell.add_argument("--price", required=True, type=float)
+    sell.add_argument("--sell-date", default="")
+    portfolio_sub.add_parser("list", help="Tampilkan portfolio aktual")
+
     show = sub.add_parser("show", help="Show a generated performance section")
     show.add_argument("--output-dir", default=str(DEFAULT_OUTPUT))
     show.add_argument("--section", choices=["overall", "setup", "signal", "broker", "regime", "ledger"], default="overall")
@@ -1094,6 +1671,8 @@ def main() -> int:
     args = make_parser().parse_args()
     if args.command == "sync":
         return sync(args)
+    if args.command == "portfolio":
+        return portfolio_command(args)
     output = Path(args.output_dir)
     if args.command == "show":
         mapping = {
