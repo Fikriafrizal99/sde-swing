@@ -15,7 +15,7 @@ The versioned runtime now has one report boundary and one engine lineage:
 - The integrated parent passes one `run_id` to the engine child; Broker Fusion is reused within that run instead of being executed twice.
 - Individual `broker_multi_day` runs reconcile their published multi-day manifest to the preceding `broker_summary` run, while Full Manual keeps the shared run ID.
 
-The current workspace cannot complete a live end-to-end run yet: no Python executable is available, `data/output/market/SECTOR_ROTATION.json` is not present, and the newly wired multi-day engine outputs have not been generated in this workspace. The correct behavior is a clear validation failure, not an `UNKNOWN`, `DATA_NOT_AVAILABLE`, or `NOT_CONFIGURED` report.
+The current workspace cannot complete a live end-to-end run: the local Python 3.13 interpreter is available and the full suite passes, but ZAPI credentials are absent, `data/output/market/SECTOR_ROTATION.json` is not present, and the required Broker Fusion/multi-day artifacts are not ready. The correct behavior is a clear, specific validation failure rather than fabricated provider facts.
 
 ## Canonical pipeline
 
@@ -236,3 +236,237 @@ The official Full Manual stage graph remains the same ordered handlers as indivi
 | Full Manual vs individual parity | NOT TESTED — required runtime command blocked |
 
 Overall continuation gate: **NOT TESTED / WARNING**, not PASS.
+
+## Yahoo Incremental Audit (runtime continuation, 2026-08-04)
+
+This section supersedes the earlier Python-unavailable notes. Python 3.13.14 was found at the local interpreter path and the runtime audit was executed before the final commit pass.
+
+The canonical per-symbol store is `data/output/historical/by_symbol/<SYMBOL>.csv` for both reads and writes. The audit found 441 canonical symbol files, no duplicate dates, 431 files with a last stored date of 2026-08-04, and 10 files ending on 2026-08-03 before the first optimized run. The planner additionally found 22 latest candles that required quality repair. It did not find a reader/writer directory mismatch, `.JK` naming mismatch, timezone date shift, or global-minimum-start dependency.
+
+### Root Cause
+
+The excessive fetch was caused by the old unconditional five-calendar-day overlap. Every daily run put all 441 symbols on the network, including already-current symbols. Batch construction then grouped those requests by the fixed overlap date. The local canonical history was present and readable; it was not the cause.
+
+### Per-Symbol Request Planning
+
+The final planner records, per symbol, canonical path, existence, row count, first/last valid date, expected close date, missing market sessions, duplicate dates, internal gaps, mode, reason, exclusive request end, download/merge counts, write flag, and final status. Modes are now distinct:
+
+- `ALREADY_CURRENT`: no request and no per-symbol rewrite.
+- `MISSING_ONLY`: starts on the first missing IDX trading session.
+- `REPAIR_OVERLAP`: only for a detected integrity problem or explicit repair.
+- `FULL_BACKFILL`: only for the individual missing/empty/unreadable/invalid symbol.
+
+Batch grouping uses the tuple of mode, start, exclusive end, and reason. A lagging symbol cannot extend the request range for unrelated symbols. Weekend/holiday handling uses the IDX trading calendar.
+
+### Request Reduction
+
+| Measurement | Before | First optimized run | Reduction |
+|---|---:|---:|---:|
+| Network symbols | 441 | 32 | 92.7% |
+| Batch requests | 10 | 2 | 80.0% |
+| Downloaded rows | 2,215 | 164 | 92.6% |
+| Yahoo-stage duration | 82.000 s | 54.045 s | 34.1% |
+
+First optimized run `SDE-YAHOO-INCREMENTAL-AUDIT-20260804`: 409 current, 10 missing-only, 22 repair, 0 full backfill, 10 inserted rows, 15 updated rows, 416 unchanged files, 0 failed symbols, quality `VALID`.
+
+The later Full Manual steady-state run `SDE-FULL-MANUAL-20260804-102151-d8c4` required only 12 repair symbols in one batch: 72 rows downloaded, 0 inserted, 0 updated, all 441 files unchanged, and a 25.117 s Yahoo stage. This later run had different starting state and is reported as a steady-state observation, not as the direct before/after benchmark.
+
+### Runtime Before vs After and equality
+
+The live optimized run legitimately inserted the missing 2026-08-04 candle and repaired accepted rows. Consequently, whole-file runtime hashes for historical, technical, and candidate output differ from the pre-refresh hashes; those comparisons do not use identical input data and are not a valid same-input parity test.
+
+The historical merge regression constructs the old full-baseline result and the new incremental result from the same final rows and asserts equality. It passed in the last complete suite. Runtime hashes that should remain untouched downstream did remain identical:
+
+| Artifact | Before SHA-256 | After SHA-256 | Result |
+|---|---|---|---|
+| `FINAL_DECISION_V3.csv` | `6EA9B086...55C3F` | `6EA9B086...55C3F` | equal |
+| `ENTRY_PLANS.csv` | `99E4B0DD...C517F` | `99E4B0DD...C517F` | equal |
+| `FINAL_DECISION_V2.csv` | `C6E07493...2A5630` | `C6E07493...2A5630` | equal |
+
+Technical and candidate same-input runtime parity remains unestablished because the live candle set changed during validation. Broker Fusion did not complete with the new candidate set, so no new successful Broker Fusion parity claim is made.
+
+## START_SDE_SWING Menu Inventory
+
+All engine menus use `%PYTHON_CMD% -u run_sde_job_integrated.py --job <job>`. The BAT changes to its own directory, selects one interpreter, prints branch/Python/root, logs command and status fields, and does not open or create `.env`.
+
+| Menu | Label | Command / entry point | Dependency / expected output | Actual exit | Audit status | Problem or result |
+|---:|---|---|---|---:|---|---|
+| 1 | Full Manual | `--job full_manual --interactive-broker` | complete stage graph and final reports | 1 | FAILED | real Broker Fusion coverage failure, 18/40 (45%) < 80% |
+| 2 | Market Outlook | `--job market_outlook` | global/IHSG/sector facts | 0 | WARNING | engine warning; sector metadata unavailable, report skipped without Telegram |
+| 3 | Post Market | `--job post_market` | historical, technical snapshot, candidates | 0 | PASS | 439 technical successes, 2 short-history symbols, 40 candidates |
+| 4 | Broker Summary | `--job broker_summary` | current Post Market snapshot and broker source | 1 | FAILED | real coverage failure, missing 22/40 current candidates |
+| 5 | Broker Multi-Day | `--job broker_multi_day` | valid Broker Summary | 10 | WARNING | correctly `SKIPPED`; dependency failed, not a launcher failure |
+| 6 | Final Watchlist normal | `--job final_watchlist --interactive-broker` | valid market/broker/fusion artifacts | 10 | WARNING | correctly `SKIPPED`; dependency not ready |
+| 7 | Job Status | `--job job_status --no-telegram`, then status printer | latest unified job statuses | 0 | PASS | prints engine/report/delivery/overall fields |
+| 8 | Preview Existing | `--job final_watchlist --preview-existing --no-telegram` | same-date/hash canonical artifacts | 10 | WARNING | initial `Path` NameError fixed; retest reached canonical validation and correctly skipped |
+| 9 | Validation tests | `%PYTHON_CMD% -m pytest -q` | regression suite | 0 | PASS | last complete suite: 265 passed |
+| 10 | Open output | `start "" "data\output"` | existing output directory | — | NOT TESTED | GUI launch intentionally not executed in the audit shell |
+| 11 | Telegram test | `telegram_bot.py ... test` | Telegram credentials/network only | 1 before final mapping fix | NOT TESTED | chat ID absent; final source maps missing credentials to exit 10 / `SKIPPED_NOT_CONFIGURED`, but post-change runtime retest was blocked by execution quota |
+
+Menu summary: 11 selectable menus; PASS 3, WARNING 4, FAILED 2, NOT TESTED 2.
+
+## Menu Command Mapping and Exit Code Mapping
+
+`START_SDE_SWING.bat` has no `master_pipeline.py`, direct legacy `run_sde_job.py --job`, deleted script, user-specific absolute path, or mixed Python interpreter call. Preview uses `--preview-existing --no-telegram`. Telegram test is isolated and states that the engine is not rerun.
+
+| Exit | Launcher output |
+|---:|---|
+| 0 | `[OK] SUCCESS`, or `[OK WITH WARNING]` from latest status |
+| 10 | `[SKIPPED]` |
+| 20 | `[WAITING_DATA]` |
+| 30 | `[DUPLICATE]` |
+| 40 | `[LOCKED]` |
+| 50 | `[DELIVERY_FAILED]` with engine/report caveat |
+| other | `[FAILED] Runtime error` |
+
+Integrated early exits now persist `engine_status`, `report_status=NOT_RUN_ENGINE_EXIT`, and `delivery_status=SKIPPED_ENGINE_NOT_SUCCESSFUL`. Missing Telegram credentials in the standalone test are classified as `SKIPPED_NOT_CONFIGURED` with exit 10. Empty report payloads do not call delivery.
+
+## Failed Menu Root Causes and Menu Retest Results
+
+- The Market Outlook initial exit 1 was a mapping bug: the engine had `SUCCESS_WITH_WARNING`, while absent sector metadata made the report non-reportable. After the fix it exits 0, preserves the warning, writes no report payload, and does not call Telegram. The audit JSONL still truthfully records the report-source validation event as `ERROR`; therefore the production audit is not clean.
+- Preview Existing initially crashed on `NameError: Path`. Importing `Path` fixed the crash. Its exit 10 retest is an expected canonical dependency skip, not a false launcher failure.
+- Broker Summary remains a genuine failure. The current 40-symbol candidate set matches only 18 broker symbols. The 80% floor is intentionally unchanged.
+- Broker Multi-Day and both Final Watchlist modes cannot pass until the Broker Summary/canonical artifacts are ready. Exit 10 is displayed as `SKIPPED`, not `FAILED`.
+- Telegram direct test found an empty `TELEGRAM_CHAT_ID`. The final handler classifies this as not configured rather than delivery failure; no token or chat ID is logged.
+
+## Full Manual Stage Order
+
+The final source order is: global market preparation; Post Market (Yahoo historical refresh, technical generation, snapshot/candidate preparation); technical snapshot validation; universe selection; candidate selection; Market Outlook (sector rotation and IHSG facts); Broker Summary; Broker Multi-Day; Final Watchlist (Decision, Exit, analytics, database, validated report assembly, narrative, and delivery). Reports are suppressed inside intermediate handlers and assembled/delivered only after the stage graph succeeds. A zero-payload report is never sent.
+
+The observed no-Telegram Full Manual ran for 124.4 s and exited 1 at Broker Summary after all earlier stages succeeded. The final small source-order cleanup and explicit early-exit status split were statically validated but could not be runtime-retested after the local execution quota was exhausted.
+
+## Final Verification and Remaining Blockers
+
+| Check | Result |
+|---|---|
+| Last complete `pytest -q` | PASS: 265 passed in 35.96 s |
+| Yahoo regression set at that point | PASS: 14 cases |
+| Launcher targeted set at that point | PASS: 11 cases |
+| Final post-patch pytest rerun | NOT TESTED: local privileged-execution quota exhausted; two additional regression methods and stricter launcher assertions were added afterward |
+| JSON parse: pipeline/scheduler/data-sources | PASS |
+| `git diff --check` | PASS |
+| BAT static path/job/exit-map validation | PASS |
+| Audit JSONL | WARNING: Post Market success plus explicit Market Outlook sector-source errors |
+
+Remaining blockers are operational and explicit: Broker Summary coverage is 45% versus the unchanged 80% floor; sector metadata is absent; Broker Multi-Day and Final Watchlist dependencies therefore cannot pass; the Telegram chat ID is not configured; technical/candidate same-input runtime parity was not established; and the final post-patch regression additions were not executable after the quota limit. Production readiness remains **NO**.
+
+## ZAPI Architecture
+
+The latest-candle validator now runs inside `run_post_market_technical_stage()` immediately after the Yahoo refresh manifest is read and before the IHSG updater, technical engine, candidate selector, and snapshot creation. The integrated parent reuses the reconciliation already stored by the engine; it no longer performs a second request after the engine has completed.
+
+```text
+Yahoo refresh -> closed-candle date + 441 canonical symbols
+              -> ZAPI /stock-summary validation
+              -> per-run CSV/JSON + JSONL audit
+              -> blocking/degraded gate
+              -> technical (Yahoo OHLCV unchanged)
+              -> candidate -> snapshot with reconciliation summary
+              -> validated report facts -> Gemini narrative guard
+              -> Telegram formatter
+```
+
+Yahoo remains the canonical historical/technical series. ZAPI is a validator/enrichment provider and never writes into a historical CSV. This preserves scoring, indicator, ranking, decision, and entry-plan formulas.
+
+### Implementation inventory
+
+| Component | File / symbol | Input | Output / consumer | Runtime status | Tests | Problem / disposition |
+|---|---|---|---|---|---|---|
+| Config loader | `modules/data_sources/config.py::SourceConfig` | `config/data_sources.json`, environment | typed timeout/retry/backoff/rate/cache/freshness/coverage config | PASS | schema suite | secrets remain environment-only |
+| HTTP transport | `HttpZapiTransport` | base URL, `x-api-key`, query | validated JSON or typed source error | IMPLEMENTED, NOT LIVE-CALLED | documented adapter tests | live credentials absent |
+| Client routing | `ZapiIdxClient` | canonical record type | documented endpoint payload | PASS in fixture | adapter suite | unconfigured runtime can no longer emit mock facts |
+| Normalization | `canonical_symbol`, `provider_symbol`, `ZapiIdxAdapter` | `BBCA`, `BBCA.JK`, `IDX:BBCA`, `^JKSE` | canonical `BBCA` / `IHSG`; provider `COMPOSITE` | PASS | ZAPI E2E | no hidden suffix mismatch |
+| Reconciliation | `validate_yahoo_against_zapi` | Yahoo files + ZAPI daily bars | rich per-symbol status and lineage | PASS in fixture; SKIPPED live | ZAPI E2E | live key missing |
+| Technical gate | `run_post_market_technical_stage` | reconciliation summary | stop on blocking; warning metadata on non-blocking | PASS structurally; blocking proven live | full suite | does not alter candle values or scores |
+| Snapshot | `create_technical_snapshot` | technical/candidate artifacts + reconciliation | immutable summary and exact manifest path | IMPLEMENTED | full suite | new live snapshot blocked by missing credential |
+| Report bridge | `validate_post_market_sources`, `enhanced_runtime_bridge` | snapshot + reconciliation JSON | Yahoo/ZAPI/Stockbit facts | PASS in fixture | ZAPI E2E | legacy snapshots show `ZAPI_LINEAGE_MISSING` |
+| Gemini | `GeminiInterpreter` | validated facts | narrative only | PASS | ZAPI E2E | ZAPI/provenance fields immutable |
+| Telegram | `daily_report_ui` | report facts | compact source provenance | PASS in fixture | ZAPI E2E | live delivery not attempted |
+| Sector metadata | `sector_rotation.py` | configured sector metadata file | sector rotation | NOT IMPLEMENTED for ZAPI | existing fail-closed tests | `/companies` + `/securities` adapter exists, but runtime producer is not wired |
+| Foreign flow | canonical source config | verified provider mapping | separate foreign metric | NOT IMPLEMENTED | unsupported-contract tests | no verified canonical endpoint; not replaced with Stockbit broker flow |
+
+## Endpoint Inventory
+
+| Logical type | Endpoint | Parameters | Symbol/date/time contract | Runtime result |
+|---|---|---|---|---|
+| Latest IDX candle | `/stock-summary` | `length`, `start`, `date`, `code` | code without `.JK`; date `YYYY-MM-DD`; naive timestamps interpreted Asia/Jakarta | implemented; 0 live calls because authentication gate stopped first |
+| Market index | `/index-summary` | `length`, `start`, `date` | `IHSG` maps to provider code `COMPOSITE` | adapter implemented; not called by official runtime |
+| Company metadata | `/companies` | `length`, `start`, `code` | canonical IDX code | adapter implemented; not called by official runtime |
+| Security metadata | `/securities` | `length`, `start`, `code`, `sector`, `board` | canonical IDX code | adapter implemented; not called by official runtime |
+| Trading status | `/market-activity` | `type=suspend|relisting|uma` | response company code canonicalized | adapter implemented; not called by official runtime |
+| Foreign flow | none verified | â€” | â€” | NOT IMPLEMENTED |
+| Broker flow | Stockbit, not ZAPI | â€” | separate contract | unchanged |
+
+Transport validation covers HTTP status, authentication failure, 429 retry-after, JSON content type, response envelope, list/activity schema, pagination integers, required shape, numeric conversion, null handling, timestamps, and empty rows. Sanitized response fixtures remain under `tests/fixtures/zapi_idx/`.
+
+## Source Allocation and Policies
+
+| Field / record | Primary | Fallback | Blocking | Freshness / coverage | Consumer |
+|---|---|---|---|---|---|
+| Historical OHLCV and technical series | Yahoo / `HISTORICAL_PROVIDER` | none | Yahoo failure policy | IDX last closed candle | technical engine |
+| Latest IDX candle validation | ZAPI IDX | Yahoo remains selected source, not overwritten | scheduler `non_blocking=false` means blocking | max 1 day; min 90% | data-quality gate and provenance |
+| Broker Flow | Stockbit | none | existing broker readiness policy | existing 80% floor | Broker Fusion / Decision |
+| Symbol/trading metadata | ZAPI IDX | none | not yet in runtime | endpoint-specific | candidate context (NOT IMPLEMENTED) |
+| Sector metadata | ZAPI IDX when runtime producer exists | none | fail-closed | rotation minimum coverage | Market Outlook (NOT IMPLEMENTED) |
+| Foreign Flow | ZAPI IDX only after verified mapping | none | non-fabricating | not configured | NOT IMPLEMENTED |
+
+Reconciliation statuses are `MATCH`, `MATCH_WITH_TOLERANCE`, `STALE_ZAPI`, `STALE_YAHOO`, `DATE_MISMATCH`, `PRICE_MISMATCH`, `MISSING_ZAPI`, `MISSING_YAHOO`, and `INVALID_SCHEMA`. Price tolerance is 0.5%; volume difference is recorded independently with a 20% configured tolerance. Each row records both dates, OHLCV, differences, timestamps, freshness, blocking flag, `selected_source=YAHOO`, `enrichment_source`, endpoint, and error.
+
+## Field Lineage Matrix
+
+| Field | Produced / stored | Consumer | Report | Telegram | Status |
+|---|---|---|---|---|---|
+| `zapi_status` / reconciliation status | reconciliation JSON -> technical snapshot | report validation / bridge | yes | yes | PASS in fixture |
+| ZAPI trade date and OHLCV | per-run reconciliation JSON/CSV | audit and symbol report mapping | per-symbol when live artifact exists | status/freshness only | PASS in fixture |
+| close/OHLC difference % | reconciliation JSON/CSV | blocking/degraded gate | validation details | no (kept compact) | PASS |
+| ZAPI coverage | reconciliation summary -> snapshot | Post Market report | yes | yes | PASS in fixture |
+| Yahoo selected source | every reconciliation row | technical contract | yes | yes | PASS |
+| Stockbit broker availability | final decision facts | Final Watchlist | yes | yes | PASS in fixture |
+| sector/index membership | canonical adapters only | none | no | no | NOT IMPLEMENTED |
+| ZAPI foreign net | no verified producer | none | no | no | NOT IMPLEMENTED |
+
+## Failure Modes
+
+Credential absence is `SKIPPED_NOT_CONFIGURED` with reason `ZAPI_MISSING_CREDENTIAL`, request count zero, and explicit per-symbol `MISSING_ZAPI`; when scheduler mode is blocking, Post Market stops at source validation before technical generation. Disabled configuration is `ZAPI_DISABLED`. Timeout, 401/403, 429, non-JSON content, invalid schema, empty response, missing symbol, stale dates, date mismatch, price mismatch, and partial coverage have typed errors/statuses and never create zeros or mock-labelled live data.
+
+## Report, Gemini, Telegram, and Audit Mapping
+
+Post Market facts include Yahoo status, ZAPI status, ZAPI coverage, reconciliation status, Stockbit waiting status, and degraded reason. Final Watchlist loads the exact reconciliation JSON referenced by the latest technical snapshot and maps status/freshness by symbol. Gemini receives these fields only after report validation and treats them as immutable. Telegram appends a compact `SOURCE PROVENANCE` block and does no provider lookup or recomputation.
+
+Every reconciliation run writes a run-scoped JSON and CSV, date alias files, and `zapi_reconciliation_audit.jsonl`. Summary lineage contains run ID, trade date, config version, provider, logical endpoints, endpoint request counts, success/failure counts, coverage, freshness limit, reconciliation counts, selected/enrichment sources, blocking state/failures, warnings, inputs, and outputs.
+
+## Runtime Test Results and Yahoo-only vs Yahoo+ZAPI Diff
+
+Targeted ZAPI integration tests passed **21/21**. The full regression suite passed **273/273 in 18.55 s**. The integration test uses a sanitized ZAPI-shaped raw response through client, adapter, canonical mapping, reconciliation, persisted lineage, report facts, Gemini guard, and Telegram formatting.
+
+Live Full Manual run `SDE-FULL-MANUAL-20260804-105518-ed87` refreshed 441 Yahoo symbols, then stopped at the intended boundary with exit 1: `ZAPI_SOURCE_VALIDATION_BLOCKED: ZAPI_MISSING_CREDENTIAL`. Its reconciliation manifest requested 441 symbols, made 0 endpoint calls, succeeded for 0, coverage 0%, recorded 441 `MISSING_ZAPI` rows, and persisted `blocking=true` with one stage-level blocking failure. Final Watchlist preview run `SDE-FINAL-WATCHLIST-20260804-105201-5eae` returned process exit 1 while its canonical job status is exit 10 / `SKIPPED`; dependencies were invalid due config-hash mismatch, missing Broker Fusion manifest, and insufficient sector rotation.
+
+The code-level equality contract is stronger after this change: ZAPI never mutates Yahoo files and no ZAPI field is passed as a technical/candidate/decision/entry scoring input. The 273-test regression suite passed, but a live Yahoo-only versus live Yahoo+ZAPI comparison cannot be produced without credentials. Therefore technical, candidate, decision, and entry-plan live equality are **NOT TESTED**, not claimed.
+
+## ZAPI Stage Status
+
+| Stage | Status | Evidence / blocker |
+|---|---|---|
+| ZAPI Config | PASS | env-only secrets plus timeout/retry/backoff/rate/cache/freshness/coverage/blocking |
+| ZAPI Fetch | NOT TESTED live | missing credential; adapter fixture PASS |
+| Normalization | PASS | symbol/time/response tests |
+| Reconciliation | PASS fixture / WARNING live | 441 symbols skipped before request |
+| Technical Integration | PASS contract | gate is before technical; live success blocked |
+| Candidate Integration | PASS provenance / NOT IMPLEMENTED metadata filtering | no scoring change |
+| Sector Metadata | NOT IMPLEMENTED | runtime producer absent |
+| Foreign Flow | NOT IMPLEMENTED | no verified mapping |
+| Decision Integration | PASS informational contract | no hidden `ZAPI missing -> AVOID` branch |
+| Exit Integration | PASS informational contract | no exit-side ZAPI request |
+| Report Facts | PASS fixture | live success unavailable |
+| Gemini | PASS | immutable field guard |
+| Telegram | PASS fixture / NOT TESTED live | credentials/delivery not invoked |
+| Lineage | PASS | run-scoped JSON/CSV + JSONL |
+| End-to-End | FAILED live | no ZAPI credentials; therefore not fully implemented in production |
+
+### Remaining ZAPI blockers
+
+- Configure `ZAPI_IDX_BASE_URL` and `ZAPI_IDX_API_KEY` outside the repository, then repeat Full Manual.
+- Wire verified `/companies` + `/securities` output into the sector metadata contract with coverage gating.
+- Verify and implement a real foreign-flow endpoint/schema; keep it separate from Stockbit Broker Flow.
+- Obtain one successful live ZAPI run to establish endpoint counts, full coverage/freshness, report/Telegram output, and same-input Yahoo-only parity.
+
+Production readiness remains **NO** and ZAPI status is **PARTIALLY IMPLEMENTED / LIVE BLOCKED**, not fully implemented.
