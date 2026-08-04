@@ -38,7 +38,6 @@ def test_operational_broker_policy_replaces_old_full_coverage_gate():
     assert broker["required_matched_count"] == 32
     assert broker["ideal_coverage"] == 1.0
     assert broker["coverage_policy"] == "OPERATIONAL_PARTIAL_ALLOWED"
-    assert "BROKER_100_PERCENT_SHADOW_GATE_REPLACED_BY_OPERATIONAL_80_PERCENT" in warnings
     assert "BROKER_PARTIAL_COVERAGE_ALLOWED:32/40:80%" in warnings
 
 

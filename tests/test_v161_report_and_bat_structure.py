@@ -99,13 +99,14 @@ class V161ReportAndBatStructureTests(unittest.TestCase):
             self.assertEqual(len(frame), 1)
             self.assertFalse((tmp / "input" / "BROKER_RAW_LATEST.csv").exists())
 
-    def test_root_only_contains_five_daily_bat_files(self) -> None:
+    def test_root_only_contains_daily_bat_files_and_v17_launcher(self) -> None:
         expected = {
             "RUN_SDE.bat",
             "RUN_MARKET_OUTLOOK.bat",
             "RUN_POST_MARKET.bat",
             "RUN_FINAL_WATCHLIST.bat",
             "CHECK_SDE_STATUS.bat",
+            "START_SDE_SWING.bat",
         }
         actual = {path.name for path in ROOT.glob("*.bat")}
         self.assertEqual(actual, expected)

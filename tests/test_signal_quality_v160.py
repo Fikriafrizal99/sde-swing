@@ -60,7 +60,9 @@ class SignalQualityV160Tests(unittest.TestCase):
 
     def test_invalid_stop_and_maximum_risk_paths_keep_volume_confirmation_none(self) -> None:
         row, px = self._exit_regression_inputs()
-        with patch("modules.exit_engine.exit_engine.determine_stop", return_value=(100.0, "TEST")):
+        # Isolate the stop/risk branches from the earlier SIDEWAYS conditional.
+        row["Market_Regime"] = "BULL"
+        with patch("modules.exit_engine.exit_engine.determine_stop", return_value=(101.0, "TEST")):
             invalid = build_entry_plan(row, px, 1.0, 2.0, 7.0, 20)
         self.assertEqual(invalid["Rejection_Reason"], "INVALID_STOP")
         self.assertIsNone(invalid["Volume_Confirmation_Pass"])

@@ -81,8 +81,11 @@ def test_data_source_config_loads_and_validates():
     assert zapi.enabled is True
     assert zapi.documentation_configured is True
     # Ownership chains resolve to known sources.
-    assert cfg.resolution_chain("DailyBar")[0] == "ZAPI_IDX"
+    # Yahoo/historical remains canonical; ZAPI is a separate latest-candle
+    # validation path and must not silently replace the technical series.
+    assert cfg.resolution_chain("DailyBar") == ["HISTORICAL_PROVIDER"]
     assert cfg.resolution_chain("BrokerFlow") == ["STOCKBIT"]
+    assert cfg.resolution_chain("ForeignFlow") == ["ZAPI_IDX"]
     # Technical indicators are internal only.
     assert cfg.ownership_for("TechnicalIndicator").primary == "INTERNAL"
 

@@ -26,7 +26,8 @@ def test_runtime_config_provenance_and_audit_are_deterministic(tmp_path: Path) -
     source.write_text(json.dumps(_active_config(), indent=2), encoding="utf-8")
 
     payload, provenance = load_runtime_config(source, strict=True)
-    assert provenance["validation_status"] == "VALID"
+    assert provenance["validation_status"] == "VALID_WITH_WARNINGS"
+    assert provenance["validation_warnings"] == ["BROKER_PARTIAL_COVERAGE_ALLOWED:32/40:80%"]
     assert provenance["config_hash"] == file_sha256(source)
     assert provenance["config_version"] == PACKAGE_VERSION
     assert provenance["pipeline_version"] == PIPELINE_VERSION

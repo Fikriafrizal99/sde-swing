@@ -20,6 +20,7 @@ import modules.historical_downloader.historical_downloader as hist_dl
 from modules.historical_downloader.historical_downloader import (
     FULL_BACKFILL,
     INCREMENTAL_UPDATE,
+    REPAIR_OVERLAP,
     SKIP_ALREADY_CURRENT,
     build_refresh_plan,
     build_result,
@@ -59,8 +60,12 @@ def broker_summary(symbols: list[str], broker_date: str) -> pd.DataFrame:
 def downloader_args(**overrides: object) -> SimpleNamespace:
     defaults = {
         "force_refresh": False,
+        "repair": False,
         "full_backfill": False,
         "incremental_overlap_days": 5,
+        "repair_overlap_sessions": 5,
+        "market_holiday": [],
+        "special_trading_day": [],
         "start": None,
         "end": None,
         "period": "2y",
@@ -146,14 +151,14 @@ class SwingV12Tests(unittest.TestCase):
             self.assertEqual(plan.download_start_date, "")
             self.assertEqual(plan.download_end_date, "")
 
-    def test_yahoo_incremental_uses_safety_overlap(self) -> None:
+    def test_yahoo_daily_incremental_requests_first_missing_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             destination = Path(tmp) / "BBCA.csv"
             ohlcv_rows("BBCA", ["2026-07-17"]).to_csv(destination, index=False)
-            plan = build_refresh_plan("BBCA", destination, downloader_args(incremental_overlap_days=5), date(2026, 7, 20))
+            plan = build_refresh_plan("BBCA", destination, downloader_args(), date(2026, 7, 20))
             self.assertEqual(plan.refresh_action, INCREMENTAL_UPDATE)
             self.assertEqual(plan.local_latest_valid_date, "2026-07-17")
-            self.assertEqual(plan.download_start_date, "2026-07-12")
+            self.assertEqual(plan.download_start_date, "2026-07-20")
             self.assertEqual(plan.download_end_date, "2026-07-21")
 
     def test_yahoo_multiple_run_same_day_second_run_skips_current(self) -> None:
@@ -211,8 +216,8 @@ class SwingV12Tests(unittest.TestCase):
             partial.loc[1, "Close"] = pd.NA
             partial.loc[1, "Adj Close"] = pd.NA
             partial.to_csv(destination, index=False)
-            plan = build_refresh_plan("BBCA", destination, downloader_args(incremental_overlap_days=3), date(2026, 7, 20))
-            self.assertEqual(plan.refresh_action, INCREMENTAL_UPDATE)
+            plan = build_refresh_plan("BBCA", destination, downloader_args(repair_overlap_sessions=3), date(2026, 7, 20))
+            self.assertEqual(plan.refresh_action, REPAIR_OVERLAP)
             self.assertEqual(plan.download_start_date, "2026-07-14")
 
     def test_yahoo_batch_download_splits_multi_symbol_response(self) -> None:
@@ -277,13 +282,13 @@ class SwingV12Tests(unittest.TestCase):
         self.assertTrue(all(payload.provider_status == "success" for payload in payloads.values()))
         self.assertEqual(len(fake.calls), 3)
 
-    def test_yahoo_force_refresh_is_incremental_overlap(self) -> None:
+    def test_yahoo_force_refresh_is_explicit_repair_overlap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             destination = Path(tmp) / "BBCA.csv"
             ohlcv_rows("BBCA", ["2026-07-20"]).to_csv(destination, index=False)
             plan = build_refresh_plan("BBCA", destination, downloader_args(force_refresh=True), date(2026, 7, 20))
-            self.assertEqual(plan.refresh_action, INCREMENTAL_UPDATE)
-            self.assertEqual(plan.download_start_date, "2026-07-15")
+            self.assertEqual(plan.refresh_action, REPAIR_OVERLAP)
+            self.assertEqual(plan.download_start_date, "2026-07-13")
 
     def test_yahoo_full_backfill_requires_explicit_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
