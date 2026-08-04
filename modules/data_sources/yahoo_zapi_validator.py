@@ -144,6 +144,7 @@ def validate_yahoo_against_zapi(
     special_trading_days: Iterable[Any] = (),
     max_date_fallback_sessions: int = 10,
     bulk_page_size: int = 100,
+    block_on_price_mismatch: bool = True,
 ) -> dict[str, Any]:
     """Validate Yahoo bars against live ZAPI and persist per-run lineage."""
     folder = Path(historical_dir)
@@ -450,7 +451,11 @@ def validate_yahoo_against_zapi(
             "freshness_days": stale_days,
             "trading_status": "NOT_FETCHED",
             "status": status,
-            "blocking": bool(blocking and status in PROBLEM_STATUSES),
+            "blocking": bool(
+                blocking
+                and status in PROBLEM_STATUSES
+                and (status != "PRICE_MISMATCH" or block_on_price_mismatch)
+            ),
             "selected_source": "YAHOO",
             "enrichment_source": "ZAPI_IDX" if zapi_record else "NONE",
             "endpoint": getattr(zapi_record, "source_record_id", "").split(":", 1)[0] if zapi_record else "/stock-summary",
@@ -488,6 +493,7 @@ def validate_yahoo_against_zapi(
         "batch_mode": "BULK_PAGINATED" if bulk_available else "PER_SYMBOL_FALLBACK",
         "bulk_page_size": bulk_page_size,
         "bulk_symbols_indexed": len(bulk_records),
+        "block_on_price_mismatch": block_on_price_mismatch,
         "config_version": cfg.config_version,
         "status": status,
         "reason": "MINIMUM_COVERAGE_NOT_MET" if coverage_failed else "",

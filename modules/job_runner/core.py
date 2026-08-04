@@ -289,6 +289,7 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
             "read_timeout_seconds": source_cfg.read_timeout_seconds if source_cfg else None,
             "retries": source_cfg.retry if source_cfg else 0,
             "backoff_base_seconds": source_cfg.backoff_base_seconds if source_cfg else 0,
+            "block_on_price_mismatch": bool(validation_cfg.get("block_on_price_mismatch", True)),
         }
         append_job_log(ctx, "ZAPI_VALIDATION_START", __import__("json").dumps(start_detail))
 
@@ -314,6 +315,7 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
                     market_holidays=freshness.get("market_holidays", []),
                     special_trading_days=freshness.get("special_trading_days", []),
                     bulk_page_size=int(validation_cfg.get("bulk_page_size", 100) or 100),
+                    block_on_price_mismatch=bool(validation_cfg.get("block_on_price_mismatch", True)),
                 )
         except Exception as exc:
             append_job_log(ctx, "ZAPI_RECONCILIATION_EXCEPTION", __import__("traceback").format_exc())

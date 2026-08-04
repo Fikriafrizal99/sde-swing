@@ -153,6 +153,32 @@ def test_reconciliation_tolerance_mismatch_and_stale(tmp_path: Path):
     assert stale["rows"][0]["status"] == "STALE_YAHOO"
 
 
+def test_price_mismatch_can_be_warning_without_blocking_source_availability(tmp_path: Path):
+    cfg = tmp_path / "sources.json"
+    _config(cfg)
+    historical = tmp_path / "history"
+    historical.mkdir()
+    _yahoo(historical / "BBCA.csv", close=1100.0)
+
+    result = validate_yahoo_against_zapi(
+        historical_dir=historical,
+        symbols=["BBCA"],
+        market_date="2026-01-02",
+        output_dir=tmp_path / "out",
+        config_path=cfg,
+        client=_client(),
+        price_tolerance_pct=0.005,
+        blocking=True,
+        block_on_price_mismatch=False,
+        run_id="PRICE-WARNING",
+    )
+
+    assert result["status"] == "SUCCESS_WITH_WARNING"
+    assert result["reconciliation_counts"]["PRICE_MISMATCH"] == 1
+    assert result["blocking_failures"] == 0
+    assert result["rows"][0]["blocking"] is False
+
+
 def test_date_resolution_uses_unfiltered_probe_and_one_source_date(tmp_path: Path):
     live_payload = json.loads(
         (Path(__file__).resolve().parents[1] / "tests/fixtures/zapi_idx/stock_summary_live_20260803.json")
