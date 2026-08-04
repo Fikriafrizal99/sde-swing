@@ -400,6 +400,15 @@ class ZapiIdxClient(SourceClient):
 
         if record_type == "SymbolMetadata":
             company = self._fetch_endpoint(specs[0], symbol, kwargs)
+            # Sector rotation only needs the company directory.  Allow that
+            # presentation-only cache to avoid an unnecessary securities
+            # request while preserving the canonical SymbolMetadata contract
+            # (which still fetches both endpoints by default).
+            if bool(kwargs.pop("companies_only", False)):
+                return {
+                    "companies": company,
+                    "_zapi_endpoints": [specs[0].path],
+                }
             security = self._fetch_endpoint(specs[1], symbol, kwargs)
             return {
                 "companies": company,
@@ -693,6 +702,8 @@ def _unwrap_payload(payload: Any) -> Any:
 def _normalize_response(spec: ZapiEndpoint, payload: Any) -> Any:
     if spec.path == "/stock-summary":
         return _normalize_stock_summary_response(payload)
+    if spec.path in {"/companies", "/securities"}:
+        return _normalize_list_response(payload)
     return payload
 
 
@@ -720,6 +731,22 @@ def _normalize_stock_summary_response(response_json: Any) -> dict[str, Any]:
     normalized["_zapi_normalized_stock_summary"] = True
     normalized["_zapi_status"] = "SUCCESS" if rows else "ZAPI_EMPTY_DATASET"
     return normalized
+
+
+def _normalize_list_response(response_json: Any) -> dict[str, Any]:
+    """Unwrap live list endpoints that expose ``data.data`` envelopes."""
+    if not isinstance(response_json, Mapping):
+        raise SourceUnavailable(C.ZAPI_RESPONSE_INVALID)
+    nested = response_json.get("data")
+    if isinstance(nested, Mapping) and isinstance(nested.get("data"), list):
+        rows = nested["data"]
+        if any(not isinstance(row, Mapping) for row in rows):
+            raise SourceUnavailable(C.ZAPI_RESPONSE_INVALID)
+        normalized = dict(nested)
+        normalized["data"] = [dict(row) for row in rows]
+        normalized["_zapi_normalized_list"] = True
+        return normalized
+    return dict(response_json)
 
 
 def _validate_response(spec: ZapiEndpoint, payload: Any) -> None:

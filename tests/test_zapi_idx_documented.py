@@ -149,6 +149,55 @@ def test_live_stock_summary_wrapper_and_actual_schema_are_supported():
     assert record.foreign_sell == 2396100.0
 
 
+def test_live_metadata_wrappers_are_unwrapped_for_companies_and_securities():
+    class LiveMetadataTransport(MockZapiTransport):
+        def request(self, method, path, *, params=None, headers=None, timeout=None):
+            if path == "/companies":
+                payload = {
+                    "project": "idx",
+                    "data": {
+                        "provider": "idx",
+                        "dataset": "companies",
+                        "recordsTotal": 1,
+                        "recordsFiltered": 1,
+                        "length": 1,
+                        "start": 0,
+                        "data": [{
+                            "KodeEmiten": "AADI", "Sektor": "Energi",
+                            "SubSektor": "Minyak", "NamaEmiten": "AADI Tbk",
+                        }],
+                    },
+                    "timestamp": "2026-08-04T00:00:00Z",
+                }
+            else:
+                payload = {
+                    "project": "idx",
+                    "data": {
+                        "provider": "idx",
+                        "dataset": "securities",
+                        "recordsTotal": 1,
+                        "recordsFiltered": 1,
+                        "length": 1,
+                        "start": 0,
+                        "data": [{
+                            "Code": "AADI", "Name": "AADI Tbk",
+                            "ListingBoard": "Utama", "Shares": 1_000_000,
+                            "ListingDate": "2000-01-01T00:00:00",
+                        }],
+                    },
+                    "timestamp": "2026-08-04T00:00:00Z",
+                }
+            return TransportResponse(status_code=200, payload=payload)
+
+    client = _client(LiveMetadataTransport())
+    raw = client.fetch_raw("SymbolMetadata", "", length=1, start=0)
+    assert raw["companies"]["data"][0]["KodeEmiten"] == "AADI"
+    assert raw["securities"]["data"][0]["Code"] == "AADI"
+    records = ZapiIdxAdapter(client).to_canonical("SymbolMetadata", raw, market_date="2026-08-04")
+    assert records[0].symbol == "AADI"
+    assert records[0].sector == "Energi"
+
+
 def test_valid_empty_stock_summary_is_classified_without_schema_error():
     payload = {"data": {"data": [], "recordsTotal": 0, "recordsFiltered": 0}}
 

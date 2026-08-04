@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import traceback
@@ -11,6 +12,7 @@ from typing import Callable
 from modules.global_market.global_market_snapshot import build_global_market_snapshot
 from modules.market_data.market_outlook_regime import calculate_market_outlook_regime, save_market_outlook_regime
 from modules.market_data.sector_rotation import produce_sector_rotation
+from modules.market_data.zapi_sector_metadata import refresh_sector_metadata
 from modules.job_runner.core import (
     broker_readiness,
     load_technical_snapshot,
@@ -227,11 +229,24 @@ def job_market_outlook(ctx) -> int:
     if configured_rotation:
         rotation_path = resolve(configured_rotation)
         rotation_metadata = str(ctx.config.get("paths", {}).get("sector_rotation_metadata", "")).strip()
+        metadata_path = resolve(rotation_metadata) if rotation_metadata else None
+        if metadata_path is not None:
+            metadata_result = refresh_sector_metadata(
+                metadata_path,
+                config_path=ctx.data_source_config_path,
+                trade_date=ctx.trade_date,
+                event_callback=lambda event, detail: append_job_log(
+                    ctx, event, json.dumps(detail, default=str)
+                ),
+            )
+            market_status["sector_metadata_status"] = metadata_result.get("status", "UNAVAILABLE")
+            market_status["sector_metadata_source_mode"] = metadata_result.get("source_mode", "UNAVAILABLE")
+            market_status["sector_metadata_request_count"] = metadata_result.get("request_count", 0)
         rotation_payload = produce_sector_rotation(
             technical_path,
             rotation_path,
             ctx.trade_date,
-            metadata_path=resolve(rotation_metadata) if rotation_metadata else None,
+            metadata_path=metadata_path,
         )
         market_status["sector_rotation_path"] = str(rotation_path)
         market_status["sector_rotation_status"] = rotation_payload.get("status", "INSUFFICIENT_DATA")
