@@ -10,7 +10,7 @@ or overwrites a Yahoo candle and never changes an engine score.
 import json
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable, Mapping
 
 import pandas as pd
 
@@ -21,6 +21,7 @@ from modules.data_sources.zapi_idx_adapter import (
     ZapiIdxClient,
     canonical_symbol,
 )
+from modules.market_calendar.idx_calendar import previous_idx_trading_day
 
 
 PROBLEM_STATUSES = {
@@ -86,6 +87,13 @@ def _days_behind(actual: str, expected: str) -> int | None:
         return None
 
 
+def _market_day(value: str) -> date:
+    text = str(value).strip()
+    if len(text) == 8 and text.isdigit():
+        return datetime.strptime(text, "%Y%m%d").date()
+    return date.fromisoformat(text[:10])
+
+
 def _classify(
     *,
     yahoo: dict[str, Any] | None,
@@ -132,6 +140,9 @@ def validate_yahoo_against_zapi(
     run_id: str = "",
     client: ZapiIdxClient | None = None,
     event_callback: Callable[[str, dict[str, Any]], None] | None = None,
+    market_holidays: Iterable[Any] = (),
+    special_trading_days: Iterable[Any] = (),
+    max_date_fallback_sessions: int = 10,
 ) -> dict[str, Any]:
     """Validate Yahoo bars against live ZAPI and persist per-run lineage."""
     folder = Path(historical_dir)
@@ -181,55 +192,106 @@ def validate_yahoo_against_zapi(
     success_count = 0
     failure_count = 0
 
-    smoke_symbol = normalized[0] if normalized else ""
+    requested_session = _market_day(market_date)
+    requested_query_date = requested_session.strftime("%Y%m%d")
+    resolved_session: date | None = None
+    resolved_query_date = ""
+    fallback_reason = ""
+    smoke_symbol = ""
     smoke_raw: Any | None = None
-    emit("ZAPI_SMOKE_TEST_START", symbol=smoke_symbol)
-    if smoke_symbol:
-        try:
-            smoke_raw = zapi_client.fetch_raw(
-                "DailyBar", smoke_symbol, market_date=market_date, date=market_date, length=10, start=0
+    smoke_raw_by_symbol: dict[str, Any] = {}
+    records_total = 0
+    emit("ZAPI_SMOKE_TEST_START", requested_date=requested_query_date)
+    try:
+        candidate = requested_session
+        attempts = max(1, int(max_date_fallback_sessions) + 1)
+        for probe_index in range(attempts):
+            candidate_query = candidate.strftime("%Y%m%d")
+            candidate_raw = zapi_client.fetch_raw(
+                "DailyBar", "", market_date=candidate.isoformat(), date=candidate_query,
+                length=1, start=0,
             )
-            smoke_mapped = adapter.to_canonical(
-                "DailyBar", smoke_raw, symbol=smoke_symbol, market_date=market_date
+            candidate_rows = candidate_raw.get("data") if isinstance(candidate_raw, Mapping) else None
+            if not isinstance(candidate_rows, list):
+                raise SourceUnavailable("ZAPI_RESPONSE_INVALID")
+            if candidate_rows:
+                smoke_raw = candidate_raw
+                resolved_session = candidate
+                resolved_query_date = candidate_query
+                records_total = int(candidate_raw.get("recordsTotal", 0))
+                break
+            if probe_index == 0:
+                fallback_reason = "CURRENT_DATASET_EMPTY"
+            candidate = previous_idx_trading_day(
+                candidate,
+                holidays=market_holidays,
+                special_trading_days=special_trading_days,
             )
-            if not smoke_mapped:
-                raise SourceUnavailable("ZAPI_SMOKE_EMPTY_OR_INVALID_SCHEMA")
-            emit(
-                "ZAPI_SMOKE_TEST_SUCCESS",
-                symbol=smoke_symbol,
-                request_attempts=zapi_client.request_attempt_count,
-            )
-        except Exception as exc:
-            reason = f"{type(exc).__name__}: {exc}"
-            emit(
-                "ZAPI_SMOKE_TEST_FAILED",
-                symbol=smoke_symbol,
-                reason=reason,
-                request_performed=zapi_client.request_attempt_count > 0,
-                request_attempts=zapi_client.request_attempt_count,
-            )
-            result = _write_skipped(
-                out,
-                run_id,
-                market_date,
-                normalized,
-                f"ZAPI_SMOKE_TEST_FAILED:{reason}",
-                status="FAILED_BLOCKING" if blocking else "ZAPI_RECONCILIATION_WARNING",
-                blocking=blocking,
-                request_count=zapi_client.request_attempt_count,
-                failure_count=zapi_client.request_attempt_count,
-            )
-            emit(
-                "ZAPI_RECONCILIATION_COMPLETE",
-                status=result["status"],
-                request_count=result["request_count"],
-                failure_count=result["failure_count"],
-            )
-            return result
-    else:
-        emit("ZAPI_SMOKE_TEST_FAILED", reason="SYMBOL_UNIVERSE_EMPTY", request_performed=False)
+        if smoke_raw is None or resolved_session is None:
+            raise SourceUnavailable("ZAPI_EMPTY_DATASET")
 
-    emit("ZAPI_BATCH_START", symbol_count=len(normalized), start_index=1)
+        emit(
+            "ZAPI_DATE_RESOLUTION",
+            requested_date=requested_query_date,
+            resolved_source_date=resolved_query_date,
+            fallback_reason=fallback_reason or "NONE",
+        )
+        first_row = smoke_raw["data"][0]
+        required = ("StockCode", "Date", "Close", "Volume")
+        missing = [field for field in required if field not in first_row or first_row[field] is None]
+        if missing:
+            raise SourceUnavailable("ZAPI_RESPONSE_INVALID:missing:" + ",".join(missing))
+        smoke_symbol = canonical_symbol(first_row["StockCode"])
+        smoke_mapped = adapter.to_canonical(
+            "DailyBar", smoke_raw, symbol=smoke_symbol,
+            market_date=resolved_session.isoformat(),
+        )
+        if not smoke_mapped:
+            raise SourceUnavailable("ZAPI_SMOKE_EMPTY_OR_INVALID_SCHEMA")
+        smoke_raw_by_symbol[smoke_symbol] = smoke_raw
+        endpoint_counts["/stock-summary"] = zapi_client.request_attempt_count
+        emit(
+            "ZAPI_SMOKE_TEST_SUCCESS",
+            symbol=smoke_symbol,
+            recordsTotal=records_total,
+            resolved_source_date=resolved_query_date,
+            request_attempts=zapi_client.request_attempt_count,
+        )
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        emit(
+            "ZAPI_SMOKE_TEST_FAILED",
+            symbol=smoke_symbol,
+            reason=reason,
+            request_performed=zapi_client.request_attempt_count > 0,
+            request_attempts=zapi_client.request_attempt_count,
+        )
+        result = _write_skipped(
+            out,
+            run_id,
+            market_date,
+            normalized,
+            f"ZAPI_SMOKE_TEST_FAILED:{reason}",
+            status="FAILED_BLOCKING" if blocking else "SUCCESS_WITH_WARNING",
+            blocking=blocking,
+            request_count=zapi_client.request_attempt_count,
+            failure_count=zapi_client.request_attempt_count,
+        )
+        emit(
+            "ZAPI_RECONCILIATION_COMPLETE",
+            status=result["status"],
+            request_count=result["request_count"],
+            failure_count=result["failure_count"],
+        )
+        return result
+
+    resolved_iso_date = resolved_session.isoformat()
+    emit(
+        "ZAPI_BATCH_START",
+        symbol_count=len(normalized),
+        start_index=1,
+        resolved_source_date=resolved_query_date,
+    )
 
     for index, symbol in enumerate(normalized, start=1):
         yahoo = _latest_yahoo_bar(folder, symbol)
@@ -237,11 +299,14 @@ def validate_yahoo_against_zapi(
         error = ""
         error_status = ""
         try:
-            raw = smoke_raw if index == 1 and smoke_raw is not None else zapi_client.fetch_raw(
-                "DailyBar", symbol, market_date=market_date, date=market_date, length=10, start=0
+            raw = smoke_raw_by_symbol.get(symbol) or zapi_client.fetch_raw(
+                "DailyBar", symbol, market_date=resolved_iso_date,
+                date=resolved_query_date, length=10, start=0,
             )
             endpoint_counts["/stock-summary"] = zapi_client.request_attempt_count
-            mapped = adapter.to_canonical("DailyBar", raw, symbol=symbol, market_date=market_date)
+            mapped = adapter.to_canonical(
+                "DailyBar", raw, symbol=symbol, market_date=resolved_iso_date
+            )
             candidates = [item for item in mapped if canonical_symbol(item.symbol) == symbol]
             zapi_record = max(candidates or mapped, key=lambda item: item.market_date, default=None)
             if zapi_record is None:
@@ -268,19 +333,21 @@ def validate_yahoo_against_zapi(
         status = _classify(
             yahoo=yahoo,
             zapi=zapi_record,
-            expected_date=market_date,
+            expected_date=resolved_iso_date,
             price_diffs=price_diffs,
             price_tolerance=price_tolerance_pct,
             error_status=error_status,
         )
         zapi_date = str(getattr(zapi_record, "market_date", "") or "")
-        stale_days = _days_behind(zapi_date, market_date) if zapi_date else None
+        stale_days = _days_behind(zapi_date, resolved_iso_date) if zapi_date else None
         if status == "STALE_ZAPI" and stale_days is not None and stale_days <= maximum_stale_days:
             # Still stale, but the explicit age lets callers decide severity.
             error = error or f"ZAPI candle is {stale_days} trading/calendar day(s) behind"
         rows.append({
             "run_id": run_id,
             "symbol": symbol,
+            "requested_date": requested_query_date,
+            "resolved_source_date": resolved_query_date,
             "yahoo_trade_date": yahoo.get("trade_date") if yahoo else None,
             "zapi_trade_date": zapi_date or None,
             "yahoo_timestamp": yahoo.get("timestamp") if yahoo else None,
@@ -324,15 +391,19 @@ def validate_yahoo_against_zapi(
     counts = {status: sum(row["status"] == status for row in rows) for status in sorted(PROBLEM_STATUSES | {"MATCH", "MATCH_WITH_TOLERANCE"})}
     blocking_failures = sum(bool(row["blocking"]) for row in rows)
     coverage_failed = coverage < minimum_coverage_ratio
-    status = "ZAPI_VALIDATED"
+    status = "SUCCESS"
     if blocking and (blocking_failures or coverage_failed):
         status = "FAILED_BLOCKING"
     elif any(counts[item] for item in PROBLEM_STATUSES) or coverage_failed:
-        status = "ZAPI_RECONCILIATION_WARNING"
+        status = "SUCCESS_WITH_WARNING"
 
     summary = {
         "run_id": run_id,
         "trade_date": market_date,
+        "requested_date": requested_query_date,
+        "resolved_source_date": resolved_query_date,
+        "date_fallback_reason": fallback_reason or "NONE",
+        "records_total": records_total,
         "config_version": cfg.config_version,
         "status": status,
         "reason": "MINIMUM_COVERAGE_NOT_MET" if coverage_failed else "",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Iterable
 
 
@@ -36,3 +36,16 @@ def validate_market_date(value: Any, *, holidays: Iterable[Any] = (), special_tr
     if not is_idx_trading_day(day, holidays, special_trading_days):
         raise ValueError(f"NON_TRADING_MARKET_DATE: {day.isoformat()}")
     return day
+
+
+def previous_idx_trading_day(
+    value: Any,
+    *,
+    holidays: Iterable[Any] = (),
+    special_trading_days: Iterable[Any] = (),
+) -> date:
+    """Return the preceding BEI session, skipping weekends and configured holidays."""
+    probe = _as_date(value) - timedelta(days=1)
+    while not is_idx_trading_day(probe, holidays, special_trading_days):
+        probe -= timedelta(days=1)
+    return probe

@@ -9,7 +9,11 @@ import pandas as pd
 from modules.broker_bridge.wait_for_broker_export import inspect as inspect_broker_export
 from modules.decision_engine.moderate_profiles import assess_liquidity
 from modules.decision_engine.smart_selective_v162 import smart_decision
-from modules.market_calendar.idx_calendar import is_idx_trading_day, validate_market_date
+from modules.market_calendar.idx_calendar import (
+    is_idx_trading_day,
+    previous_idx_trading_day,
+    validate_market_date,
+)
 from modules.runtime_config import validate_config
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +30,7 @@ def test_idx_calendar_holiday_and_weekend():
     assert not is_idx_trading_day("2026-08-02", holidays)
     assert is_idx_trading_day("2026-08-03", holidays)
     assert validate_market_date("2026-08-03", holidays=holidays) == date(2026, 8, 3)
+    assert previous_idx_trading_day("2026-08-18", holidays=holidays) == date(2026, 8, 14)
 
 
 def test_operational_broker_policy_replaces_old_full_coverage_gate():

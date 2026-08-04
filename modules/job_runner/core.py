@@ -311,6 +311,8 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
                     max_symbols=int(validation_cfg.get("max_symbols", 0) or 0),
                     run_id=ctx.run_id,
                     event_callback=zapi_event,
+                    market_holidays=freshness.get("market_holidays", []),
+                    special_trading_days=freshness.get("special_trading_days", []),
                 )
         except Exception as exc:
             append_job_log(ctx, "ZAPI_RECONCILIATION_EXCEPTION", __import__("traceback").format_exc())
@@ -328,7 +330,7 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
         }
         if not non_blocking and (failed or skipped):
             raise SourceValidationBlocked(reconciliation)
-        if str(reconciliation.get("status", "")).upper() == "ZAPI_RECONCILIATION_WARNING":
+        if str(reconciliation.get("status", "")).upper() == "SUCCESS_WITH_WARNING":
             data_quality = "VALID_WITH_ZAPI_WARNING"
     if data_source != "FIXTURE":
         run_command(ctx, "POST MARKET IHSG UPDATER", [

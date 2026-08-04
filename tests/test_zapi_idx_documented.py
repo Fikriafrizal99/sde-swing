@@ -109,10 +109,58 @@ def test_stock_summary_fixture_maps_to_canonical_with_endpoint_provenance():
     assert record.close == 8650.0
     assert record.previous_close == 8050.0
     assert record.value == 182271837500.0
+    assert record.traded_value == 182271837500.0
+    assert record.foreign_buy == 5896500.0
+    assert record.foreign_sell == 9874800.0
+    assert record.bid == 8625.0
+    assert record.bid_volume == 29200.0
+    assert record.offer == 8650.0
+    assert record.offer_volume == 67500.0
     assert record.source == "ZAPI_IDX_MOCK"
     assert record.source_record_id == "/stock-summary:4031673"
     assert record.field_provenance["__endpoint"]["value"] == "/stock-summary"
     assert record.field_provenance["close"]["source"] == "ZAPI_IDX_MOCK"
+
+
+def test_live_stock_summary_wrapper_and_actual_schema_are_supported():
+    payload = _fixture("stock_summary_live_20260803.json")
+
+    class LiveFixtureTransport(MockZapiTransport):
+        def request(self, *args, **kwargs):
+            return TransportResponse(status_code=200, payload=payload)
+
+    client = _client(LiveFixtureTransport())
+    raw = client.fetch_raw("DailyBar", "", date="20260803", length=1, start=0)
+    assert raw["_zapi_status"] == "SUCCESS"
+    assert raw["recordsTotal"] == 963
+    assert raw["data"][0]["StockCode"] == "AADI"
+    record = ZapiIdxAdapter(client).to_canonical("DailyBar", raw)[0]
+    assert record.symbol == "AADI"
+    assert record.market_date == "2026-08-03"
+    assert record.previous_close == 9225.0
+    assert record.open == 9300.0
+    assert record.high == 9300.0
+    assert record.low == 9075.0
+    assert record.close == 9100.0
+    assert record.volume == 4529500.0
+    assert record.traded_value == 41430862500.0
+    assert record.frequency == 3273.0
+    assert record.foreign_buy == 503600.0
+    assert record.foreign_sell == 2396100.0
+
+
+def test_valid_empty_stock_summary_is_classified_without_schema_error():
+    payload = {"data": {"data": [], "recordsTotal": 0, "recordsFiltered": 0}}
+
+    class EmptyFixtureTransport(MockZapiTransport):
+        def request(self, *args, **kwargs):
+            return TransportResponse(status_code=200, payload=payload)
+
+    client = _client(EmptyFixtureTransport())
+    raw = client.fetch_raw("DailyBar", "", date="20260804", length=1, start=0)
+    assert raw["_zapi_status"] == "ZAPI_EMPTY_DATASET"
+    assert raw["data"] == []
+    assert ZapiIdxAdapter(client).to_canonical("DailyBar", raw) == []
 
 
 def test_index_fixture_maps_absolute_change_to_percentage():
@@ -202,3 +250,15 @@ def test_invalid_response_shape_is_rejected_before_mapping():
 
     with pytest.raises(SourceUnavailable, match="ZAPI_RESPONSE_INVALID"):
         _client(InvalidTransport()).fetch_raw("DailyBar", "BBCA")
+
+
+def test_stock_summary_records_total_must_be_an_integer():
+    class InvalidCountTransport(MockZapiTransport):
+        def request(self, *args, **kwargs):
+            return TransportResponse(
+                status_code=200,
+                payload={"data": {"data": [], "recordsTotal": "0"}},
+            )
+
+    with pytest.raises(SourceUnavailable, match="ZAPI_RESPONSE_INVALID"):
+        _client(InvalidCountTransport()).fetch_raw("DailyBar", "")

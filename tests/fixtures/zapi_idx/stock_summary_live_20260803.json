@@ -1,0 +1,30 @@
+{
+  "data": {
+    "data": [
+      {
+        "StockCode": "AADI",
+        "Date": "2026-08-03T00:00:00",
+        "Previous": 9225,
+        "OpenPrice": 9300,
+        "High": 9300,
+        "Low": 9075,
+        "Close": 9100,
+        "Volume": 4529500,
+        "Value": 41430862500,
+        "Frequency": 3273,
+        "ForeignBuy": 503600,
+        "ForeignSell": 2396100,
+        "Bid": 9075,
+        "BidVolume": 5100,
+        "Offer": 9100,
+        "OfferVolume": 7200
+      }
+    ],
+    "start": 0,
+    "length": 1,
+    "dataset": "stock-summary",
+    "provider": "idx",
+    "recordsTotal": 963,
+    "recordsFiltered": 963
+  }
+}

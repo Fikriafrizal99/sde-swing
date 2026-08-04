@@ -161,8 +161,15 @@ class DailyBar(CanonicalRecord):
     close: float | None = None
     volume: float | None = None
     value: float | None = None  # turnover in IDR
+    traded_value: float | None = None
     frequency: float | None = None
     previous_close: float | None = None
+    foreign_buy: float | None = None
+    foreign_sell: float | None = None
+    bid: float | None = None
+    bid_volume: float | None = None
+    offer: float | None = None
+    offer_volume: float | None = None
     adjusted_close: float | None = None
     # True only for a fully closed daily candle. A partial intraday candle
     # must set this False so it can never become the last closed candle.

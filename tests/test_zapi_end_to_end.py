@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from modules.ai_interpretation.gemini_interpreter import GeminiInterpreter, IMMUTABLE_FIELDS
+from modules.data_sources.base import Transport, TransportResponse
 from modules.data_sources.config import SourceConfig
 from modules.data_sources.yahoo_zapi_validator import validate_yahoo_against_zapi
 from modules.data_sources.zapi_idx_adapter import (
@@ -86,7 +87,7 @@ def test_raw_fixture_to_reconciliation_lineage_and_report(tmp_path: Path):
         event_callback=lambda event, detail: events.append((event, detail)),
     )
 
-    assert result["status"] == "ZAPI_VALIDATED"
+    assert result["status"] == "SUCCESS"
     assert result["symbols_requested"] == 1
     assert result["request_count"] == 1
     assert result["reconciliation_counts"]["MATCH"] == 1
@@ -98,13 +99,14 @@ def test_raw_fixture_to_reconciliation_lineage_and_report(tmp_path: Path):
     assert event_names == [
         "ZAPI_CREDENTIAL_STATUS",
         "ZAPI_SMOKE_TEST_START",
+        "ZAPI_DATE_RESOLUTION",
         "ZAPI_SMOKE_TEST_SUCCESS",
         "ZAPI_BATCH_START",
         "ZAPI_BATCH_PROGRESS",
         "ZAPI_RECONCILIATION_COMPLETE",
     ]
-    assert events[4][1]["processed"] == 1
-    assert events[4][1]["total"] == 1
+    assert events[5][1]["processed"] == 1
+    assert events[5][1]["total"] == 1
 
     message = format_post_market({
         "process_status": "SUCCESS", "symbols_requested": 1, "symbols_loaded": 1,
@@ -113,7 +115,7 @@ def test_raw_fixture_to_reconciliation_lineage_and_report(tmp_path: Path):
         "zapi_coverage": result["coverage_ratio"], "stockbit_status": "WAITING",
     })
     assert "Yahoo: VALID" in message
-    assert "ZAPI IDX: ZAPI_VALIDATED" in message
+    assert "ZAPI IDX: SUCCESS" in message
 
 
 def test_reconciliation_tolerance_mismatch_and_stale(tmp_path: Path):
@@ -144,6 +146,72 @@ def test_reconciliation_tolerance_mismatch_and_stale(tmp_path: Path):
         output_dir=tmp_path / "stale", config_path=cfg, client=_client(), run_id="STALE",
     )
     assert stale["rows"][0]["status"] == "STALE_YAHOO"
+
+
+def test_date_resolution_uses_unfiltered_probe_and_one_source_date(tmp_path: Path):
+    live_payload = json.loads(
+        (Path(__file__).resolve().parents[1] / "tests/fixtures/zapi_idx/stock_summary_live_20260803.json")
+        .read_text(encoding="utf-8")
+    )
+
+    class DateResolutionTransport(Transport):
+        def __init__(self):
+            self.requests: list[dict] = []
+
+        def request(self, method, path, *, params=None, headers=None, timeout=None):
+            current = dict(params or {})
+            self.requests.append(current)
+            if current.get("date") == "20260804":
+                payload = {"data": {"data": [], "recordsTotal": 0, "recordsFiltered": 0}}
+            else:
+                payload = live_payload
+            return TransportResponse(status_code=200, payload=payload)
+
+    historical = tmp_path / "history"
+    historical.mkdir()
+    pd.DataFrame([{
+        "Date": "2026-08-03", "Open": 9300, "High": 9300, "Low": 9075,
+        "Close": 9100, "Volume": 4529500,
+    }]).to_csv(historical / "AADI.csv", index=False)
+    cfg = tmp_path / "sources.json"
+    _config(cfg)
+    transport = DateResolutionTransport()
+    client = ZapiIdxClient(transport, SourceConfig(
+        name="ZAPI_IDX", enabled=True, documentation_configured=True, retry=0,
+    ), explicit_mock=True)
+    events: list[tuple[str, dict]] = []
+    result = validate_yahoo_against_zapi(
+        historical_dir=historical,
+        symbols=["AADI"],
+        market_date="2026-08-04",
+        output_dir=tmp_path / "out",
+        config_path=cfg,
+        client=client,
+        blocking=True,
+        run_id="DATE-RESOLUTION",
+        event_callback=lambda event, detail: events.append((event, detail)),
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert result["requested_date"] == "20260804"
+    assert result["resolved_source_date"] == "20260803"
+    assert result["date_fallback_reason"] == "CURRENT_DATASET_EMPTY"
+    assert result["records_total"] == 963
+    assert transport.requests == [
+        {"length": 1, "start": 0, "date": "20260804"},
+        {"length": 1, "start": 0, "date": "20260803"},
+    ]
+    date_event = next(detail for event, detail in events if event == "ZAPI_DATE_RESOLUTION")
+    assert date_event == {
+        "requested_date": "20260804",
+        "resolved_source_date": "20260803",
+        "fallback_reason": "CURRENT_DATASET_EMPTY",
+    }
+    smoke = next(detail for event, detail in events if event == "ZAPI_SMOKE_TEST_SUCCESS")
+    assert smoke["symbol"] == "AADI"
+    assert smoke["recordsTotal"] == 963
+    assert events[-1][0] == "ZAPI_RECONCILIATION_COMPLETE"
+    assert events[-1][1]["status"] == "SUCCESS"
 
 
 def test_missing_credentials_is_explicit_and_makes_no_request(tmp_path: Path, monkeypatch):

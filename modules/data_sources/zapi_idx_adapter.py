@@ -120,9 +120,11 @@ def _synthetic_fixture(path: str, params: Mapping[str, Any]) -> dict[str, Any]:
 
     clean_path = "/" + path.strip("/")
     requested_date = str(params.get("date") or "2026-01-02")
+    if len(requested_date) == 8 and requested_date.isdigit():
+        requested_date = f"{requested_date[:4]}-{requested_date[4:6]}-{requested_date[6:8]}"
     code = str(params.get("code") or "BBCA").upper()
     if clean_path.endswith("/stock-summary"):
-        return {
+        dataset = {
             "data": [{
                 "No": 1,
                 "Bid": 1025,
@@ -153,6 +155,7 @@ def _synthetic_fixture(path: str, params: Mapping[str, Any]) -> dict[str, Any]:
             "recordsTotal": 1,
             "recordsFiltered": 1,
         }
+        return {"data": dataset}
     if clean_path.endswith("/index-summary"):
         return {
             "data": [{
@@ -440,7 +443,7 @@ class ZapiIdxClient(SourceClient):
             ),
         )
         self._last_request_at = time.monotonic()
-        body = _unwrap_payload(response.payload)
+        body = _normalize_response(spec, _unwrap_payload(response.payload))
         _validate_response(spec, body)
         if not isinstance(body, dict):  # validated specs currently return objects
             raise SourceUnavailable(C.ZAPI_RESPONSE_INVALID)
@@ -481,6 +484,11 @@ class ZapiIdxAdapter(Adapter):
             unwrapped = _unwrap_payload(raw)
         except SourceUnavailable:
             return []
+        if record_type == "DailyBar":
+            try:
+                unwrapped = _normalize_stock_summary_response(unwrapped)
+            except SourceUnavailable:
+                return []
         if not isinstance(unwrapped, Mapping):
             return []
         raw = unwrapped
@@ -514,8 +522,15 @@ class ZapiIdxAdapter(Adapter):
                 close=_f(row.get("Close")),
                 volume=_f(row.get("Volume")),
                 value=_f(row.get("Value")),
+                traded_value=_f(row.get("Value")),
                 frequency=_f(row.get("Frequency")),
                 previous_close=_f(row.get("Previous")),
+                foreign_buy=_f(row.get("ForeignBuy")),
+                foreign_sell=_f(row.get("ForeignSell")),
+                bid=_f(row.get("Bid")),
+                bid_volume=_f(row.get("BidVolume")),
+                offer=_f(row.get("Offer")),
+                offer_volume=_f(row.get("OfferVolume")),
                 is_closed=True,
             )
             _set_field_provenance(rec, endpoint, event)
@@ -675,6 +690,38 @@ def _unwrap_payload(payload: Any) -> Any:
     return payload
 
 
+def _normalize_response(spec: ZapiEndpoint, payload: Any) -> Any:
+    if spec.path == "/stock-summary":
+        return _normalize_stock_summary_response(payload)
+    return payload
+
+
+def _normalize_stock_summary_response(response_json: Any) -> dict[str, Any]:
+    """Validate and unwrap the live ``response.data.data`` stock schema."""
+    if not isinstance(response_json, Mapping):
+        raise SourceUnavailable(C.ZAPI_RESPONSE_INVALID)
+    if response_json.get("_zapi_normalized_stock_summary") is True:
+        payload = response_json
+    else:
+        payload = response_json.get("data")
+        if not isinstance(payload, Mapping):
+            raise SourceUnavailable(C.ZAPI_RESPONSE_INVALID)
+    rows = payload.get("data")
+    records_total = payload.get("recordsTotal")
+    if (
+        not isinstance(rows, list)
+        or any(not isinstance(row, Mapping) for row in rows)
+        or isinstance(records_total, bool)
+        or not isinstance(records_total, int)
+    ):
+        raise SourceUnavailable(C.ZAPI_RESPONSE_INVALID)
+    normalized = dict(payload)
+    normalized["data"] = [dict(row) for row in rows]
+    normalized["_zapi_normalized_stock_summary"] = True
+    normalized["_zapi_status"] = "SUCCESS" if rows else "ZAPI_EMPTY_DATASET"
+    return normalized
+
+
 def _validate_response(spec: ZapiEndpoint, payload: Any) -> None:
     if not isinstance(payload, Mapping):
         raise SourceUnavailable(C.ZAPI_RESPONSE_INVALID)
@@ -682,6 +729,10 @@ def _validate_response(spec: ZapiEndpoint, payload: Any) -> None:
         data = payload.get("data")
         if not isinstance(data, list) or any(not isinstance(row, Mapping) for row in data):
             raise SourceUnavailable(C.ZAPI_RESPONSE_INVALID)
+        if spec.path == "/stock-summary":
+            records_total = payload.get("recordsTotal")
+            if isinstance(records_total, bool) or not isinstance(records_total, int):
+                raise SourceUnavailable(C.ZAPI_RESPONSE_INVALID)
         _validate_pagination(payload)
     elif spec.response_shape == "activity":
         data = payload.get("data")
