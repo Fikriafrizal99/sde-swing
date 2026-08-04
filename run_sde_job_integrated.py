@@ -184,13 +184,18 @@ def _optional_broker_multiday_payloads(ctx):
             )
             for error in exc.errors
         )
-        if not insufficient:
+        missing_manifest = (
+            exc.report_type == "broker_multi_day_manifest"
+            and any(str(error).startswith("INPUT_FILE_NOT_FOUND:") for error in exc.errors)
+        )
+        if not insufficient and not missing_manifest:
             raise
         record_validation_error(ctx, exc)
         append_job_log(ctx, "BROKER_MULTI_DAY_REPORT_SKIPPED", str({
             "errors": exc.errors,
             "input_paths": exc.input_paths,
             "source_of_truth": exc.source_of_truth,
+            "reason": "MISSING_MANIFEST" if missing_manifest else "INSUFFICIENT_HISTORY",
         }))
         return []
 

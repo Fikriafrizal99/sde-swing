@@ -20,6 +20,17 @@ from modules.job_runner.report_validation import (
 from modules.job_runner.runtime import RunnerContext, read_json, resolve
 
 
+REPORTABLE_DECISION_QUALITY = {
+    "VALID",
+    "PARTIAL_COVERAGE",
+    "SUCCESS_WITH_WARNING",
+    "VALID_WITH_REFRESH_FALLBACK",
+    # ZAPI price variance is explicitly non-blocking; the decision engine
+    # labels the resulting artifact as valid with a source warning.
+    "VALID_WITH_ZAPI_WARNING",
+}
+
+
 def _norm(value: Any) -> str:
     return "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or "")).strip("_")
 
@@ -106,7 +117,7 @@ def _zapi_lineage(ctx: RunnerContext) -> tuple[dict[str, Any], dict[str, dict[st
     inputs = [str(latest)] if latest.exists() else []
     reconciliation_path = str(summary.get("json_path") or "")
     if reconciliation_path and Path(reconciliation_path).exists():
-        payload = read_json(reconciliation_path)
+        payload = read_json(Path(reconciliation_path))
         for item in payload.get("rows", []) if isinstance(payload.get("rows"), list) else []:
             if isinstance(item, dict) and _symbol(item.get("symbol")):
                 rows[_symbol(item.get("symbol"))] = item
@@ -426,7 +437,7 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
     decision_manifest_path = ctx.path("manifest_dir", "data/output/manifests") / f"DECISION_ENGINE_MANIFEST_{(manifest or {}).get('Run_ID', ctx.run_id)}.json"
     decision_manifest = read_required_json(decision_manifest_path, "final_watchlist_decision_manifest")
     decision_quality = str(decision_manifest.get("Data_Quality_Status", "")).upper()
-    if decision_quality not in {"VALID", "PARTIAL_COVERAGE", "SUCCESS_WITH_WARNING"}:
+    if decision_quality not in REPORTABLE_DECISION_QUALITY:
         raise ReportSourceValidationError(
             "final_watchlist",
             [f"DATA_QUALITY_NOT_VALID:{decision_quality}"],
