@@ -25,6 +25,7 @@ from modules.job_runner.core import (
     run_final_from_snapshot,
     run_master_pipeline,
     sync_outcome_tracker,
+    try_import_existing_broker_export,
     wait_for_broker_ready,
 )
 from modules.job_runner.delivery import deliver, telegram_configured
@@ -112,7 +113,10 @@ def _status_after_delivery(delivery: list[dict]) -> str:
     if any(item.get("status") == "FAILED" for item in delivery):
         return "DELIVERY_FAILED"
     if delivery and all(item.get("status") == "DUPLICATE_SUPPRESSED" for item in delivery):
-        return "DUPLICATE_SUPPRESSED"
+        # Idempotency suppression means the report was already delivered; it
+        # does not mean the engine stage was skipped.  Keep the run terminal
+        # and dependency-safe while retaining the delivery detail in status.
+        return "SUCCESS_WITH_WARNING"
     if any(item.get("status") == "SKIPPED_NOT_CONFIGURED" for item in delivery):
         return "SUCCESS_WITH_WARNING"
     return "SUCCESS"
@@ -122,7 +126,7 @@ def _exit_after_delivery(ctx, delivery: list[dict]) -> int:
     if any(item.get("status") == "FAILED" for item in delivery):
         return EXIT_DELIVERY_FAILED
     if delivery and all(item.get("status") == "DUPLICATE_SUPPRESSED" for item in delivery):
-        return EXIT_DUPLICATE
+        return EXIT_SUCCESS
     return EXIT_SUCCESS
 
 
@@ -699,6 +703,65 @@ def _integrated_statuses(ctx) -> dict[str, dict]:
         payload = read_json(root / f"{name}_latest.json")
         if payload:
             statuses[name] = payload
+
+    # The dated snapshot is the canonical technical artifact.  A standalone
+    # Post Market run can legitimately create it without running the optional
+    # ``technical_snapshot`` status job, so do not reject a current artifact
+    # merely because ``technical_snapshot_latest.json`` is from yesterday.
+    snapshot = load_technical_snapshot(ctx)
+    if snapshot.get("status") == "VALID":
+        snapshot_date = str(snapshot.get("trade_date", ctx.trade_date.isoformat()))
+        existing = dict(statuses.get("technical_snapshot", {}))
+        existing_status = str(existing.get("status", existing.get("status_v1_7", ""))).upper()
+        existing_date = str(existing.get("trade_date", ""))
+        if existing_status not in {"SUCCESS", "SUCCESS_WITH_WARNING", "PARTIAL"} or existing_date != snapshot_date:
+            existing.update({
+                "status": "SUCCESS_WITH_WARNING" if "WARNING" in str(snapshot.get("data_quality_status", "")).upper() else "SUCCESS",
+                "status_v1_7": "SUCCESS_WITH_WARNING" if "WARNING" in str(snapshot.get("data_quality_status", "")).upper() else "SUCCESS",
+                "trade_date": snapshot_date,
+                "config_version": str(snapshot.get("config_version", ctx.runtime_version)),
+                "snapshot_id": snapshot.get("snapshot_id", ""),
+                "snapshot_trade_date": snapshot_date,
+                "dependency_status_override": "TECHNICAL_SNAPSHOT_ARTIFACT",
+            })
+            statuses["technical_snapshot"] = existing
+            append_job_log(ctx, "DEPENDENCY_ARTIFACT_RECONCILIATION", json.dumps({
+                "dependency": "technical_snapshot",
+                "status": existing["status"],
+                "trade_date": snapshot_date,
+                "snapshot_id": snapshot.get("snapshot_id", ""),
+            }))
+
+        # A duplicate-suppressed Telegram delivery must not hide a completed
+        # Post Market engine stage.  Use the current snapshot only when the
+        # Post Market status itself points to that same artifact.
+        post = dict(statuses.get("post_market", {}))
+        post_details = post.get("details", {}) if isinstance(post.get("details"), dict) else {}
+        post_snapshot_id = str(post.get("snapshot_id") or post_details.get("snapshot_id") or "")
+        post_snapshot_date = str(post.get("snapshot_trade_date") or post_details.get("snapshot_trade_date") or "")
+        delivery = post_details.get("delivery", []) if isinstance(post_details.get("delivery"), list) else []
+        duplicate_only = bool(delivery) and all(
+            str(item.get("status", "")).upper() == "DUPLICATE_SUPPRESSED"
+            for item in delivery
+            if isinstance(item, dict)
+        )
+        if (
+            post
+            and str(post.get("status", post.get("status_v1_7", ""))).upper() in {"SKIPPED", "DUPLICATE_SUPPRESSED"}
+            and post.get("trade_date") == ctx.trade_date.isoformat()
+            and (post_snapshot_id == str(snapshot.get("snapshot_id", "")) or post_snapshot_date == snapshot_date)
+            and duplicate_only
+        ):
+            post["status"] = "SUCCESS_WITH_WARNING"
+            post["status_v1_7"] = "SUCCESS_WITH_WARNING"
+            post["dependency_status_override"] = "POST_MARKET_ARTIFACT_DELIVERY_DUPLICATE"
+            statuses["post_market"] = post
+            append_job_log(ctx, "DEPENDENCY_ARTIFACT_RECONCILIATION", json.dumps({
+                "dependency": "post_market",
+                "status": "SUCCESS_WITH_WARNING",
+                "reason": "DUPLICATE_SUPPRESSED_AFTER_ENGINE_SUCCESS",
+                "snapshot_id": snapshot.get("snapshot_id", ""),
+            }))
     return statuses
 
 
@@ -899,6 +962,17 @@ def job_broker_summary(ctx) -> int:
     dependency = _require_integrated_dependencies(ctx, "broker_summary")
     if dependency:
         return _finish(ctx, "SKIPPED", "DEPENDENCY_VALIDATION", EXIT_SKIPPED, {"dependency_status": dependency})
+    import_detail: dict[str, object] = {}
+    if _official_runtime(ctx):
+        # Reuse the Downloads bridge for a standalone Broker Summary run.  It
+        # scans once for today's export and never waits for a future file.
+        imported, import_detail = try_import_existing_broker_export(ctx)
+        if not imported:
+            return _finish(ctx, "WAITING_DATA", "BROKER_SOURCE_VALIDATION", EXIT_WAITING_DATA, {
+                "data_status": "BROKER_EXPORT_NOT_READY",
+                "broker_readiness": import_detail,
+                "errors": ["BROKER_EXPORT_CURRENT_DATE_NOT_READY"],
+            })
     path = ctx.path("broker_raw_latest", "data/input/broker/BROKER_RAW_LATEST.csv")
     summary = ctx.path("broker_summary_latest", "data/input/broker/BROKER_SUMMARY_LATEST.csv")
     source_path = path if path.exists() else summary
@@ -939,6 +1013,7 @@ def job_broker_summary(ctx) -> int:
         "data_status": "FILE_FALLBACK" if not os.getenv("STOCKBIT_API_KEY") else "LIVE",
         "symbols_requested": symbols, "symbols_loaded": symbols, "symbols_valid": symbols,
         "warnings": ["STOCKBIT_API_NOT_CONFIGURED_FILE_FALLBACK"] if not os.getenv("STOCKBIT_API_KEY") else [],
+        "broker_readiness": import_detail,
         **fusion_details,
         **_source_details(ctx, record_type="BrokerFlow"),
     })

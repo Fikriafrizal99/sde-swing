@@ -18,7 +18,12 @@ if str(ROOT) not in sys.path:
 
 import run_sde_job
 from generate_task_scheduler_xml import main as generate_xml_main
-from modules.job_runner.core import _post_market_evaluation_datetime, broker_readiness, validate_broker_summary
+from modules.job_runner.core import (
+    _post_market_evaluation_datetime,
+    broker_readiness,
+    try_import_existing_broker_export,
+    validate_broker_summary,
+)
 from modules.job_runner.delivery import deliver, split_telegram_text
 from modules.job_runner.reports import ReportPayload
 from modules.job_runner.runtime import FileLock, ResourceLocked, RunnerContext
@@ -116,6 +121,89 @@ def write_broker(tmp: Path, broker_date: str, symbols: list[str] | None = None, 
 
 
 class SchedulerHardeningTests(unittest.TestCase):
+    def test_duplicate_delivery_keeps_engine_terminal_and_dependency_safe(self) -> None:
+        delivery = [{"status": "DUPLICATE_SUPPRESSED", "report_type": "post_market"}]
+        self.assertEqual(run_sde_job._status_after_delivery(delivery), "SUCCESS_WITH_WARNING")
+        self.assertEqual(run_sde_job._exit_after_delivery(make_ctx(Path(tempfile.mkdtemp())), delivery), 0)
+
+    def test_dependency_view_reconciles_current_snapshot_over_stale_status_files(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ctx = make_ctx(
+                Path(td),
+                config_provenance={"config_version": "1.7.0-multisource"},
+            )
+            snapshot = {
+                "status": "VALID",
+                "snapshot_id": "SNAP-CURRENT",
+                "trade_date": "2026-07-24",
+                "config_version": "1.7.0-multisource",
+                "data_quality_status": "VALID_WITH_ZAPI_WARNING",
+            }
+            payloads = {
+                "technical_snapshot": {
+                    "status": "SUCCESS",
+                    "trade_date": "2026-07-23",
+                    "config_version": "1.7.0-multisource",
+                },
+                "post_market": {
+                    "status": "SKIPPED",
+                    "trade_date": "2026-07-24",
+                    "config_version": "1.7.0-multisource",
+                    "snapshot_id": "SNAP-CURRENT",
+                    "snapshot_trade_date": "2026-07-24",
+                    "details": {
+                        "snapshot_id": "SNAP-CURRENT",
+                        "snapshot_trade_date": "2026-07-24",
+                        "delivery": [{"status": "DUPLICATE_SUPPRESSED"}],
+                    },
+                },
+            }
+            with patch("run_sde_job.load_technical_snapshot", return_value=snapshot), \
+                 patch("run_sde_job.read_json", side_effect=lambda path: payloads.get(Path(path).name.replace("_latest.json", ""), {})):
+                statuses = run_sde_job._integrated_statuses(ctx)
+            self.assertEqual(statuses["technical_snapshot"]["status"], "SUCCESS_WITH_WARNING")
+            self.assertEqual(statuses["technical_snapshot"]["trade_date"], "2026-07-24")
+            self.assertEqual(statuses["post_market"]["status"], "SUCCESS_WITH_WARNING")
+
+    def test_existing_download_export_is_imported_without_waiting(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            downloads = tmp / "Downloads"
+            downloads.mkdir()
+            (downloads / "BROKER_SUMMARY_COMBINED_2026-07-24.csv").write_text("placeholder", encoding="utf-8")
+            test_config = dict(make_ctx(tmp).config)
+            test_config["paths"] = {
+                **test_config.get("paths", {}),
+                "manifest_dir": str(tmp / "manifests"),
+                "broker_summary_latest": str(tmp / "broker" / "BROKER_SUMMARY_LATEST.csv"),
+                "broker_raw_latest": str(tmp / "broker" / "BROKER_RAW_LATEST.csv"),
+            }
+            ctx = make_ctx(
+                tmp,
+                config={**test_config, "broker": {"downloads_dir": str(downloads)}},
+            )
+            snapshot = {
+                "status": "VALID",
+                "snapshot_id": "SNAP-CURRENT",
+                "trade_date": "2026-07-24",
+                "broker_navigator_path": str(tmp / "BROKER_NAVIGATOR_SYMBOLS.csv"),
+            }
+            Path(snapshot["broker_navigator_path"]).write_text("Symbol\nBBCA\n", encoding="utf-8")
+            with patch("modules.job_runner.core.load_technical_snapshot", return_value=snapshot), \
+                 patch("modules.job_runner.core.broker_readiness", side_effect=[
+                     (False, {"status": "DATE_MISMATCH"}),
+                     (True, {"status": "READY", "broker_date": "2026-07-24"}),
+                 ]), \
+                 patch("modules.job_runner.core.run_command") as command:
+                ready, detail = try_import_existing_broker_export(ctx)
+            self.assertTrue(ready)
+            self.assertEqual(detail["broker_import_source"], "DOWNLOADS_AUTO_IMPORT")
+            command.assert_called_once()
+            args = command.call_args.args[2]
+            self.assertIn("--include-existing", args)
+            self.assertIn("--timeout", args)
+            self.assertEqual(args[args.index("--timeout") + 1], "1")
+
     def test_post_market_evaluation_uses_actual_start_time_before_close(self) -> None:
         ctx = make_ctx(
             Path(tempfile.mkdtemp()),

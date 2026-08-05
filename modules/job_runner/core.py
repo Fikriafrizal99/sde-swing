@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import subprocess
 import sys
@@ -803,36 +805,14 @@ def run_interactive_broker_break(
     print("Tekan Ctrl+C bila ingin membatalkan.", flush=True)
     print("=" * 64, flush=True)
 
-    command = [
-        sys.executable,
-        "-u",
-        str(resolve(paths.get("broker_bridge", "modules/broker_bridge/wait_for_broker_export.py"))),
-        "--symbols",
-        str(navigator_path),
-        "--downloads",
-        str(broker_cfg.get("downloads_dir", "%USERPROFILE%/Downloads")),
-        "--output",
-        str(resolve(paths.get("broker_summary_latest", "data/input/broker/BROKER_SUMMARY_LATEST.csv"))),
-        "--raw-output",
-        str(resolve(paths.get("broker_raw_latest", "data/input/broker/BROKER_RAW_LATEST.csv"))),
-        "--timeout",
-        str(broker_cfg.get("timeout_seconds", 1200)),
-        "--poll",
-        str(broker_cfg.get("poll_seconds", 2)),
-        "--min-coverage",
-        str(broker_cfg.get("min_coverage", 0.8)),
-        "--expected-broker-date",
-        ctx.trade_date.isoformat(),
-        "--technical-date",
-        str(snapshot.get("trade_date", ctx.trade_date.isoformat())),
-        "--broker-date-policy",
-        "exact",
-        "--include-existing",
-        "--run-id",
-        ctx.run_id,
-        "--manifest-dir",
-        str(manifest_dir),
-    ]
+    command = _broker_bridge_command(
+        ctx,
+        snapshot,
+        navigator_path,
+        timeout_seconds=int(broker_cfg.get("timeout_seconds", 1200)),
+        poll_seconds=float(broker_cfg.get("poll_seconds", 2)),
+        manifest_dir=manifest_dir,
+    )
     try:
         run_command(ctx, "MANUAL BROKER BREAK", command)
     except RuntimeError as exc:
@@ -847,6 +827,149 @@ def run_interactive_broker_break(
     ready, detail = broker_readiness(ctx)
     detail["broker_navigator_path"] = str(navigator_path)
     return ready, detail
+
+
+def _broker_bridge_command(
+    ctx: RunnerContext,
+    snapshot: dict[str, Any],
+    navigator_path: Path,
+    *,
+    timeout_seconds: int,
+    poll_seconds: float,
+    manifest_dir: Path | None = None,
+) -> list[str]:
+    """Build the broker export bridge command used by manual and auto-import flows."""
+
+    paths = ctx.config.get("paths", {})
+    broker_cfg = ctx.config.get("broker", {})
+    manifest_dir = manifest_dir or ctx.path("manifest_dir", "data/output/manifests")
+    return [
+        sys.executable,
+        "-u",
+        str(resolve(paths.get("broker_bridge", "modules/broker_bridge/wait_for_broker_export.py"))),
+        "--symbols",
+        str(navigator_path),
+        "--downloads",
+        str(broker_cfg.get("downloads_dir", "%USERPROFILE%/Downloads")),
+        "--output",
+        str(resolve(paths.get("broker_summary_latest", "data/input/broker/BROKER_SUMMARY_LATEST.csv"))),
+        "--raw-output",
+        str(resolve(paths.get("broker_raw_latest", "data/input/broker/BROKER_RAW_LATEST.csv"))),
+        "--timeout",
+        str(max(0, int(timeout_seconds))),
+        "--poll",
+        str(max(0.1, float(poll_seconds))),
+        "--min-coverage",
+        str(broker_cfg.get("min_coverage", 0.8)),
+        "--expected-broker-date",
+        ctx.trade_date.isoformat(),
+        "--technical-date",
+        str(snapshot.get("trade_date", ctx.trade_date.isoformat())),
+        "--broker-date-policy",
+        "exact",
+        "--include-existing",
+        "--run-id",
+        ctx.run_id,
+        "--manifest-dir",
+        str(manifest_dir),
+    ]
+
+
+def try_import_existing_broker_export(ctx: RunnerContext) -> tuple[bool, dict[str, Any]]:
+    """Import a current-date broker export already present in Downloads.
+
+    The standalone ``broker_summary`` menu must be able to consume the same
+    Downloads artifact as Final Watchlist.  This helper is intentionally
+    non-blocking: it performs one scan only and never waits for a future
+    Tampermonkey export.
+    """
+
+    ready, detail = broker_readiness(ctx)
+    if ready:
+        detail["broker_import_source"] = "LOCAL_INPUT"
+        return True, detail
+
+    snapshot = load_technical_snapshot(ctx)
+    if snapshot.get("status") != "VALID":
+        return False, {
+            **detail,
+            "status": snapshot.get("status", "INVALID_DEPENDENCY"),
+            "reason": snapshot.get("reason", "TECHNICAL_SNAPSHOT_NOT_FOUND"),
+            "snapshot_id": snapshot.get("snapshot_id", ""),
+            "snapshot_trade_date": snapshot.get("trade_date", ""),
+        }
+
+    broker_cfg = ctx.config.get("broker", {})
+    downloads = Path(os.path.expandvars(str(broker_cfg.get("downloads_dir", "%USERPROFILE%/Downloads")))).expanduser()
+    if not downloads.exists():
+        return False, {
+            **detail,
+            "status": "FILE_NOT_FOUND",
+            "reason": "BROKER_DOWNLOADS_NOT_FOUND",
+            "downloads": str(downloads),
+            "broker_import_source": "DOWNLOADS_AUTO_IMPORT",
+        }
+    candidates = list(downloads.glob("BROKER_SUMMARY_COMBINED_*.csv"))
+    if not candidates:
+        return False, {
+            **detail,
+            "status": "FILE_NOT_FOUND",
+            "reason": "BROKER_EXPORT_NOT_FOUND_FOR_CURRENT_DATE",
+            "downloads": str(downloads),
+            "broker_import_source": "DOWNLOADS_AUTO_IMPORT",
+        }
+
+    paths = ctx.config.get("paths", {})
+    navigator_text = str(snapshot.get("broker_navigator_path") or "").strip()
+    navigator_path = Path(navigator_text) if navigator_text else resolve(
+        paths.get("broker_navigator_symbols", "data/output/candidates/BROKER_NAVIGATOR_SYMBOLS.csv")
+    )
+    if not navigator_path.exists():
+        fallback = Path(str(snapshot.get("output_paths", {}).get("broker_symbols", "")))
+        navigator_path = fallback if fallback.exists() else navigator_path
+    if not navigator_path.exists():
+        return False, {
+            **detail,
+            "status": "INVALID_DEPENDENCY",
+            "reason": "BROKER_NAVIGATOR_SYMBOLS_NOT_FOUND",
+            "broker_navigator_path": str(navigator_path),
+            "broker_import_source": "DOWNLOADS_AUTO_IMPORT",
+        }
+
+    manifest_dir = ctx.path("manifest_dir", "data/output/manifests")
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    append_job_log(ctx, "BROKER_AUTO_IMPORT_START", json.dumps({
+        "downloads": str(downloads),
+        "candidate_count": len(candidates),
+        "expected_date": ctx.trade_date.isoformat(),
+        # The bridge performs its first scan inside a time-bounded loop.  One
+        # second guarantees that scan executes while remaining non-blocking
+        # for the standalone menu.
+        "timeout_seconds": 1,
+    }))
+    command = _broker_bridge_command(
+        ctx,
+        snapshot,
+        navigator_path,
+        timeout_seconds=1,
+        poll_seconds=0.1,
+        manifest_dir=manifest_dir,
+    )
+    try:
+        run_command(ctx, "BROKER AUTO-IMPORT", command)
+    except RuntimeError as exc:
+        _, after = broker_readiness(ctx)
+        after.update({
+            "broker_import_source": "DOWNLOADS_AUTO_IMPORT",
+            "broker_auto_import_error": str(exc),
+        })
+        append_job_log(ctx, "BROKER_AUTO_IMPORT_NOT_READY", str(after))
+        return False, after
+
+    ready, after = broker_readiness(ctx)
+    after["broker_import_source"] = "DOWNLOADS_AUTO_IMPORT"
+    append_job_log(ctx, "BROKER_AUTO_IMPORT_COMPLETE", str(after))
+    return ready, after
 
 
 def run_broker_fusion_from_snapshot(
