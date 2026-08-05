@@ -6,6 +6,7 @@ from typing import Any, Iterable, Mapping
 
 import pandas as pd
 
+from modules.analytics.outcome_tracker import is_material_lifecycle_event
 from modules.job_runner.enhanced_daily_reports import DailyReportArtifact, EnhancedDailyReportBuilder
 from modules.job_runner.reports import ReportPayload
 from modules.job_runner.report_validation import (
@@ -546,6 +547,8 @@ def lifecycle_payloads(ctx: RunnerContext) -> list[ReportPayload]:
                 try:
                     events = pd.read_csv(events_csv, low_memory=False)
                     pending = events[
+                        events.apply(is_material_lifecycle_event, axis=1)
+                        &
                         events.get("telegram_notified_at", pd.Series(index=events.index)).fillna("").astype(str).str.strip().eq("")
                     ]
                     event_ids = [str(value) for value in pending.get("event_id", pd.Series(dtype=str)).tolist() if str(value).strip()]

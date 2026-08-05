@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
@@ -10,7 +11,10 @@ import pandas as pd
 from modules.analytics.outcome_tracker import (
     connect,
     export_reports,
+    is_material_lifecycle_event,
+    lifecycle_telegram,
     mark_lifecycle_events_notified,
+    material_lifecycle_events,
     pending_lifecycle_events,
     record_lifecycle_event,
     record_portfolio_buy,
@@ -244,4 +248,170 @@ def test_lifecycle_event_is_marked_only_after_successful_telegram_delivery(tmp_p
     assert sent[0]["status"] == "SENT"
     check = connect(db)
     assert pending_lifecycle_events(check) == []
+    check.close()
+
+
+def test_material_lifecycle_filter_excludes_reconfirmation_and_companion_close() -> None:
+    events = [
+        {"event_type": "SIGNAL_RECONFIRMED", "event_reason": "SCAN:BUY CANDIDATE"},
+        {"event_type": "CLOSED", "event_reason": "TP1_HIT"},
+        {"event_type": "TP1_HIT", "event_reason": "TP1_HIT"},
+        {"event_type": "ENTRY_TRIGGERED", "event_reason": "CLOSE_ABOVE"},
+    ]
+    assert [event["event_type"] for event in material_lifecycle_events(events)] == [
+        "TP1_HIT", "ENTRY_TRIGGERED"
+    ]
+    assert is_material_lifecycle_event(events[-1]) is True
+    assert is_material_lifecycle_event(events[0]) is False
+    assert is_material_lifecycle_event({"event_type": "CLOSED", "event_reason": "OTHER"}) is False
+
+
+def test_lifecycle_digest_marks_only_material_events_after_success(tmp_path: Path) -> None:
+    db = tmp_path / "history.db"
+    conn = connect(db)
+    material_id = record_lifecycle_event(
+        conn,
+        signal_id="SIG-MATERIAL",
+        symbol="BBCA",
+        event_type="ENTRY_TRIGGERED",
+        previous_status="WAITING_TRIGGER",
+        new_status="OPEN",
+        event_date="2026-08-05",
+        event_price=8950,
+        event_reason="CLOSE_ABOVE",
+    )
+    noisy_id = record_lifecycle_event(
+        conn,
+        signal_id="SIG-NOISY",
+        symbol="BBCA",
+        event_type="SIGNAL_RECONFIRMED",
+        previous_status="OPEN",
+        new_status="OPEN",
+        event_date="2026-08-05",
+        event_price=8950,
+        event_reason="SCAN:BUY CANDIDATE",
+    )
+    conn.commit()
+    conn.close()
+    args = SimpleNamespace(
+        db=str(db), output_dir=str(tmp_path / "performance"),
+        telegram_config=str(tmp_path / "telegram.json"),
+        scheduler_config=str(tmp_path / "scheduler.json"),
+        max_events=20, dry_run=False,
+    )
+    with patch("modules.analytics.outcome_tracker.send_telegram") as send:
+        assert lifecycle_telegram(args) == 0
+    send.assert_called_once()
+    check = connect(db)
+    pending = pending_lifecycle_events(check)
+    assert [row["event_id"] for row in pending] == [noisy_id]
+    assert material_id not in {row["event_id"] for row in pending}
+    check.close()
+    text = (tmp_path / "performance" / "LIFECYCLE_DIGEST_TELEGRAM.txt").read_text(encoding="utf-8")
+    assert "CLOSE_ABOVE" in text
+    assert "SIGNAL_RECONFIRMED" not in text
+
+
+def test_lifecycle_digest_keeps_events_pending_when_send_fails(tmp_path: Path) -> None:
+    db = tmp_path / "history.db"
+    conn = connect(db)
+    event_id = record_lifecycle_event(
+        conn,
+        signal_id="SIG-FAIL",
+        symbol="BBCA",
+        event_type="TP1_HIT",
+        previous_status="OPEN",
+        new_status="CLOSED",
+        event_date="2026-08-05",
+        event_price=9100,
+        event_reason="TP1_HIT",
+    )
+    conn.commit()
+    conn.close()
+    args = SimpleNamespace(
+        db=str(db), output_dir=str(tmp_path / "performance"),
+        telegram_config=str(tmp_path / "telegram.json"),
+        scheduler_config=str(tmp_path / "scheduler.json"),
+        max_events=20, dry_run=False,
+    )
+    with patch("modules.analytics.outcome_tracker.send_telegram", side_effect=RuntimeError("network")):
+        try:
+            lifecycle_telegram(args)
+        except RuntimeError:
+            pass
+    check = connect(db)
+    assert event_id in {row["event_id"] for row in pending_lifecycle_events(check)}
+    check.close()
+
+
+def test_lifecycle_digest_does_not_send_when_only_noisy_events_are_pending(tmp_path: Path) -> None:
+    db = tmp_path / "history.db"
+    conn = connect(db)
+    noisy_id = record_lifecycle_event(
+        conn,
+        signal_id="SIG-NOISY",
+        symbol="BBCA",
+        event_type="SIGNAL_RECONFIRMED",
+        previous_status="OPEN",
+        new_status="OPEN",
+        event_date="2026-08-05",
+        event_price=8950,
+        event_reason="SCAN:BUY CANDIDATE",
+    )
+    conn.commit()
+    conn.close()
+    args = SimpleNamespace(
+        db=str(db), output_dir=str(tmp_path / "performance"),
+        telegram_config=str(tmp_path / "telegram.json"),
+        scheduler_config=str(tmp_path / "scheduler.json"),
+        max_events=20, dry_run=False,
+    )
+    with patch("modules.analytics.outcome_tracker.send_telegram") as send:
+        assert lifecycle_telegram(args) == 0
+    send.assert_not_called()
+    check = connect(db)
+    assert [row["event_id"] for row in pending_lifecycle_events(check)] == [noisy_id]
+    check.close()
+    assert (tmp_path / "performance" / "LIFECYCLE_DIGEST_TELEGRAM.txt").read_text(encoding="utf-8") == ""
+
+
+def test_lifecycle_digest_acknowledges_only_events_in_bounded_message(tmp_path: Path) -> None:
+    db = tmp_path / "history.db"
+    conn = connect(db)
+    first_id = record_lifecycle_event(
+        conn,
+        signal_id="SIG-FIRST",
+        symbol="BBCA",
+        event_type="ENTRY_TRIGGERED",
+        previous_status="WAITING_TRIGGER",
+        new_status="OPEN",
+        event_date="2026-08-04",
+        event_price=8950,
+        event_reason="CLOSE_ABOVE",
+    )
+    second_id = record_lifecycle_event(
+        conn,
+        signal_id="SIG-SECOND",
+        symbol="TLKM",
+        event_type="TP1_HIT",
+        previous_status="OPEN",
+        new_status="CLOSED",
+        event_date="2026-08-05",
+        event_price=3000,
+        event_reason="TP1_HIT",
+    )
+    conn.commit()
+    conn.close()
+    args = SimpleNamespace(
+        db=str(db), output_dir=str(tmp_path / "performance"),
+        telegram_config=str(tmp_path / "telegram.json"),
+        scheduler_config=str(tmp_path / "scheduler.json"),
+        max_events=1, dry_run=False,
+    )
+    with patch("modules.analytics.outcome_tracker.send_telegram") as send:
+        assert lifecycle_telegram(args) == 0
+    send.assert_called_once()
+    check = connect(db)
+    assert [row["event_id"] for row in pending_lifecycle_events(check)] == [second_id]
+    assert first_id not in {row["event_id"] for row in pending_lifecycle_events(check)}
     check.close()

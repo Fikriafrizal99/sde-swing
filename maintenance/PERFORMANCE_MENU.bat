@@ -26,6 +26,7 @@ echo [7] Lihat Signal Outcome Ledger
 echo [8] Kirim laporan performance ke Telegram
 echo [9] Register semua keputusan BUY mesin
 echo [10] Maintain portfolio aktual
+echo [11] Kirim lifecycle digest (status material)
 echo [0] Kembali
 echo.
 set "PERF_CHOICE="
@@ -41,6 +42,7 @@ if "%PERF_CHOICE%"=="7" goto SHOW_LEDGER
 if "%PERF_CHOICE%"=="8" goto SEND_TELEGRAM
 if "%PERF_CHOICE%"=="9" goto REGISTER_BUY
 if "%PERF_CHOICE%"=="10" goto PORTFOLIO
+if "%PERF_CHOICE%"=="11" goto SEND_LIFECYCLE
 if "%PERF_CHOICE%"=="0" exit /b 0
 goto MENU
 
@@ -116,4 +118,24 @@ goto MENU
 
 :PORTFOLIO
 call maintenance\RECORD_PORTFOLIO_BUY.bat
+goto MENU
+
+:SEND_LIFECYCLE
+cls
+echo Lifecycle digest akan diperbarui dari SQLite dan dikirim terpisah.
+echo Tidak ada Yahoo refresh atau engine scan pada menu ini.
+%SDE_PYTHON_CMD% modules\analytics\outcome_tracker.py sync --bootstrap-db
+if errorlevel 1 (
+  echo Update lifecycle gagal. Pengiriman dibatalkan.
+  pause
+  goto MENU
+)
+echo.
+set "CONFIRM_LIFECYCLE="
+set /p "CONFIRM_LIFECYCLE=Kirim lifecycle digest material ke Telegram? [Y/N]: "
+if /I not "%CONFIRM_LIFECYCLE%"=="Y" goto MENU
+%SDE_PYTHON_CMD% modules\analytics\outcome_tracker.py lifecycle-telegram
+set "RC=%ERRORLEVEL%"
+if not "%RC%"=="0" echo Pengiriman lifecycle gagal. Exit code %RC%.
+pause
 goto MENU

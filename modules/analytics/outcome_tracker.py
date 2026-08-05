@@ -12,7 +12,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import pandas as pd
 
@@ -21,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from swing_utils import find_col, normalize_symbol
+from modules.job_runner.runtime import load_environment_file
 
 try:
     import requests
@@ -38,6 +39,15 @@ VALID_SIGNAL_QUALITY = {
     "SUCCESS_WITH_WARNING",
     "VALID_WITH_REFRESH_FALLBACK",
     "VALID_WITH_ZAPI_WARNING",
+}
+MATERIAL_LIFECYCLE_EVENT_TYPES = {
+    "ENTRY_TRIGGERED",
+    "TP1_HIT",
+    "TP2_HIT",
+    "STOP_LOSS_HIT",
+    "MAX_HOLD_EXIT",
+    "EXPIRED",
+    "INVALIDATED_BEFORE_ENTRY",
 }
 DEFAULT_DB = PROJECT_ROOT / "data/database/sde_swing_history.db"
 DEFAULT_HISTORICAL = PROJECT_ROOT / "data/output/historical/by_symbol"
@@ -248,6 +258,39 @@ def pending_lifecycle_events(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         ORDER BY event_date, created_at, symbol
         """
     ).fetchall()
+
+
+def _event_value(event: Mapping[str, Any] | sqlite3.Row, key: str, default: Any = "") -> Any:
+    try:
+        return event[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
+def is_material_lifecycle_event(event: Mapping[str, Any] | sqlite3.Row) -> bool:
+    """Return whether an event is worth sending as a lifecycle notification.
+
+    Reconfirmation scans and the synthetic ``CLOSED`` companion event are
+    retained in SQLite for auditability, but they do not create a Telegram
+    notification.  The milestone/terminal event carries the actionable fact.
+    """
+    event_type = norm_text(_event_value(event, "event_type")).upper()
+    if event_type in MATERIAL_LIFECYCLE_EVENT_TYPES:
+        return True
+    if event_type == "CLOSED":
+        # ``CLOSED`` is emitted as a synthetic companion to a concrete
+        # milestone (including conservative stop/target exits).  The
+        # milestone itself is the notification-worthy event, so never send
+        # the companion and risk duplicate Telegram noise.
+        return False
+    return False
+
+
+def material_lifecycle_events(
+    events: Iterable[Mapping[str, Any] | sqlite3.Row],
+) -> list[Mapping[str, Any] | sqlite3.Row]:
+    """Filter pending/audit events to actionable lifecycle milestones."""
+    return [event for event in events if is_material_lifecycle_event(event)]
 
 
 def mark_lifecycle_events_notified(db_path: Path, event_ids: Iterable[str]) -> int:
@@ -1385,17 +1428,26 @@ def _active_recommendations_telegram(active: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
-def _status_changes_telegram(events: list[sqlite3.Row]) -> str:
-    if not events:
+def _status_changes_telegram(events: list[sqlite3.Row], *, max_events: int = 20) -> str:
+    material = material_lifecycle_events(events)
+    if not material:
         return ""
-    lines = ["🔄 PERUBAHAN STATUS", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
-    for event in events:
+    limit = max(int(max_events or 1), 1)
+    lines = [
+        "🔔 LIFECYCLE DIGEST",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"Perubahan material: {len(material)}",
+    ]
+    for event in material[:limit]:
         symbol = html.escape(str(event["symbol"] or ""))
         previous = html.escape(str(event["previous_status"] or "-").replace("_", " "))
         new = html.escape(str(event["new_status"] or "-").replace("_", " "))
         reason = html.escape(str(event["event_reason"] or event["event_type"] or ""))
         price = fmt_price(event["event_price"])
-        lines.extend(["", f"✅ {symbol}", f"{previous} → {new}", f"{reason} di {price}"])
+        event_date = html.escape(str(event["event_date"] or ""))
+        lines.append(f"• {event_date} | {symbol} | {previous} → {new} | {reason} | {price}")
+    if len(material) > limit:
+        lines.append(f"… {len(material) - limit} perubahan lain tersimpan di ledger.")
     return "\n".join(lines)
 
 
@@ -1416,7 +1468,7 @@ def export_reports(
     events.to_csv(output_dir / "LIFECYCLE_EVENTS.csv", index=False, encoding="utf-8-sig")
     portfolio = portfolio_df(conn)
     portfolio.to_csv(output_dir / "PORTFOLIO_POSITIONS.csv", index=False, encoding="utf-8-sig")
-    pending = pending_lifecycle_events(conn)
+    pending = material_lifecycle_events(pending_lifecycle_events(conn))
     (output_dir / "ACTIVE_RECOMMENDATIONS_TELEGRAM.txt").write_text(
         _active_recommendations_telegram(active), encoding="utf-8"
     )
@@ -1566,6 +1618,37 @@ def send_telegram(message_path: Path, telegram_config: Path, scheduler_config: P
             raise RuntimeError(f"Telegram API gagal: {body}")
 
 
+def lifecycle_telegram(args: argparse.Namespace) -> int:
+    """Send only actionable lifecycle events and acknowledge them on success."""
+    db_path = Path(args.db)
+    output_dir = Path(args.output_dir)
+    conn = connect(db_path)
+    try:
+        events = material_lifecycle_events(pending_lifecycle_events(conn))
+    finally:
+        conn.close()
+
+    message_path = output_dir / "LIFECYCLE_DIGEST_TELEGRAM.txt"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    limit = max(int(args.max_events or 1), 1)
+    message = _status_changes_telegram(events, max_events=limit)
+    message_path.write_text(message, encoding="utf-8")
+    if not events:
+        print("Tidak ada perubahan lifecycle material. Telegram tidak dikirim.")
+        return 0
+    if args.dry_run:
+        print(message)
+        return 0
+
+    send_telegram(message_path, Path(args.telegram_config), Path(args.scheduler_config), False)
+    # A bounded digest must not acknowledge rows that were omitted from the
+    # message; they remain pending for the next maintenance send.
+    event_ids = [norm_text(event["event_id"]) for event in events[:limit]]
+    marked = mark_lifecycle_events_notified(db_path, event_ids)
+    print(f"Lifecycle digest terkirim: {len(events)} event, acknowledged={marked}")
+    return 0
+
+
 def sync(args: argparse.Namespace) -> int:
     conn = connect(Path(args.db))
     bootstrap = RegisterResult()
@@ -1677,11 +1760,23 @@ def make_parser() -> argparse.ArgumentParser:
     telegram.add_argument("--telegram-config", default=str(PROJECT_ROOT / "config/telegram.json"))
     telegram.add_argument("--scheduler-config", default=str(PROJECT_ROOT / "config/scheduler.json"))
     telegram.add_argument("--dry-run", action="store_true")
+
+    lifecycle = sub.add_parser(
+        "lifecycle-telegram",
+        help="Send only material lifecycle changes to Telegram",
+    )
+    lifecycle.add_argument("--db", default=str(DEFAULT_DB))
+    lifecycle.add_argument("--output-dir", default=str(DEFAULT_OUTPUT))
+    lifecycle.add_argument("--telegram-config", default=str(PROJECT_ROOT / "config/telegram.json"))
+    lifecycle.add_argument("--scheduler-config", default=str(PROJECT_ROOT / "config/scheduler.json"))
+    lifecycle.add_argument("--max-events", type=int, default=20)
+    lifecycle.add_argument("--dry-run", action="store_true")
     return parser
 
 
 def main() -> int:
     args = make_parser().parse_args()
+    load_environment_file()
     if args.command == "sync":
         return sync(args)
     if args.command == "portfolio":
@@ -1706,6 +1801,8 @@ def main() -> int:
         send_telegram(message_path, Path(args.telegram_config), Path(args.scheduler_config), args.dry_run)
         print("Laporan performance berhasil diproses.")
         return 0
+    if args.command == "lifecycle-telegram":
+        return lifecycle_telegram(args)
     return 1
 
 
