@@ -4,9 +4,10 @@ import json
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -17,7 +18,7 @@ if str(ROOT) not in sys.path:
 
 import run_sde_job
 from generate_task_scheduler_xml import main as generate_xml_main
-from modules.job_runner.core import broker_readiness, validate_broker_summary
+from modules.job_runner.core import _post_market_evaluation_datetime, broker_readiness, validate_broker_summary
 from modules.job_runner.delivery import deliver, split_telegram_text
 from modules.job_runner.reports import ReportPayload
 from modules.job_runner.runtime import FileLock, ResourceLocked, RunnerContext
@@ -115,6 +116,28 @@ def write_broker(tmp: Path, broker_date: str, symbols: list[str] | None = None, 
 
 
 class SchedulerHardeningTests(unittest.TestCase):
+    def test_post_market_evaluation_uses_actual_start_time_before_close(self) -> None:
+        ctx = make_ctx(
+            Path(tempfile.mkdtemp()),
+            trade_date=date(2026, 8, 5),
+            started_at=datetime(2026, 8, 5, 16, 6, tzinfo=ZoneInfo("Asia/Jakarta")),
+        )
+        self.assertEqual(
+            _post_market_evaluation_datetime(ctx, {"market_close": "16:15"}),
+            "2026-08-05T16:06:00+07:00",
+        )
+
+    def test_post_market_historical_evaluation_remains_deterministic(self) -> None:
+        ctx = make_ctx(
+            Path(tempfile.mkdtemp()),
+            trade_date=date(2026, 8, 4),
+            started_at=datetime(2026, 8, 5, 16, 6, tzinfo=ZoneInfo("Asia/Jakarta")),
+        )
+        self.assertEqual(
+            _post_market_evaluation_datetime(ctx, {"market_close": "16:15"}),
+            "2026-08-04T16:15:00+07:00",
+        )
+
     def test_post_market_dry_run_calls_technical_stage_not_master_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             ctx = make_ctx(Path(td), job="post_market", dry_run=True)

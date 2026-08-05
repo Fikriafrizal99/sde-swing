@@ -29,6 +29,21 @@ class SourceValidationBlocked(RuntimeError):
         )
 
 
+def _post_market_evaluation_datetime(ctx: RunnerContext, freshness: dict[str, Any]) -> str:
+    """Return the downloader as-of timestamp for this post-market run.
+
+    A live run must use its actual start time so a job launched before the
+    IDX close cannot accept the current partial daily candle.  Explicit
+    historical/dry-run contexts keep a deterministic close-time timestamp for
+    the requested trade date.
+    """
+    evaluation_at = ctx.started_at
+    if evaluation_at.date() == ctx.trade_date:
+        return evaluation_at.isoformat(timespec="seconds")
+    market_close = str(freshness.get("market_close", "16:15"))
+    return f"{ctx.trade_date.isoformat()}T{market_close}:00+07:00"
+
+
 def run_command(ctx: RunnerContext, name: str, command: list[str]) -> None:
     append_job_log(ctx, "COMMAND_START", name)
     ctx.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -194,7 +209,15 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
     data_source = str(freshness.get("data_source", "LIVE")).upper()
     if data_source == "FIXTURE" and not ctx.dry_run:
         raise RuntimeError("Live post_market menolak data_source FIXTURE")
-    evaluation_dt = f"{ctx.trade_date.isoformat()}T17:00:00+07:00"
+    # Evaluate freshness at the moment this run started.  The previous
+    # implementation hard-coded 17:00 for every run, which made a job
+    # started before the IDX close treat the current day's in-progress Yahoo
+    # candle as closed.  That partial value then became "already current" and
+    # could remain frozen in performance artifacts.  Keep an explicit close
+    # time only for historical/dry-run contexts whose trade date is not the
+    # local date of the run.
+    evaluation_dt = _post_market_evaluation_datetime(ctx, freshness)
+    append_job_log(ctx, "POST_MARKET_EVALUATION_DATETIME", evaluation_dt)
     yahoo_policy = freshness.get("yahoo_failure_policy", "STOP")
     downloader_cmd = [
         sys.executable,

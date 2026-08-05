@@ -24,9 +24,11 @@ from modules.historical_downloader.historical_downloader import (
     SKIP_ALREADY_CURRENT,
     build_refresh_plan,
     build_result,
+    current_candle_written_before_close,
     fetch_batch,
     fetch_live_group_with_fallback,
     merge_history,
+    should_write_history,
 )
 from modules.broker_bridge.wait_for_broker_export import inspect as inspect_broker
 from modules.broker_bridge.broker_navigator_export import export_symbols, write_symbol_csv
@@ -150,6 +152,34 @@ class SwingV12Tests(unittest.TestCase):
             self.assertEqual(plan.refresh_action, SKIP_ALREADY_CURRENT)
             self.assertEqual(plan.download_start_date, "")
             self.assertEqual(plan.download_end_date, "")
+
+    def test_yahoo_future_candle_is_ignored_until_expected_session_is_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "INCO.csv"
+            ohlcv_rows("INCO", ["2026-08-04", "2026-08-05"]).to_csv(destination, index=False)
+            plan = build_refresh_plan("INCO", destination, downloader_args(), date(2026, 8, 4))
+            self.assertEqual(plan.local_latest_valid_date, "2026-08-04")
+            self.assertTrue(plan.history_sanitized)
+            self.assertEqual(plan.existing["Date"].dt.date.max().isoformat(), "2026-08-04")
+            self.assertTrue(should_write_history(plan, plan.existing))
+
+    def test_yahoo_current_candle_written_before_close_is_repaired(self) -> None:
+        self.assertTrue(
+            current_candle_written_before_close(
+                "2026-08-05",
+                date(2026, 8, 5),
+                "2026-08-05T09:26:57",
+                "16:15",
+            )
+        )
+        self.assertFalse(
+            current_candle_written_before_close(
+                "2026-08-05",
+                date(2026, 8, 5),
+                "2026-08-05T16:20:00",
+                "16:15",
+            )
+        )
 
     def test_yahoo_daily_incremental_requests_first_missing_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

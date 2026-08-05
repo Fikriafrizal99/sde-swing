@@ -15,7 +15,7 @@ import os
 import sys
 import time
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -88,6 +88,7 @@ class RefreshPlan:
     first_internal_gap: str = ""
     first_missing_session: str = ""
     refresh_reason: str = ""
+    history_sanitized: bool = False
 
 
 @dataclass
@@ -356,6 +357,43 @@ def latest_partial_date(df: pd.DataFrame) -> str:
     return partial["Date"].max().date().isoformat()
 
 
+def trim_future_history(df: pd.DataFrame, expected_closed: date) -> tuple[pd.DataFrame, bool]:
+    """Exclude candles newer than the stage's as-of date.
+
+    Yahoo can return an in-progress daily row before the IDX close.  Once that
+    row is written locally, comparing only the latest date makes subsequent
+    runs incorrectly classify the file as current.  The downloader therefore
+    treats the expected closed date as a hard as-of boundary and removes any
+    future rows before planning or writing the history.
+    """
+    if df is None or df.empty or "Date" not in df.columns:
+        return df, False
+    parsed = pd.to_datetime(df["Date"], errors="coerce")
+    cutoff = pd.Timestamp(expected_closed)
+    keep = parsed.isna() | (parsed.dt.normalize() <= cutoff)
+    if bool(keep.all()):
+        return df, False
+    return df.loc[keep].copy().reset_index(drop=True), True
+
+
+def current_candle_written_before_close(
+    local_latest_valid_date: str,
+    expected_closed: date,
+    local_modified_at: str,
+    market_close: str,
+) -> bool:
+    """Detect a current-session row that was persisted before market close."""
+    if local_latest_valid_date != expected_closed.isoformat() or not local_modified_at:
+        return False
+    try:
+        modified = datetime.fromisoformat(local_modified_at)
+        hour, minute = (int(part) for part in str(market_close).split(":", 1))
+        close = dt_time(hour, minute)
+    except (TypeError, ValueError):
+        return False
+    return modified.date() == expected_closed and modified.time() < close
+
+
 def parse_date_text(value: str) -> date | None:
     try:
         return date.fromisoformat(str(value)[:10])
@@ -471,7 +509,22 @@ def classify_refresh_action(
 
 def build_refresh_plan(symbol: str, destination: Path, args: argparse.Namespace, expected_closed: date) -> RefreshPlan:
     existing, schema_valid, modified_at, warning = inspect_existing(destination, symbol)
+    existing, history_sanitized = trim_future_history(existing, expected_closed)
+    if history_sanitized:
+        warning = "; ".join(
+            item for item in (warning, f"future_candles_ignored_after_{expected_closed.isoformat()}") if item
+        )
     local_latest = latest_date(existing, valid_only=True)
+    current_candle_preclose = current_candle_written_before_close(
+        local_latest,
+        expected_closed,
+        modified_at,
+        str(getattr(args, "market_close", "16:15") or "16:15"),
+    )
+    if current_candle_preclose:
+        warning = "; ".join(
+            item for item in (warning, "current_candle_written_before_market_close") if item
+        )
     holidays = list(getattr(args, "market_holiday", []) or [])
     special_trading_days = list(getattr(args, "special_trading_day", []) or [])
     overlap_sessions = int(
@@ -498,6 +551,7 @@ def build_refresh_plan(symbol: str, destination: Path, args: argparse.Namespace,
         integrity["duplicate_dates"]
         or integrity["internal_gaps"]
         or integrity["invalid_latest_candle"]
+        or current_candle_preclose
     )
     explicit_repair = bool(getattr(args, "repair", False) or getattr(args, "force_refresh", False))
     action = classify_refresh_action(
@@ -528,6 +582,8 @@ def build_refresh_plan(symbol: str, destination: Path, args: argparse.Namespace,
         reason = "EXPLICIT_REPAIR"
     elif integrity["invalid_latest_candle"]:
         reason = "INVALID_LATEST_CANDLE"
+    elif current_candle_preclose:
+        reason = "CURRENT_CANDLE_WRITTEN_BEFORE_MARKET_CLOSE"
     elif integrity["duplicate_dates"]:
         reason = "DUPLICATE_DATES"
     elif integrity["internal_gaps"]:
@@ -560,6 +616,7 @@ def build_refresh_plan(symbol: str, destination: Path, args: argparse.Namespace,
         first_internal_gap=integrity["internal_gaps"][0].isoformat() if integrity["internal_gaps"] else "",
         first_missing_session=first_missing,
         refresh_reason=reason,
+        history_sanitized=history_sanitized,
     )
 
 
@@ -601,7 +658,11 @@ def histories_equal(left: pd.DataFrame, right: pd.DataFrame) -> bool:
 
 
 def should_write_history(plan: RefreshPlan, combined: pd.DataFrame) -> bool:
-    return plan.refresh_action != ALREADY_CURRENT and not combined.empty and not histories_equal(plan.existing, combined)
+    if combined.empty:
+        return False
+    if plan.history_sanitized:
+        return True
+    return plan.refresh_action != ALREADY_CURRENT and not histories_equal(plan.existing, combined)
 
 
 def history_change_counts(existing: pd.DataFrame, fresh: pd.DataFrame) -> tuple[int, int]:
