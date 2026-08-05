@@ -24,6 +24,7 @@ from modules.job_runner.core import (
     try_import_existing_broker_export,
     validate_broker_summary,
 )
+from modules.job_runner.report_validation import validate_final_watchlist_sources
 from modules.job_runner.delivery import deliver, split_telegram_text
 from modules.job_runner.reports import ReportPayload
 from modules.job_runner.runtime import FileLock, ResourceLocked, RunnerContext
@@ -121,6 +122,30 @@ def write_broker(tmp: Path, broker_date: str, symbols: list[str] | None = None, 
 
 
 class SchedulerHardeningTests(unittest.TestCase):
+    def test_final_watchlist_accepts_target_rr_when_resistance_rr_is_empty(self) -> None:
+        decisions = pd.DataFrame({
+            "Symbol": ["INDF"],
+            "Decision_Status_Final": ["BUY READY"],
+        })
+        plans = pd.DataFrame({
+            "Symbol": ["INDF"],
+            "Entry_Zone_Low": [7200.0],
+            "Entry_Zone_High": [7285.7],
+            "Initial_Stop": [7071.4],
+            "Target_1": [7500.0],
+            "Target_2": [7714.3],
+            "RR_To_Resistance": [float("nan")],
+            "RR_To_Minor_Resistance": [float("nan")],
+            "Target_2_RR": [2.0],
+        })
+        result = validate_final_watchlist_sources(
+            decisions,
+            plans,
+            decision_path="decisions.csv",
+            entry_plan_path="entry_plans.csv",
+        )
+        self.assertEqual(result["actionable_rows"], 1)
+
     def test_duplicate_delivery_keeps_engine_terminal_and_dependency_safe(self) -> None:
         delivery = [{"status": "DUPLICATE_SUPPRESSED", "report_type": "post_market"}]
         self.assertEqual(run_sde_job._status_after_delivery(delivery), "SUCCESS_WITH_WARNING")

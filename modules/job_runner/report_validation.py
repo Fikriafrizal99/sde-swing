@@ -474,17 +474,28 @@ def validate_final_watchlist_sources(
         source_of_truth=[decision_path],
         require_values_for=("symbol", "decision"),
     )
+    plan_aliases = {
+        "symbol": ("Symbol", "EMITEN", "Ticker"),
+        "entry_low": ("Entry_Zone_Low", "Entry_Low", "Entry_Min"),
+        "entry_high": ("Entry_Zone_High", "Entry_High", "Entry_Max"),
+        "stop_loss": ("Initial_Stop", "Stop_Loss", "Stop"),
+        "target_1": ("Target_1", "TP1"),
+        "target_2": ("Target_2", "TP2"),
+        # A resistance pivot is optional for a valid R-multiple plan.  When
+        # no confirmed resistance exists above entry, the exit engine still
+        # publishes executable Target_1/Target_2 R values.
+        "risk_reward": (
+            "RR_To_Resistance",
+            "RR_To_Minor_Resistance",
+            "Risk_Reward",
+            "RR",
+            "Target_2_RR",
+            "Target_1_RR",
+        ),
+    }
     plan_columns = require_columns(
         entry_plans,
-        {
-            "symbol": ("Symbol", "EMITEN", "Ticker"),
-            "entry_low": ("Entry_Zone_Low", "Entry_Low", "Entry_Min"),
-            "entry_high": ("Entry_Zone_High", "Entry_High", "Entry_Max"),
-            "stop_loss": ("Initial_Stop", "Stop_Loss", "Stop"),
-            "target_1": ("Target_1", "TP1"),
-            "target_2": ("Target_2", "TP2"),
-            "risk_reward": ("RR_To_Resistance", "RR_To_Minor_Resistance", "Risk_Reward", "RR"),
-        },
+        plan_aliases,
         "final_watchlist_entry_plans",
         input_paths=[entry_plan_path],
         source_of_truth=[entry_plan_path],
@@ -526,7 +537,21 @@ def validate_final_watchlist_sources(
                 continue
             row = rows.iloc[0]
             for canonical in ("entry_low", "entry_high", "stop_loss", "target_1", "target_2", "risk_reward"):
-                if is_missing(row.get(plan_columns[canonical])):
+                if canonical == "risk_reward":
+                    # ``require_columns`` selects the first matching column,
+                    # but that column can be NaN for a symbol without a
+                    # resistance pivot while Target_2_RR is still valid.
+                    value = next(
+                        (
+                            row.get(column)
+                            for column in plan_aliases["risk_reward"]
+                            if column in row.index and not is_missing(row.get(column))
+                        ),
+                        None,
+                    )
+                else:
+                    value = row.get(plan_columns[canonical])
+                if is_missing(value):
                     plan_errors.append(f"ENTRY_PLAN_FIELD_EMPTY:{symbol}:{canonical}")
         if plan_errors:
             raise ReportSourceValidationError(

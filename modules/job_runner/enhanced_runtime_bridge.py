@@ -472,7 +472,18 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             "stop_loss": _value(plan, "Initial_Stop", "Stop_Loss", "Stop", default=""),
             "target_1": _value(plan, "Target_1", "TP1", default=""),
             "target_2": _value(plan, "Target_2", "TP2", default=""),
-            "risk_reward": _value(plan, "RR_To_Resistance", "RR_To_Minor_Resistance", "Risk_Reward", "RR", default=""),
+            # Resistance pivots are optional.  Fall back to the executable
+            # target R-multiple when no resistance is confirmed above entry.
+            "risk_reward": _value(
+                plan,
+                "RR_To_Resistance",
+                "RR_To_Minor_Resistance",
+                "Risk_Reward",
+                "RR",
+                "Target_2_RR",
+                "Target_1_RR",
+                default="",
+            ),
             "technical_score": _value(raw, "Technical_Score_Final", "Technical_Score", default=""),
             "technical_state": _value(raw, "Technical_State", "Technical_Confirmation", "Technical_Grade", "Technical_Regime", default=""),
             "broker_score": _value(raw, "Broker_Score", "Broker_Confidence_Final", default=""),
