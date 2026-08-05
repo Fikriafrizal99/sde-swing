@@ -10,6 +10,7 @@ import pandas as pd
 
 from modules.analytics.outcome_tracker import (
     connect,
+    active_telegram,
     export_reports,
     is_material_lifecycle_event,
     lifecycle_telegram,
@@ -23,6 +24,7 @@ from modules.analytics.outcome_tracker import (
     update_outcomes,
 )
 from modules.job_runner.delivery import deliver
+from modules.job_runner.enhanced_runtime_bridge import lifecycle_payloads
 from modules.job_runner.reports import ReportPayload
 from modules.job_runner.runtime import RunnerContext
 
@@ -415,3 +417,73 @@ def test_lifecycle_digest_acknowledges_only_events_in_bounded_message(tmp_path: 
     assert [row["event_id"] for row in pending_lifecycle_events(check)] == [second_id]
     assert first_id not in {row["event_id"] for row in pending_lifecycle_events(check)}
     check.close()
+
+
+def test_active_recommendations_send_from_performance_command(tmp_path: Path) -> None:
+    output = tmp_path / "performance"
+    output.mkdir()
+    (output / "ACTIVE_RECOMMENDATIONS_TELEGRAM.txt").write_text(
+        "REKOMENDASI AKTIF\nTotal aktif: 1 saham\nBBCA",
+        encoding="utf-8",
+    )
+    pd.DataFrame([{"symbol": "BBCA", "current_status": "WAITING_TRIGGER"}]).to_csv(
+        output / "ACTIVE_RECOMMENDATIONS.csv", index=False,
+    )
+    args = SimpleNamespace(
+        output_dir=str(output),
+        telegram_config=str(tmp_path / "telegram.json"),
+        scheduler_config=str(tmp_path / "scheduler.json"),
+        dry_run=False,
+    )
+    with patch("modules.analytics.outcome_tracker.send_telegram") as send:
+        assert active_telegram(args) == 0
+    send.assert_called_once_with(
+        output / "ACTIVE_RECOMMENDATIONS_TELEGRAM.txt",
+        Path(args.telegram_config),
+        Path(args.scheduler_config),
+        False,
+    )
+
+
+def test_active_recommendations_empty_snapshot_is_not_sent(tmp_path: Path) -> None:
+    output = tmp_path / "performance"
+    output.mkdir()
+    (output / "ACTIVE_RECOMMENDATIONS_TELEGRAM.txt").write_text(
+        "REKOMENDASI AKTIF\nTotal aktif: 0 saham",
+        encoding="utf-8",
+    )
+    pd.DataFrame(columns=["symbol", "current_status"]).to_csv(
+        output / "ACTIVE_RECOMMENDATIONS.csv", index=False,
+    )
+    args = SimpleNamespace(
+        output_dir=str(output),
+        telegram_config=str(tmp_path / "telegram.json"),
+        scheduler_config=str(tmp_path / "scheduler.json"),
+        dry_run=False,
+    )
+    with patch("modules.analytics.outcome_tracker.send_telegram") as send:
+        assert active_telegram(args) == 0
+    send.assert_not_called()
+
+
+def test_engine_delivery_bridge_excludes_active_recommendations(tmp_path: Path) -> None:
+    db = tmp_path / "history.db"
+    ctx = _delivery_context(tmp_path, db)
+    analytics = tmp_path / "analytics" / "performance"
+    analytics.mkdir(parents=True)
+    ctx.config["paths"]["analytics_output_root"] = str(tmp_path / "analytics")
+    (analytics / "ACTIVE_RECOMMENDATIONS_TELEGRAM.txt").write_text(
+        "ACTIVE RECOMMENDATIONS SHOULD NOT BE SENT HERE", encoding="utf-8",
+    )
+    (analytics / "STATUS_CHANGES_TELEGRAM.txt").write_text(
+        "LIFECYCLE DIGEST\nENTRY_TRIGGERED", encoding="utf-8",
+    )
+    pd.DataFrame([{
+        "event_id": "EVENT-1",
+        "event_type": "ENTRY_TRIGGERED",
+        "event_reason": "CLOSE_ABOVE",
+        "telegram_notified_at": "",
+    }]).to_csv(analytics / "LIFECYCLE_EVENTS.csv", index=False)
+    payloads = lifecycle_payloads(ctx)
+    assert [payload.report_type for payload in payloads] == ["status_changes"]
+    assert all("ACTIVE_RECOMMENDATIONS" not in payload.text for payload in payloads)

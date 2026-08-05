@@ -27,6 +27,7 @@ echo [8] Kirim laporan performance ke Telegram
 echo [9] Register semua keputusan BUY mesin
 echo [10] Maintain portfolio aktual
 echo [11] Kirim lifecycle digest (status material)
+echo [12] Kirim active recommendations ke Telegram
 echo [0] Kembali
 echo.
 set "PERF_CHOICE="
@@ -43,6 +44,7 @@ if "%PERF_CHOICE%"=="8" goto SEND_TELEGRAM
 if "%PERF_CHOICE%"=="9" goto REGISTER_BUY
 if "%PERF_CHOICE%"=="10" goto PORTFOLIO
 if "%PERF_CHOICE%"=="11" goto SEND_LIFECYCLE
+if "%PERF_CHOICE%"=="12" goto SEND_ACTIVE
 if "%PERF_CHOICE%"=="0" exit /b 0
 goto MENU
 
@@ -137,5 +139,25 @@ if /I not "%CONFIRM_LIFECYCLE%"=="Y" goto MENU
 %SDE_PYTHON_CMD% modules\analytics\outcome_tracker.py lifecycle-telegram
 set "RC=%ERRORLEVEL%"
 if not "%RC%"=="0" echo Pengiriman lifecycle gagal. Exit code %RC%.
+pause
+goto MENU
+
+:SEND_ACTIVE
+cls
+echo Active recommendations akan diperbarui dari SQLite dan dikirim terpisah.
+echo Tidak ada Yahoo refresh atau engine scan pada menu ini.
+%SDE_PYTHON_CMD% modules\analytics\outcome_tracker.py sync --bootstrap-db
+if errorlevel 1 (
+  echo Update active recommendations gagal. Pengiriman dibatalkan.
+  pause
+  goto MENU
+)
+echo.
+set "CONFIRM_ACTIVE="
+set /p "CONFIRM_ACTIVE=Kirim active recommendations ke Telegram? [Y/N]: "
+if /I not "%CONFIRM_ACTIVE%"=="Y" goto MENU
+%SDE_PYTHON_CMD% modules\analytics\outcome_tracker.py active-telegram
+set "RC=%ERRORLEVEL%"
+if not "%RC%"=="0" echo Pengiriman active recommendations gagal. Exit code %RC%.
 pause
 goto MENU

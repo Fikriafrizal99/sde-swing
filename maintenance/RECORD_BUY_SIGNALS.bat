@@ -31,6 +31,7 @@ if "%RC%"=="0" (
   echo [OK] BUY signal ledger selesai diperbarui.
   echo File utama: data\output\analytics\performance\SIGNAL_OUTCOME_LEDGER.csv
   echo Active:     data\output\analytics\performance\ACTIVE_RECOMMENDATIONS.csv
+  echo Kirim active recommendations: PERFORMANCE_MENU.bat menu 12
   echo Events:     data\output\analytics\performance\LIFECYCLE_EVENTS.csv
 ) else (
   echo [FAILED] Register BUY signal gagal. Exit code %RC%.

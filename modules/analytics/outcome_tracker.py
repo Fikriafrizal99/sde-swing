@@ -1649,6 +1649,32 @@ def lifecycle_telegram(args: argparse.Namespace) -> int:
     return 0
 
 
+def active_telegram(args: argparse.Namespace) -> int:
+    """Send the latest active-recommendation snapshot to Telegram."""
+    output_dir = Path(args.output_dir)
+    message_path = output_dir / "ACTIVE_RECOMMENDATIONS_TELEGRAM.txt"
+    active_csv = output_dir / "ACTIVE_RECOMMENDATIONS.csv"
+    if not message_path.exists():
+        raise FileNotFoundError("Rekomendasi aktif belum dibuat. Jalankan Update Outcome terlebih dahulu.")
+
+    active_count: int | None = None
+    if active_csv.exists():
+        try:
+            active_count = len(pd.read_csv(active_csv, low_memory=False))
+        except Exception:
+            active_count = None
+    if active_count == 0:
+        print("Tidak ada rekomendasi aktif. Telegram tidak dikirim.")
+        return 0
+    if not message_path.read_text(encoding="utf-8").strip():
+        print("File rekomendasi aktif kosong. Telegram tidak dikirim.")
+        return 0
+
+    send_telegram(message_path, Path(args.telegram_config), Path(args.scheduler_config), args.dry_run)
+    print("Active recommendations berhasil diproses.")
+    return 0
+
+
 def sync(args: argparse.Namespace) -> int:
     conn = connect(Path(args.db))
     bootstrap = RegisterResult()
@@ -1771,6 +1797,15 @@ def make_parser() -> argparse.ArgumentParser:
     lifecycle.add_argument("--scheduler-config", default=str(PROJECT_ROOT / "config/scheduler.json"))
     lifecycle.add_argument("--max-events", type=int, default=20)
     lifecycle.add_argument("--dry-run", action="store_true")
+
+    active = sub.add_parser(
+        "active-telegram",
+        help="Send the latest active recommendations to Telegram",
+    )
+    active.add_argument("--output-dir", default=str(DEFAULT_OUTPUT))
+    active.add_argument("--telegram-config", default=str(PROJECT_ROOT / "config/telegram.json"))
+    active.add_argument("--scheduler-config", default=str(PROJECT_ROOT / "config/scheduler.json"))
+    active.add_argument("--dry-run", action="store_true")
     return parser
 
 
@@ -1803,6 +1838,8 @@ def main() -> int:
         return 0
     if args.command == "lifecycle-telegram":
         return lifecycle_telegram(args)
+    if args.command == "active-telegram":
+        return active_telegram(args)
     return 1
 
 
