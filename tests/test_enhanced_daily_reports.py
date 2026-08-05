@@ -4,11 +4,12 @@ import csv
 from pathlib import Path
 
 from modules.ai_interpretation import GeminiInterpreter
+from modules.ai_interpretation.gemini_interpreter import GeminiHTTPError
 from modules.job_runner.enhanced_daily_reports import EnhancedDailyReportBuilder
 
 
 def test_gemini_without_key_uses_deterministic_fallback() -> None:
-    interpreter = GeminiInterpreter(api_key="", model="gemini-test")
+    interpreter = GeminiInterpreter(api_key="", model="gemini-test", cache_enabled=False)
     result = interpreter.interpret(
         {"symbol": "ANTM", "decision": "BUY"},
         {"main_reason": "Alasan engine", "main_risk": "Risiko engine"},
@@ -93,7 +94,7 @@ def _watchlist_row(index: int, decision: str) -> dict:
 def test_final_watchlist_uses_agreed_format_and_exports_active_rows(tmp_path: Path) -> None:
     builder = EnhancedDailyReportBuilder(
         output_root=tmp_path,
-        interpreter=GeminiInterpreter(api_key=""),
+        interpreter=GeminiInterpreter(api_key="", cache_enabled=False),
         max_watchlist_messages=5,
     )
     decisions = ["BUY", "BUY_CANDIDATE", "WATCH_HIGH", "WATCH", "WATCH", "WAIT", "AVOID"]
@@ -159,7 +160,7 @@ def test_final_watchlist_uses_agreed_format_and_exports_active_rows(tmp_path: Pa
 
 
 def test_market_outlook_matches_restored_sections(tmp_path: Path) -> None:
-    builder = EnhancedDailyReportBuilder(tmp_path, GeminiInterpreter(api_key=""))
+    builder = EnhancedDailyReportBuilder(tmp_path, GeminiInterpreter(api_key="", cache_enabled=False))
     artifact = builder.build_market_outlook({
         "trade_date": "2026-08-03",
         "market_regime": "BULLISH MODERATE",
@@ -198,7 +199,7 @@ def test_market_outlook_matches_restored_sections(tmp_path: Path) -> None:
 
 
 def test_post_market_matches_agreed_sections_and_counts(tmp_path: Path) -> None:
-    builder = EnhancedDailyReportBuilder(tmp_path, GeminiInterpreter(api_key=""))
+    builder = EnhancedDailyReportBuilder(tmp_path, GeminiInterpreter(api_key="", cache_enabled=False))
     artifact = builder.build_post_market({
         "trade_date": "2026-08-04",
         "finished_at": "2026-08-04T18:37:00+07:00",
@@ -281,7 +282,7 @@ def test_post_market_matches_agreed_sections_and_counts(tmp_path: Path) -> None:
 
 
 def test_post_market_does_not_invent_missing_funnel_counts(tmp_path: Path) -> None:
-    builder = EnhancedDailyReportBuilder(tmp_path, GeminiInterpreter(api_key=""))
+    builder = EnhancedDailyReportBuilder(tmp_path, GeminiInterpreter(api_key="", cache_enabled=False))
     artifact = builder.build_post_market({
         "trade_date": "2026-08-04",
         "process_status": "SUCCESS",
@@ -294,3 +295,127 @@ def test_post_market_does_not_invent_missing_funnel_counts(tmp_path: Path) -> No
     assert "• Universe awal           : 10" in artifact.text
     assert "• Tahap rinci belum tersedia dari artifact engine" in artifact.text
     assert "• Belum tersedia dari artifact engine" in artifact.text
+
+
+class CountingInterpreter(GeminiInterpreter):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(api_key="test-key", model="gemini-test", cache_enabled=False, **kwargs)
+        self.requests: list[str] = []
+
+    def _request(self, facts: dict, report_kind: str) -> dict:
+        self.requests.append(report_kind)
+        return {
+            "main_reason": "Konteks mendukung eksekusi selektif.",
+            "main_risk": "Volatilitas tetap perlu diwaspadai.",
+            "execution_note": "Tunggu konfirmasi yang sudah ditetapkan engine.",
+        }
+
+
+def test_gemini_request_budget_by_report_type(tmp_path: Path) -> None:
+    interpreter = CountingInterpreter(max_watchlist_calls=5)
+    builder = EnhancedDailyReportBuilder(
+        output_root=tmp_path,
+        interpreter=interpreter,
+        max_watchlist_messages=5,
+    )
+
+    builder.build_post_market({
+        "trade_date": "2026-08-05",
+        "process_status": "SUCCESS",
+        "symbols_requested": 10,
+        "symbols_loaded": 10,
+        "symbols_valid": 10,
+        "symbols_skipped": 0,
+        "coverage": 100,
+    })
+    assert interpreter.requests == []
+
+    builder.build_broker_multiday({
+        "trade_date": "2026-08-05",
+        "rows": [{
+            "symbol": "BBCA",
+            "state_1d": "ACCUMULATION",
+            "state_3d": "ACCUMULATION",
+            "state_5d": "NEUTRAL",
+        }],
+    })
+    assert interpreter.requests == []
+
+    market = {
+        "trade_date": "2026-08-05",
+        "market_regime": "STRONG BULLISH",
+        "execution_mode": "SELECTIVE AGGRESSIVE",
+        "ihsg_trend": "BULLISH",
+        "breadth": "POSITIVE",
+    }
+    builder.build_market_outlook(market)
+    builder.build_market_outlook({**market, "trade_date": "2026-08-06"})
+    assert interpreter.requests.count("MARKET_OUTLOOK") == 1
+
+    rows = [_watchlist_row(index, "BUY_CANDIDATE") for index in range(1, 21)]
+    rows.extend([
+        _watchlist_row(21, "WAIT"),
+        _watchlist_row(22, "AVOID"),
+    ])
+    builder.build_final_watchlist({
+        "trade_date": "2026-08-05",
+        "rows": rows,
+        "market_regime": "STRONG BULLISH",
+        "execution_mode": "SELECTIVE AGGRESSIVE",
+    })
+    assert interpreter.requests.count("FINAL_WATCHLIST") == 5
+    assert len(interpreter.requests) == 6
+
+
+class QuotaInterpreter(GeminiInterpreter):
+    def __init__(self) -> None:
+        super().__init__(
+            api_key="test-key",
+            model="gemini-test",
+            max_retries=3,
+            cache_enabled=False,
+        )
+        self.request_count = 0
+
+    def _request(self, facts: dict, report_kind: str) -> dict:
+        self.request_count += 1
+        raise GeminiHTTPError(429, "quota exceeded")
+
+
+def test_gemini_429_falls_back_without_retry() -> None:
+    interpreter = QuotaInterpreter()
+    result = interpreter.interpret(
+        {
+            "trade_date": "2026-08-05",
+            "market_regime": "STRONG BULLISH",
+            "execution_mode": "SELECTIVE AGGRESSIVE",
+            "ihsg_trend": "BULLISH",
+        },
+        {"main_reason": "Fallback reason", "main_risk": "Fallback risk"},
+    )
+    assert interpreter.request_count == 1
+    assert result.source == "DETERMINISTIC"
+    assert result.status == "FALLBACK"
+    assert "Gemini HTTP 429" in result.warning
+
+
+def test_gemini_success_cache_avoids_repeat_request(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "ai-cache"
+    facts = {
+        "trade_date": "2026-08-05",
+        "market_regime": "STRONG BULLISH",
+        "execution_mode": "SELECTIVE AGGRESSIVE",
+        "ihsg_trend": "BULLISH",
+    }
+    fallback = {"main_reason": "Fallback reason", "main_risk": "Fallback risk"}
+
+    first = CountingInterpreter(cache_enabled=True, cache_dir=cache_dir)
+    first_result = first.interpret(facts, fallback)
+    assert first_result.source == "GEMINI"
+    assert len(first.requests) == 1
+
+    second = CountingInterpreter(cache_enabled=True, cache_dir=cache_dir)
+    second_result = second.interpret(facts, fallback)
+    assert second.requests == []
+    assert second_result.source == "GEMINI_CACHE"
+    assert second_result.status == "CACHE_HIT"
