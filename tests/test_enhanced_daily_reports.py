@@ -8,18 +8,6 @@ from modules.ai_interpretation.gemini_interpreter import GeminiHTTPError
 from modules.job_runner.enhanced_daily_reports import EnhancedDailyReportBuilder
 
 
-def test_gemini_without_key_uses_deterministic_fallback() -> None:
-    interpreter = GeminiInterpreter(api_key="", model="gemini-test", cache_enabled=False)
-    result = interpreter.interpret(
-        {"symbol": "ANTM", "decision": "BUY"},
-        {"main_reason": "Alasan engine", "main_risk": "Risiko engine"},
-    )
-    assert result.source == "DETERMINISTIC"
-    assert result.status == "FALLBACK"
-    assert result.main_reason == "Alasan engine"
-    assert result.main_risk == "Risiko engine"
-
-
 def _watchlist_row(index: int, decision: str) -> dict:
     return {
         "trade_date": "2026-08-03",
@@ -91,6 +79,22 @@ def _watchlist_row(index: int, decision: str) -> dict:
     }
 
 
+def test_gemini_without_key_uses_deterministic_fallback() -> None:
+    interpreter = GeminiInterpreter(
+        api_key="",
+        model="gemini-test",
+        cache_enabled=False,
+    )
+    result = interpreter.interpret(
+        {"symbol": "ANTM", "decision": "BUY"},
+        {"main_reason": "Alasan engine", "main_risk": "Risiko engine"},
+    )
+    assert result.source == "DETERMINISTIC"
+    assert result.status == "FALLBACK"
+    assert result.main_reason == "Alasan engine"
+    assert result.main_risk == "Risiko engine"
+
+
 def test_final_watchlist_uses_agreed_format_and_exports_active_rows(tmp_path: Path) -> None:
     builder = EnhancedDailyReportBuilder(
         output_root=tmp_path,
@@ -160,7 +164,10 @@ def test_final_watchlist_uses_agreed_format_and_exports_active_rows(tmp_path: Pa
 
 
 def test_market_outlook_matches_restored_sections(tmp_path: Path) -> None:
-    builder = EnhancedDailyReportBuilder(tmp_path, GeminiInterpreter(api_key="", cache_enabled=False))
+    builder = EnhancedDailyReportBuilder(
+        tmp_path,
+        GeminiInterpreter(api_key="", cache_enabled=False),
+    )
     artifact = builder.build_market_outlook({
         "trade_date": "2026-08-03",
         "market_regime": "BULLISH MODERATE",
@@ -199,7 +206,10 @@ def test_market_outlook_matches_restored_sections(tmp_path: Path) -> None:
 
 
 def test_post_market_matches_agreed_sections_and_counts(tmp_path: Path) -> None:
-    builder = EnhancedDailyReportBuilder(tmp_path, GeminiInterpreter(api_key="", cache_enabled=False))
+    builder = EnhancedDailyReportBuilder(
+        tmp_path,
+        GeminiInterpreter(api_key="", cache_enabled=False),
+    )
     artifact = builder.build_post_market({
         "trade_date": "2026-08-04",
         "finished_at": "2026-08-04T18:37:00+07:00",
@@ -282,7 +292,10 @@ def test_post_market_matches_agreed_sections_and_counts(tmp_path: Path) -> None:
 
 
 def test_post_market_does_not_invent_missing_funnel_counts(tmp_path: Path) -> None:
-    builder = EnhancedDailyReportBuilder(tmp_path, GeminiInterpreter(api_key="", cache_enabled=False))
+    builder = EnhancedDailyReportBuilder(
+        tmp_path,
+        GeminiInterpreter(api_key="", cache_enabled=False),
+    )
     artifact = builder.build_post_market({
         "trade_date": "2026-08-04",
         "process_status": "SUCCESS",
@@ -299,7 +312,13 @@ def test_post_market_does_not_invent_missing_funnel_counts(tmp_path: Path) -> No
 
 class CountingInterpreter(GeminiInterpreter):
     def __init__(self, **kwargs) -> None:
-        super().__init__(api_key="test-key", model="gemini-test", cache_enabled=False, **kwargs)
+        cache_enabled = bool(kwargs.pop("cache_enabled", False))
+        super().__init__(
+            api_key="test-key",
+            model="gemini-test",
+            cache_enabled=cache_enabled,
+            **kwargs,
+        )
         self.requests: list[str] = []
 
     def _request(self, facts: dict, report_kind: str) -> dict:
