@@ -200,10 +200,16 @@ def test_date_resolution_uses_unfiltered_probe_and_one_source_date(tmp_path: Pat
 
     historical = tmp_path / "history"
     historical.mkdir()
-    pd.DataFrame([{
-        "Date": "2026-08-03", "Open": 9300, "High": 9300, "Low": 9075,
-        "Close": 9100, "Volume": 4529500,
-    }]).to_csv(historical / "AADI.csv", index=False)
+    pd.DataFrame([
+        {
+            "Date": "2026-08-03", "Open": 9300, "High": 9300, "Low": 9075,
+            "Close": 9100, "Volume": 4529500,
+        },
+        {
+            "Date": "2026-08-04", "Open": 9100, "High": 9225, "Low": 9050,
+            "Close": 9175, "Volume": 5838400,
+        },
+    ]).to_csv(historical / "AADI.csv", index=False)
     cfg = tmp_path / "sources.json"
     _config(cfg)
     transport = DateResolutionTransport()
@@ -228,6 +234,8 @@ def test_date_resolution_uses_unfiltered_probe_and_one_source_date(tmp_path: Pat
     assert result["resolved_source_date"] == "20260803"
     assert result["date_fallback_reason"] == "CURRENT_DATASET_EMPTY"
     assert result["records_total"] == 963
+    assert result["rows"][0]["yahoo_trade_date"] == "2026-08-03"
+    assert result["rows"][0]["zapi_trade_date"] == "2026-08-03"
     assert transport.requests == [
         {"length": 1, "start": 0, "date": "20260804"},
         {"length": 1, "start": 0, "date": "20260803"},

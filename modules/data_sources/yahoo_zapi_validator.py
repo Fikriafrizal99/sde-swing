@@ -30,7 +30,24 @@ PROBLEM_STATUSES = {
 }
 
 
-def _latest_yahoo_bar(folder: Path, symbol: str) -> dict[str, Any] | None:
+def _latest_yahoo_bar(
+    folder: Path,
+    symbol: str,
+    *,
+    as_of_date: str | date | None = None,
+) -> dict[str, Any] | None:
+    """Return the latest Yahoo bar not later than the resolved source date.
+
+    ZAPI may fall back from the requested session to the latest completed IDX
+    session.  Yahoo must be aligned to that same session; otherwise a valid
+    fallback is incorrectly reported as a date mismatch against today's bar.
+    """
+    target_date: date | None = None
+    if as_of_date is not None:
+        try:
+            target_date = pd.Timestamp(as_of_date).date()
+        except (TypeError, ValueError):
+            target_date = None
     for path in (folder / f"{symbol}.csv", folder / f"{symbol}.JK.csv"):
         if not path.exists() or path.stat().st_size == 0:
             continue
@@ -49,6 +66,10 @@ def _latest_yahoo_bar(folder: Path, symbol: str) -> dict[str, Any] | None:
         if valid.empty:
             continue
         valid["__parsed_date"] = parsed.loc[parsed.notna()]
+        if target_date is not None:
+            valid = valid[valid["__parsed_date"].dt.date <= target_date]
+            if valid.empty:
+                continue
         row = valid.sort_values("__parsed_date").iloc[-1]
 
         def num(*names: str) -> float | None:
@@ -367,7 +388,7 @@ def validate_yahoo_against_zapi(
         )
 
     for index, symbol in enumerate(normalized, start=1):
-        yahoo = _latest_yahoo_bar(folder, symbol)
+        yahoo = _latest_yahoo_bar(folder, symbol, as_of_date=resolved_iso_date)
         zapi_record = None
         error = ""
         error_status = ""
