@@ -358,11 +358,20 @@ def validate_post_market_sources(
         "symbols_failed": int(count_fields["symbols_failed"] or 0),
         "symbols_skipped": int(count_fields["symbols_skipped"] or 0),
         "reconciliation": dict(reconciliation),
-        "zapi_status": reconciliation.get("status") or source_meta.get("zapi_status") or "ZAPI_LINEAGE_MISSING",
+        "zapi_status": reconciliation.get("status") or source_meta.get("zapi_status") or "ZAPI_ENRICHMENT_UNAVAILABLE",
         "zapi_coverage": _normalise_coverage(
             reconciliation.get("coverage_ratio", source_meta.get("zapi_coverage_ratio"))
         ) or 0.0,
-        "degraded_reason": reconciliation.get("reason") or source_meta.get("degraded_reason") or "",
+        "degraded_reason": reconciliation.get("degraded_reason") or reconciliation.get("reason") or source_meta.get("degraded_reason") or "",
+        "zapi_request_count": reconciliation.get("request_count", source_meta.get("zapi_request_count", manifest.get("Zapi_Request_Count", 0))),
+        "zapi_request_cap": reconciliation.get("request_cap", source_meta.get("zapi_request_cap", manifest.get("Zapi_Request_Cap", 5))),
+        "metadata_cache_status": reconciliation.get("metadata_cache_status", source_meta.get("metadata_cache_status", manifest.get("Zapi_Metadata_Cache_Status", ""))),
+        "metadata_cache_date": reconciliation.get("metadata_cache_date", source_meta.get("metadata_cache_date", manifest.get("Zapi_Metadata_Cache_Date", ""))),
+        "market_activity_cache_status": reconciliation.get("market_activity_cache_status", source_meta.get("market_activity_cache_status", manifest.get("Zapi_Market_Activity_Cache_Status", ""))),
+        "suspended_count": reconciliation.get("suspended_count", source_meta.get("suspended_count", manifest.get("Suspended_Symbol_Count", 0))),
+        "uma_count": reconciliation.get("uma_count", source_meta.get("uma_count", manifest.get("Uma_Symbol_Count", 0))),
+        "relisting_count": reconciliation.get("relisting_count", source_meta.get("relisting_count", manifest.get("Relisting_Symbol_Count", 0))),
+        "zapi_degraded": reconciliation.get("degraded", source_meta.get("zapi_degraded", manifest.get("Zapi_Degraded", False))),
     }
 
 

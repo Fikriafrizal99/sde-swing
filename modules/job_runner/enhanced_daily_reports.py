@@ -51,6 +51,7 @@ FINAL_WATCHLIST_COLUMNS = [
     "waiting_triggers", "main_reason_technical", "main_reason_broker",
     "main_reason_entry", "main_reason", "risk_items", "main_risk",
     "invalidation", "execution_note", "data_status", "data_conflict",
+    "exchange_status", "exchange_veto", "risk_flags", "exchange_history_candles",
     "source", "yahoo_status", "zapi_status", "reconciliation_status",
     "zapi_freshness_days", "foreign_buy", "foreign_sell", "foreign_net",
     "provider", "source_mode", "coverage", "generated_at",
@@ -413,6 +414,17 @@ class EnhancedDailyReportBuilder:
                 or reconciliation.get("latest_completed_session")
                 or reconciliation.get("trade_date")
             ),
+            "zapi_status": reconciliation.get("status") or find("Zapi_Status", "Reconciliation_Status", "zapi_status"),
+            "zapi_request_count": reconciliation.get("request_count", find("Zapi_Request_Count", "zapi_request_count")),
+            "zapi_request_cap": reconciliation.get("request_cap", find("Zapi_Request_Cap", "zapi_request_cap",)),
+            "metadata_cache_status": reconciliation.get("metadata_cache_status", find("Zapi_Metadata_Cache_Status", "metadata_cache_status")),
+            "metadata_cache_date": reconciliation.get("metadata_cache_date", find("Zapi_Metadata_Cache_Date", "metadata_cache_date")),
+            "market_activity_cache_status": reconciliation.get("market_activity_cache_status", find("Zapi_Market_Activity_Cache_Status", "market_activity_cache_status")),
+            "suspended_count": reconciliation.get("suspended_count", find("Suspended_Symbol_Count", "suspended_count")),
+            "uma_count": reconciliation.get("uma_count", find("Uma_Symbol_Count", "uma_count")),
+            "relisting_count": reconciliation.get("relisting_count", find("Relisting_Symbol_Count", "relisting_count")),
+            "zapi_degraded": reconciliation.get("degraded", find("Zapi_Degraded", "zapi_degraded")),
+            "degraded_reason": reconciliation.get("degraded_reason", find("Zapi_Degraded_Reason", "degraded_reason")),
             "zapi_note": reconciliation.get("reason") or reconciliation.get("note"),
             "stockbit_data_date": find("Broker_Date", "broker_date", "stockbit_data_date"),
             "stockbit_coverage": find(
@@ -602,6 +614,10 @@ class EnhancedDailyReportBuilder:
                 "foreign_buy": ("Foreign_Buy", "FOREIGN_BUY"),
                 "foreign_sell": ("Foreign_Sell", "FOREIGN_SELL"),
                 "foreign_net": ("Foreign_Net", "FOREIGN_NET", "Foreign_Net_Flow"),
+                "exchange_status": ("Exchange_Status", "Market_Activity_Status", "Bursa_Status"),
+                "exchange_veto": ("Exchange_Veto", "Veto", "Veto_Reason"),
+                "risk_flags": ("Risk_Flags", "Exchange_Risk_Flags", "Market_Risk_Flags"),
+                "exchange_history_candles": ("Exchange_History_Candles", "History_Candle_Count"),
             }
             for target, aliases in mappings.items():
                 if target == "broker_status" and str(current.get(target, "")).upper() in {"AVAILABLE", "MISSING"}:
@@ -780,8 +796,25 @@ class EnhancedDailyReportBuilder:
             current.setdefault("coverage", data.get("coverage"))
             current.setdefault("zapi_status", data.get("zapi_status", ""))
             current.setdefault("reconciliation_status", data.get("reconciliation_status", ""))
+            current.setdefault("exchange_status", data.get("exchange_status", "NORMAL"))
+            current.setdefault("exchange_veto", data.get("exchange_veto", ""))
+            current.setdefault("risk_flags", data.get("risk_flags", ""))
             current.setdefault("market_regime", data.get("market_regime", ""))
             current.setdefault("generated_at", data.get("generated_at"))
+            exchange_status = str(current.get("exchange_status") or "NORMAL").upper()
+            exchange_veto = str(current.get("exchange_veto") or current.get("veto") or "").upper()
+            raw_flags = current.get("risk_flags") or ""
+            flags = {
+                str(item).strip().upper().replace("_", " ")
+                for item in (raw_flags.split(",") if isinstance(raw_flags, str) else raw_flags)
+                if str(item).strip()
+            }
+            if exchange_status in {"SUSPENDED", "BLOCKED"} or exchange_veto in {"SUSPENDED", "RELISTING_HISTORY_INSUFFICIENT"}:
+                current["decision"] = "BLOCKED"
+            elif "RELISTING" in flags and exchange_veto == "RELISTING_HISTORY_INSUFFICIENT":
+                current["decision"] = "BLOCKED"
+            elif "UMA" in flags and self._decision_bucket(current.get("decision")) == "BUY_READY":
+                current["decision"] = "BUY CANDIDATE"
             fallback = {
                 "main_reason": str(current.get("main_reason") or self._watchlist_reason(current)),
                 "main_risk": str(current.get("main_risk") or self._watchlist_risk(current)),

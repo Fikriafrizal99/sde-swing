@@ -245,7 +245,7 @@ class SignalQualityV160Tests(unittest.TestCase):
             "Initial_Stop": 95,
             "Target_1": 108,
         })
-        self.assertEqual(effective_public_status("BUY", accepted), "BUY CONFIRMED")
+        self.assertEqual(effective_public_status("BUY", accepted), "BUY READY")
         self.assertEqual(effective_public_status("BUY CANDIDATE", pd.Series(dtype=object)), "BUY CANDIDATE")
 
 

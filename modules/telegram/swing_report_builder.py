@@ -15,6 +15,18 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import pandas as pd
 
+from modules.telegram.formatters import (
+    exchange_warnings,
+    escape_html,
+    format_money as shared_format_money,
+    format_number as shared_format_number,
+    format_percent as shared_format_percent,
+    format_price as shared_format_price,
+    human_enum,
+    human_status,
+    risk_reward,
+)
+
 try:
     from modules.telegram.professional_ui import (
         UiConfig,
@@ -47,8 +59,8 @@ except ModuleNotFoundError:  # direct script execution via modules/telegram/tele
     )
 
 
-DECISION_ORDER = ["BUY READY", "BUY ON TRIGGER", "WATCH", "AVOID"]
-WATCHLIST_DECISIONS = {"BUY READY", "BUY ON TRIGGER", "WATCH"}
+DECISION_ORDER = ["BUY READY", "BUY CANDIDATE", "WATCH", "AVOID"]
+WATCHLIST_DECISIONS = {"BUY READY", "BUY CANDIDATE", "WATCH"}
 EMOJI = {
     "success": "✅",
     "warning": "⚠️",
@@ -159,20 +171,15 @@ def to_float(v: Any) -> float | None:
 
 
 def fmt_score(v: Any) -> str:
-    n = to_float(v)
-    return "Belum tersedia" if n is None else f"{n:.2f}"
+    return shared_format_number(v, 2, "Belum tersedia")
 
 
 def fmt_pct(v: Any) -> str:
-    n = to_float(v)
-    return "Belum tersedia" if n is None else f"{n:+.2f}%"
+    return shared_format_percent(v, 2, signed=True, fallback="Belum tersedia")
 
 
 def fmt_money(v: Any) -> str:
-    n = to_float(v)
-    if n is None:
-        return "Belum tersedia"
-    return "Rp" + f"{n:,.0f}".replace(",", ".")
+    return shared_format_price(v, "Belum tersedia")
 
 
 def fmt_number(v: Any, decimals: int = 0) -> str:
@@ -194,7 +201,7 @@ def decision_counts(decisions: pd.DataFrame) -> dict[str, int]:
     if not col:
         return {d: 0 for d in DECISION_ORDER}
     values = decisions[col].astype(str).str.upper().str.strip().replace({
-        "STRONG BUY": "BUY READY", "BUY": "BUY READY", "BUY CANDIDATE": "BUY ON TRIGGER",
+        "STRONG BUY": "BUY READY", "BUY": "BUY READY", "BUY ON TRIGGER": "BUY CANDIDATE",
         "WATCH HIGH": "WATCH", "SPECULATIVE": "WATCH",
     })
     counts = values.value_counts().to_dict()
@@ -204,7 +211,7 @@ def decision_counts(decisions: pd.DataFrame) -> dict[str, int]:
 def decision_icon(decision: str, use_emoji: bool) -> str:
     return {
         "BUY READY": e("strong_buy", use_emoji),
-        "BUY ON TRIGGER": e("buy", use_emoji),
+        "BUY CANDIDATE": e("buy", use_emoji),
         "STRONG BUY": e("strong_buy", use_emoji),
         "BUY": e("buy", use_emoji),
         "WATCH": e("watch", use_emoji),
@@ -222,7 +229,7 @@ def simple_date(value_text: Any) -> str:
 
 def section(title: str, lines: list[str], icon: str = "") -> list[str]:
     label = f"{icon} {title}".strip()
-    return ["", label, *lines]
+    return ["", f"<b>{escape_html(label)}</b>", *[escape_html(line) for line in lines]]
 
 
 def build_pipeline_status(run_manifest: dict[str, Any], decisions: pd.DataFrame, exit_alerts: pd.DataFrame, use_emoji: bool) -> str:
@@ -233,10 +240,10 @@ def build_pipeline_status(run_manifest: dict[str, Any], decisions: pd.DataFrame,
         f"{icon} SDE SWING - PIPELINE SELESAI",
         "",
         "Run ID",
-        str(run_manifest.get("Run_ID", "Belum tersedia")),
+        escape_html(run_manifest.get("Run_ID", "Belum tersedia")),
         "",
         "Waktu",
-        simple_date(run_manifest.get("Finished_At") or datetime.now().isoformat()),
+        escape_html(simple_date(run_manifest.get("Finished_At") or datetime.now().isoformat())),
     ]
     lines += section("DATA", [
         f"Yahoo Refresh       : {run_manifest.get('Yahoo_Refresh_Status', 'Belum tersedia')}",
@@ -245,6 +252,14 @@ def build_pipeline_status(run_manifest: dict[str, Any], decisions: pd.DataFrame,
         f"Candidate Baru      : {fmt_bool(run_manifest.get('Candidate_Changed', False))}",
         f"Jumlah Candidate    : {run_manifest.get('Candidate_Count', len(decisions) if not decisions.empty else 0)}",
     ], e("database", use_emoji))
+    lines += section("ZAPI ENRICHMENT", [
+        f"Request            : {fmt_number(run_manifest.get('Zapi_Request_Count'), 0)}/{fmt_number(run_manifest.get('Zapi_Request_Cap', 5), 0)}",
+        f"Metadata Cache     : {human_enum(run_manifest.get('Zapi_Metadata_Cache_Status', ''))}",
+        f"Activity Cache     : {human_enum(run_manifest.get('Zapi_Market_Activity_Cache_Status', ''))}",
+        f"Suspend / UMA      : {run_manifest.get('Suspended_Symbol_Count', 0)} / {run_manifest.get('Uma_Symbol_Count', 0)}",
+        f"Relisting          : {run_manifest.get('Relisting_Symbol_Count', 0)}",
+        f"Mode               : {'DEGRADED' if run_manifest.get('Zapi_Degraded') else 'NORMAL'}",
+    ], e("warning", use_emoji))
     lines += section("BROKER", [
         f"Broker Date         : {run_manifest.get('Broker_Date', 'Belum tersedia')}",
         f"Coverage            : {run_manifest.get('Broker_Coverage', 'Belum tersedia')}",
@@ -252,7 +267,7 @@ def build_pipeline_status(run_manifest: dict[str, Any], decisions: pd.DataFrame,
     ], e("broker", use_emoji))
     lines += section("KEPUTUSAN", [
         f"{decision_icon('BUY READY', use_emoji)} BUY READY        : {counts['BUY READY']}",
-        f"{decision_icon('BUY ON TRIGGER', use_emoji)} BUY ON TRIGGER   : {counts['BUY ON TRIGGER']}",
+        f"{decision_icon('BUY CANDIDATE', use_emoji)} BUY CANDIDATE   : {counts['BUY CANDIDATE']}",
         f"{decision_icon('WATCH', use_emoji)} WATCH            : {counts['WATCH']}",
         f"{decision_icon('AVOID', use_emoji)} AVOID            : {counts['AVOID']}",
         f"{e('exit', use_emoji)} Exit Alert       : {0 if exit_alerts.empty else len(exit_alerts)}",
@@ -260,7 +275,7 @@ def build_pipeline_status(run_manifest: dict[str, Any], decisions: pd.DataFrame,
     lines += ["", f"{icon} Kualitas Data: {run_manifest.get('Data_Quality_Status', 'VALID')}"]
     warnings = run_manifest.get("Warnings") or []
     if warnings:
-        lines += ["", f"{e('warning', use_emoji)} CATATAN DATA", "\n".join(str(x) for x in warnings)]
+        lines += ["", f"{e('warning', use_emoji)} <b>CATATAN DATA</b>", "\n".join(escape_html(human_enum(x)) for x in warnings)]
     return "\n".join(lines)
 
 
@@ -286,7 +301,7 @@ def build_market_recap(run_manifest: dict[str, Any], market_status: dict[str, An
         f"Kandidat Teknikal  : {run_manifest.get('Candidate_Count', 'Belum tersedia')}",
         f"Broker Confirm     : {broker_confirm_count(decisions)}",
         f"{decision_icon('BUY READY', use_emoji)} BUY READY       : {counts['BUY READY']}",
-        f"{decision_icon('BUY ON TRIGGER', use_emoji)} BUY ON TRIGGER  : {counts['BUY ON TRIGGER']}",
+        f"{decision_icon('BUY CANDIDATE', use_emoji)} BUY CANDIDATE  : {counts['BUY CANDIDATE']}",
         f"{decision_icon('WATCH', use_emoji)} WATCH           : {counts['WATCH']}",
         f"{decision_icon('AVOID', use_emoji)} AVOID           : {counts['AVOID']}",
     ], "🔎" if use_emoji else "")
@@ -311,7 +326,7 @@ def current_watchlist(decisions: pd.DataFrame) -> pd.DataFrame:
     if not decision_col or not symbol_col:
         return pd.DataFrame()
     out = decisions.copy()
-    out["_Decision"] = out[decision_col].astype(str).str.upper().str.strip().replace({"STRONG BUY": "BUY READY", "BUY": "BUY READY", "BUY CANDIDATE": "BUY ON TRIGGER", "WATCH HIGH": "WATCH", "SPECULATIVE": "WATCH"})
+    out["_Decision"] = out[decision_col].astype(str).str.upper().str.strip().replace({"STRONG BUY": "BUY READY", "BUY": "BUY READY", "BUY ON TRIGGER": "BUY CANDIDATE", "WATCH HIGH": "WATCH", "SPECULATIVE": "WATCH"})
     out["_Symbol"] = out[symbol_col].astype(str).str.upper().str.strip().str.replace(".JK", "", regex=False)
     return out[out["_Decision"].isin(WATCHLIST_DECISIONS)].copy()
 
@@ -337,21 +352,40 @@ def stock_block(row: pd.Series, entry_plans: pd.DataFrame, use_emoji: bool) -> s
                 candidate_plan = found.iloc[0]
                 plan = candidate_plan
                 decision = str(value(candidate_plan, "Decision_Status_Final", default=decision)).upper()
+    public_decision = human_status(decision)
+    rr_text, rr_valid = ("R:R belum valid", False)
+    if not plan.empty:
+        rr_text, rr_valid = risk_reward(
+            value(plan, "Entry_Zone_Low", "Entry_Low"),
+            value(plan, "Entry_Zone_High", "Entry_High"),
+            value(plan, "Target_1", "Take_Profit_1"),
+            value(plan, "Initial_Stop", "Stop_Loss"),
+            entry_reference=value(plan, "Entry_Reference", "Entry_Price"),
+        )
+        if public_decision == "BUY READY" and not rr_valid:
+            public_decision = "WAITING"
+    exchange_status = str(value(row, "Exchange_Status", default="NORMAL")).upper()
+    risk_flags = value(row, "Risk_Flags", default="")
+    exchange_veto = value(row, "Exchange_Veto", "Veto", "Veto_Reason", default="")
+    exchange_warning_lines = exchange_warnings(exchange_status, risk_flags, exchange_veto)
     lines = [
-        f"{decision_icon(decision, use_emoji)} {symbol} - {decision}",
+        f"{decision_icon(public_decision, use_emoji)} <b>{escape_html(str(symbol).upper())} — {escape_html(public_decision)}</b>",
         f"Final Score  : {fmt_score(value(row, 'Final_Score_V3', 'Final_Score'))}",
         f"Technical    : {fmt_score(value(row, 'Technical_Score_Final', 'Technical_Score'))}",
         f"Broker       : {fmt_score(value(row, 'Broker_Score'))}",
-        f"Confirmation : {value(row, 'Broker_Confirmation', default='Belum tersedia')}",
+        f"Confirmation : {escape_html(human_enum(value(row, 'Broker_Confirmation', default='')))}",
         f"{e('entry', use_emoji)} Entry     : {entry_text(plan)}",
         f"{e('stop', use_emoji)} Stop Loss : {fmt_money(value(plan, 'Initial_Stop', 'Stop_Loss')) if not plan.empty else 'Belum tersedia'}",
         f"{e('tp', use_emoji)} TP1       : {fmt_money(value(plan, 'Target_1', 'Take_Profit_1')) if not plan.empty else 'Belum tersedia'}",
         f"{e('tp', use_emoji)} TP2       : {fmt_money(value(plan, 'Target_2', 'Take_Profit_2')) if not plan.empty else 'Belum tersedia'}",
-        f"💧 Liquidity : {value(row, 'Liquidity_Class', default='Belum tersedia')}",
+        f"R:R TP1    : {escape_html(rr_text)}",
+        f"Bursa       : {escape_html(exchange_status)}",
+        f"💧 Liquidity : {escape_html(human_enum(value(row, 'Liquidity_Class', default='Belum tersedia')))}",
     ]
+    lines.extend(f"⚠️ Bursa     : {escape_html(item)}" for item in exchange_warning_lines)
     reason = value(row, "Rejected_By", "Decision_Reasons", "Candidate_Reason", default="")
     if reason:
-        lines.append(f"Reason    : {reason}")
+        lines.append(f"Reason    : {escape_html(human_enum(reason))}")
     return "\n".join(lines)
 
 
@@ -409,7 +443,7 @@ def build_watchlist_recap(decisions: pd.DataFrame, entry_plans: pd.DataFrame, ma
         f"{e('continuing', use_emoji)} Continuing   : 0",
         f"{e('removed', use_emoji)} Removed      : 0",
         f"{decision_icon('BUY READY', use_emoji)} BUY READY      : {counts['BUY READY']}",
-        f"{decision_icon('BUY ON TRIGGER', use_emoji)} BUY ON TRIGGER : {counts['BUY ON TRIGGER']}",
+        f"{decision_icon('BUY CANDIDATE', use_emoji)} BUY CANDIDATE : {counts['BUY CANDIDATE']}",
         f"{decision_icon('WATCH', use_emoji)} WATCH          : {counts['WATCH']}",
         "",
         f"{e('best', use_emoji)} HIGHEST SCORE",
@@ -469,7 +503,7 @@ def build_performance_recap(outcomes: pd.DataFrame, summary: pd.DataFrame, use_e
         f"TP2 Hit Rate   : {fmt_pct(pd.to_numeric(outcomes[find_col(outcomes, 'TP2_Hit_D7', 'tp2_hit')], errors='coerce').mean() * 100) if find_col(outcomes, 'TP2_Hit_D7', 'tp2_hit') else 'Belum tersedia'}",
         f"SL Hit Rate    : {fmt_pct(pd.to_numeric(outcomes[find_col(outcomes, 'SL_Hit_D7', 'sl_hit')], errors='coerce').mean() * 100) if find_col(outcomes, 'SL_Hit_D7', 'sl_hit') else 'Belum tersedia'}",
     ], e("bull", use_emoji))
-    lines += ["", f"{e('best', use_emoji)} Best Performer", best, "", f"{e('bear', use_emoji)} Worst Performer", worst]
+    lines += ["", f"{e('best', use_emoji)} Best Performer", escape_html(best), "", f"{e('bear', use_emoji)} Worst Performer", escape_html(worst)]
     return "\n".join(lines)
 
 
@@ -479,16 +513,18 @@ def build_exit_alerts(alerts: pd.DataFrame, use_emoji: bool) -> list[ReportMessa
     messages = []
     for idx, (_, row) in enumerate(alerts.iterrows(), 1):
         symbol = value(row, "Symbol", default="?")
+        exit_status = human_status(value(row, "Alert", "Exit_Status", default="EXIT"))
+        exit_reason = human_enum(value(row, "Reason", "Exit_Reason", default="data tidak tersedia"))
         text = "\n".join([
             f"{e('exit', use_emoji)} EXIT ALERT - SWING",
             "",
-            f"{e('avoid', use_emoji)} {symbol}",
-            f"Exit Status : {value(row, 'Alert', 'Exit_Status', default='EXIT')}",
-            f"Exit Reason : {value(row, 'Reason', 'Exit_Reason')}",
+            f"{e('avoid', use_emoji)} {escape_html(symbol)}",
+            f"Exit Status : {escape_html(exit_status)}",
+            f"Exit Reason : {escape_html(exit_reason)}",
             f"Entry       : {fmt_money(value(row, 'Entry_Price'))}",
             f"Exit Reference : {fmt_money(value(row, 'Exit_Price'))}",
             f"Return      : {fmt_pct(value(row, 'Return_Pct'))}",
-            f"Holding     : {value(row, 'Holding_Days', default='Belum tersedia')} trading days",
+            f"Holding     : {escape_html(shared_format_number(value(row, 'Holding_Days', default='Belum tersedia'), 0))} trading days",
             "",
             f"{e('warning', use_emoji)} Periksa kondisi pasar sebelum melakukan tindakan.",
         ])
@@ -502,20 +538,20 @@ def build_warning_messages(run_manifest: dict[str, Any], use_emoji: bool) -> lis
     if quality == "VALID" and not warnings and not run_manifest.get("Fallback_Used") and not run_manifest.get("Broker_Date_Override"):
         return []
     lines = [
-        f"{e('warning', use_emoji)} SDE SWING - DATA WARNING",
+        f"{e('warning', use_emoji)} <b>SDE SWING — DATA WARNING</b>",
         "",
-        f"Run ID        : {run_manifest.get('Run_ID', 'Belum tersedia')}",
-        f"Expected Date : {run_manifest.get('Latest_Expected_Trading_Date', run_manifest.get('Technical_Date', 'Belum tersedia'))}",
-        f"Latest Valid  : {run_manifest.get('Historical_Latest_Valid_Date', 'Belum tersedia')}",
-        f"Broker Date   : {run_manifest.get('Broker_Date', 'Belum tersedia')}",
+        f"Run ID        : {escape_html(run_manifest.get('Run_ID', 'Belum tersedia'))}",
+        f"Expected Date : {escape_html(run_manifest.get('Latest_Expected_Trading_Date', run_manifest.get('Technical_Date', 'Belum tersedia')))}",
+        f"Latest Valid  : {escape_html(run_manifest.get('Historical_Latest_Valid_Date', 'Belum tersedia'))}",
+        f"Broker Date   : {escape_html(run_manifest.get('Broker_Date', 'Belum tersedia'))}",
         f"Fallback Used : {fmt_bool(run_manifest.get('Fallback_Used', False))}",
         f"Broker Override : {fmt_bool(run_manifest.get('Broker_Date_Override', False))}",
         "",
         f"{e('warning', use_emoji)} Status:",
-        quality,
+        escape_html(human_enum(quality)),
     ]
     if warnings:
-        lines += ["", "Catatan:", *[str(x) for x in warnings]]
+        lines += ["", "<b>Catatan:</b>", *[escape_html(human_enum(x)) for x in warnings]]
     return [ReportMessage("warning", "06_warning.txt", "\n".join(lines), attach_by_default=True)]
 
 

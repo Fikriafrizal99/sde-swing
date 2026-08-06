@@ -27,6 +27,15 @@ from swing_report_builder import (
     load_json as load_report_json,
     write_messages,
 )
+from modules.telegram.formatters import (
+    exchange_warnings,
+    format_number,
+    format_percent,
+    format_price,
+    human_enum,
+    human_status,
+    risk_reward,
+)
 
 
 def norm_col(value: str) -> str:
@@ -54,20 +63,11 @@ def value(row: pd.Series, *aliases: str, default: Any = "") -> Any:
 
 
 def money(v: Any) -> str:
-    try:
-        n = float(v)
-        if abs(n) >= 1000:
-            return f"{n:,.0f}".replace(",", ".")
-        return f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except Exception:
-        return str(v)
+    return format_price(v)
 
 
 def pct(v: Any) -> str:
-    try:
-        return f"{float(v):+.2f}%".replace(".", ",")
-    except Exception:
-        return str(v)
+    return format_percent(v, 2, signed=True)
 
 
 def esc(text: Any) -> str:
@@ -81,7 +81,8 @@ class TelegramClient:
         self.chat_id = chat_id
         self.dry_run = dry_run
         self.timeout = timeout
-        self.parse_mode = parse_mode or "HTML"
+        # Reports are escaped for Telegram HTML throughout the runtime.
+        self.parse_mode = "HTML"
         self.base_url = f"https://api.telegram.org/bot{token}" if token else ""
 
     def _post(self, method: str, data=None, files=None) -> dict:
@@ -184,8 +185,12 @@ def sort_signals(df: pd.DataFrame) -> pd.DataFrame:
 def signal_block(row: pd.Series, index: int, entry_plans: pd.DataFrame) -> str:
     symbol = str(value(row, "Symbol", "Ticker", "EMITEN", default="?")).upper()
     score = value(row, "Final_Score_V3", "Final_Score", "Score", default="-")
-    broker = value(row, "Broker_Confirmation", "Broker_Status", default="-")
-    liquidity = value(row, "Liquidity_Class", default="-")
+    broker = human_enum(value(row, "Broker_Confirmation", "Broker_Status", default=""))
+    liquidity = human_enum(value(row, "Liquidity_Class", default=""))
+    exchange_status = str(value(row, "Exchange_Status", default="NORMAL") or "NORMAL").upper()
+    exchange_risk = value(row, "Risk_Flags", default="")
+    exchange_veto = value(row, "Exchange_Veto", "Veto", "Veto_Reason", default="")
+    exchange_warning_lines = exchange_warnings(exchange_status, exchange_risk, exchange_veto)
 
     plan = pd.Series(dtype=object)
     if not entry_plans.empty:
@@ -200,23 +205,31 @@ def signal_block(row: pd.Series, index: int, entry_plans: pd.DataFrame) -> str:
     broker_date = value(row, "Broker_Data_Date", "TO_DATE_BROKER", "TO_DATE", default="-")
     lines = [
         f"<b>{index}. {esc(symbol)}</b>",
-        f"Score: <b>{esc(score)}</b>",
+        f"Status: <b>{esc(human_status(value(row, 'Decision_V3', 'Decision', default='WATCH')))}</b>",
+        f"Score: <b>{esc(format_percent(score, 1))}</b>",
         f"Close: <b>{money(close_value)}</b>",
         f"Technical date: {esc(technical_date)}",
         f"Broker date: {esc(broker_date)}",
         f"Broker: {esc(broker)}",
         f"Liquidity: {esc(liquidity)}",
+        *[f"⚠️ Bursa: {esc(item)}" for item in exchange_warning_lines],
     ]
     if not plan.empty:
         status = value(plan, "Plan_Status", default="")
         if status:
-            lines.append(f"Plan: <b>{esc(status)}</b>")
+            lines.append(f"Plan: <b>{esc(human_status(status))}</b>")
         if str(status).upper() == "ACCEPT":
+            rr_text, _rr_valid = risk_reward(
+                value(plan, "Entry_Zone_Low"), value(plan, "Entry_Zone_High"),
+                value(plan, "Target_1"), value(plan, "Initial_Stop"),
+                entry_reference=value(plan, "Entry_Reference"),
+            )
             lines.extend([
                 f"Entry: {money(value(plan, 'Entry_Zone_Low'))}–{money(value(plan, 'Entry_Zone_High'))}",
                 f"Stop: {money(value(plan, 'Initial_Stop'))}",
-                f"Target 1: {money(value(plan, 'Target_1'))} ({esc(value(plan, 'Target_1_RR', default='1'))}R)",
-                f"Target 2: {money(value(plan, 'Target_2'))} ({esc(value(plan, 'Target_2_RR', default='2'))}R)",
+                f"Target 1: {money(value(plan, 'Target_1'))}",
+                f"Target 2: {money(value(plan, 'Target_2'))}",
+                f"R:R TP1: <b>{esc(rr_text)}</b>",
             ])
         elif value(plan, "Rejection_Reason", default=""):
             lines.append(f"Alasan: {esc(value(plan, 'Rejection_Reason'))}")
@@ -284,7 +297,7 @@ def daily_message(
         lines.append(f"⚠️ Broker snapshot tertinggal <b>{broker_age} hari bursa</b>; keputusan dapat tetap mirip.")
     lines.extend([
         "",
-        f"<b>STRONG BUY ({len(strong)})</b>",
+        f"<b>BUY READY ({len(strong)})</b>",
     ])
     if strong.empty:
         lines.append("Tidak ada.")
@@ -292,7 +305,7 @@ def daily_message(
         for i, (_, row) in enumerate(strong.iterrows(), 1):
             lines.extend([signal_block(row, i, entry_plans), ""])
 
-    lines.append(f"<b>BUY ({len(buy)})</b>")
+    lines.append(f"<b>BUY CANDIDATE ({len(buy)})</b>")
     if buy.empty:
         lines.append("Tidak ada.")
     else:
@@ -307,7 +320,7 @@ def daily_message(
         score_col = find_col(watch, "Final_Score_V3", "Final_Score", "Score")
         for i, (_, row) in enumerate(watch.iterrows(), 1):
             symbol = row[symbol_col] if symbol_col else "?"
-            score = row[score_col] if score_col else "-"
+            score = format_number(row[score_col], 1) if score_col else "data tidak tersedia"
             lines.append(f"{i}. <b>{esc(symbol)}</b> — score {esc(score)}")
 
     lines.extend([
@@ -331,7 +344,7 @@ def exit_messages(alerts: pd.DataFrame) -> list[str]:
             f"Exit: {money(value(row, 'Exit_Price', default='-'))}",
             f"Return: <b>{pct(value(row, 'Return_Pct', default='-'))}</b>",
             f"Holding: {esc(value(row, 'Holding_Days', default='-'))} hari",
-            f"Reason: {esc(reason)}",
+            f"Reason: {esc(human_enum(reason))}",
         ]))
     return messages
 
@@ -418,8 +431,7 @@ def console_text(text: Any) -> str:
 def build_client(args, config) -> TelegramClient:
     token = args.token or os.getenv("TELEGRAM_BOT_TOKEN") or config.get("telegram", {}).get("bot_token", "")
     chat_id = args.chat_id or os.getenv("TELEGRAM_CHAT_ID") or config.get("telegram", {}).get("chat_id", "")
-    parse_mode = str(config.get("telegram_ui", {}).get("parse_mode", "HTML"))
-    return TelegramClient(token, str(chat_id), dry_run=args.dry_run, parse_mode=parse_mode)
+    return TelegramClient(token, str(chat_id), dry_run=args.dry_run, parse_mode="HTML")
 
 
 def main() -> int:

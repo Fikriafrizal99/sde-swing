@@ -274,6 +274,10 @@ class SymbolMetadata(CanonicalRecord):
     board: str = ""  # RG / TN / NG
     sector: str = ""
     sub_sector: str = ""
+    industry: str = ""
+    sub_industry: str = ""
+    listing_date: str = ""
+    active_status: str = ""
     listed_shares: float | None = None
     is_syariah: bool = False
     is_tradable: bool = True

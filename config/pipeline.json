@@ -36,6 +36,8 @@
     "broker_raw_latest": "data/input/broker/BROKER_RAW_LATEST.csv",
     "broker_raw_archive_dir": "data/input/broker/archive",
     "sector_rotation_metadata": "data/input/sector_metadata.csv",
+    "zapi_cache_root": "data/state/zapi",
+    "zapi_enrichment_latest": "data/state/zapi/enrichment_latest.json",
     "profile_shadow_runner": "tools/run_moderate_shadow.py",
     "profile_shadow_output_root": "data/output/profile_shadow"
   },
@@ -80,6 +82,14 @@
     "technical_refresh_mode": "FULL",
     "special_trading_days": [],
     "calendar_source": "KSEI_PENG-0002/DIR/KSEI/0126"
+  },
+  "zapi": {
+    "enabled": true,
+    "metadata_ttl_days": 7,
+    "market_activity_cache_days": 1,
+    "max_requests_per_process": 5,
+    "max_retries": 2,
+    "minimum_historical_candles": 200
   },
   "download": {
     "period": "2y",

@@ -29,7 +29,7 @@ class TelegramRouter:
 
     def __init__(self, config: Mapping[str, Any] | None = None, environ: Mapping[str, str] | None = None) -> None:
         self.config = dict(config or {})
-        self.environ = environ or os.environ
+        self.environ = os.environ if environ is None else environ
 
     def category_for(self, report_type: str, topic: str = "") -> str:
         report = str(report_type or "").strip().lower()
@@ -57,4 +57,3 @@ class TelegramRouter:
 
     def credentials_configured(self) -> bool:
         return bool(str(self.environ.get("TELEGRAM_BOT_TOKEN", "") or "").strip() and str(self.environ.get("TELEGRAM_CHAT_ID", "") or "").strip())
-

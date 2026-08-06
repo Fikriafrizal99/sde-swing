@@ -3,6 +3,21 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Iterable, Mapping
 
+from modules.telegram.formatters import (
+    MISSING as FORMAT_MISSING,
+    clean_items as shared_clean_items,
+    escape_html,
+    exchange_warnings as shared_exchange_warnings,
+    format_money as shared_format_money,
+    format_momentum as shared_format_momentum,
+    format_number as shared_format_number,
+    format_percent as shared_format_percent,
+    format_price as shared_format_price,
+    human_enum as shared_human_enum,
+    human_status as shared_human_status,
+    risk_reward as shared_risk_reward,
+)
+
 SEPARATOR = "━━━━━━━━━━━━━━━━━━━━"
 
 
@@ -738,4 +753,449 @@ def format_watchlist_detail(data: dict[str, Any]) -> str:
             else "Masukkan watchlist prioritas. Belum boleh entry sebelum area dan trigger terkonfirmasi."
         )),
     ]
+    return "\n".join(lines).strip()
+
+
+# ---------------------------------------------------------------------------
+# v1.7 presentation contract
+# ---------------------------------------------------------------------------
+# The legacy builders above remain import-compatible for older integrations.
+# These definitions are intentionally last so the runtime uses one stable
+# human-facing contract without changing the engine-owned artifacts.
+
+def _safe(value: Any, fallback: str = FORMAT_MISSING) -> str:
+    text = str(value or "").strip()
+    return escape_html(text) if text else fallback
+
+
+def _human(value: Any, fallback: str = FORMAT_MISSING) -> str:
+    return escape_html(shared_human_enum(value, fallback))
+
+
+def _status(value: Any) -> str:
+    return escape_html(shared_human_status(value))
+
+
+def _source_status(value: Any, fallback: str = "DATA TIDAK TERSEDIA") -> str:
+    text = str(value or "").strip()
+    return escape_html(text.replace("_", " ").upper() if text else fallback)
+
+
+def _section(title: str, *lines: str) -> list[str]:
+    return [f"<b>{escape_html(title)}</b>", *[line for line in lines if line != ""]]
+
+
+def _detail_entry(data: Mapping[str, Any]) -> str:
+    low = shared_format_price(data.get("entry_low"))
+    high = shared_format_price(data.get("entry_high"))
+    if low != FORMAT_MISSING and high != FORMAT_MISSING:
+        return f"{low}–{high}"
+    return low if low != FORMAT_MISSING else high
+
+
+def _detail_rr(data: Mapping[str, Any]) -> tuple[str, bool]:
+    return shared_risk_reward(
+        data.get("entry_low"),
+        data.get("entry_high"),
+        data.get("target_1"),
+        data.get("stop_loss"),
+        entry_reference=data.get("entry_reference"),
+    )
+
+
+def _detail_participant(index: int, item: Any) -> str:
+    if isinstance(item, Mapping):
+        broker = str(item.get("broker") or item.get("code") or item.get("name") or "").strip().upper()
+        value = shared_format_money(item.get("value") or item.get("net_value") or item.get("amount"))
+        average = shared_format_price(item.get("avg_price") or item.get("average_price") or item.get("avg"))
+        classification = shared_human_enum(item.get("classification") or item.get("origin") or "", "")
+        parts = [escape_html(broker or "broker belum tersedia")]
+        if value != FORMAT_MISSING:
+            parts.append(escape_html(value))
+        if average != FORMAT_MISSING:
+            parts.append(f"Avg {escape_html(average)}")
+        if classification:
+            parts.append(escape_html(classification))
+        return f"{index}. " + " | ".join(parts)
+    return f"{index}. {escape_html(shared_human_enum(item))}"
+
+
+def _participant_lines(items: Any) -> list[str]:
+    values = list(items or []) if isinstance(items, (list, tuple)) else []
+    return [_detail_participant(index, item) for index, item in enumerate(values[:3], 1)] or ["• Data tidak tersedia"]
+
+
+def _runtime_zapi_lines(data: Mapping[str, Any]) -> list[str]:
+    request_count = data.get("zapi_request_count")
+    request_cap = data.get("zapi_request_cap", 5)
+    if request_count in (None, "") and not data.get("zapi_status"):
+        return []
+    degraded = bool(data.get("zapi_degraded")) or str(data.get("zapi_status") or "").upper() in {"DEGRADED", "UNAVAILABLE"}
+    lines = [
+        "<b>🔌 ZAPI ENRICHMENT</b>",
+        f"Request Zapi: {escape_html(shared_format_number(request_count, 0))}/{escape_html(shared_format_number(request_cap, 0))}",
+        f"Metadata cache: {_safe(data.get('metadata_cache_status'))} | {escape_html(str(data.get('metadata_cache_date') or 'tanggal belum tersedia'))}",
+        f"Market activity cache: {_safe(data.get('market_activity_cache_status'))}",
+        f"Suspend: {escape_html(shared_format_number(data.get('suspended_count'), 0))} | UMA: {escape_html(shared_format_number(data.get('uma_count'), 0))} | Relisting: {escape_html(shared_format_number(data.get('relisting_count'), 0))}",
+        f"Mode: <b>{'DEGRADED' if degraded else 'NORMAL'}</b>",
+    ]
+    reason = data.get("degraded_reason") or data.get("zapi_note")
+    if reason:
+        lines.append(f"Catatan: {_human(reason)}")
+    return lines
+
+
+def format_market_outlook(data: dict[str, Any]) -> str:
+    sentiment = data.get("global_sentiment") if isinstance(data.get("global_sentiment"), Mapping) else {}
+    regime = str(data.get("market_regime") or "UNKNOWN").replace("_", " ").upper()
+    tone = str(sentiment.get("sentiment_state") or data.get("global_tone") or "DATA TIDAK TERSEDIA").replace("_", " ").upper()
+    coverage = data.get("global_coverage", data.get("coverage"))
+    focus = shared_clean_items(data.get("focus_points") or data.get("focus_tomorrow"), 3, "")
+    risks = shared_clean_items(data.get("risk_points") or data.get("avoid_guidance"), 3, "")
+    lines = [
+        "<b>🌅 SDE SWING — MARKET OUTLOOK</b>",
+        f"📅 {escape_html(_date(data.get('trade_date'), long=True) or FORMAT_MISSING)}",
+        f"🕒 Snapshot diperbarui: {escape_html(_time(data.get('snapshot_created_at') or data.get('created_at')) or FORMAT_MISSING)} WIB",
+        SEPARATOR,
+        f"<b>📊 REGIME: {escape_html(regime)}</b>",
+        f"Bias market: <b>{_human(data.get('execution_mode'), 'selektif')}</b>",
+        f"Sentimen global: <b>{escape_html(tone)}</b> — coverage {escape_html(shared_format_percent(coverage, ratio_aware=True))}",
+        f"Broker flow: {_human(data.get('broker_flow_context'), 'data tidak tersedia')}",
+        f"IHSG: {_human(data.get('ihsg_reason') or data.get('reason'), 'data tidak tersedia')}",
+        "",
+        * _section("🧭 RENCANA BESOK", _safe(data.get("focus_tomorrow"), "Cari setup dengan entry dan broker flow yang mendukung.")),
+        "",
+        *_section("🎯 FOKUS UTAMA", *(f"• {escape_html(item)}" for item in focus)),
+        "",
+        *_section("⚠️ RISIKO UTAMA", *(f"• {escape_html(item)}" for item in risks)),
+    ]
+    instruments = [item for item in data.get("global_instruments", []) or [] if isinstance(item, Mapping)]
+    if instruments:
+        lines += ["", SEPARATOR, "<b>🌍 GLOBAL MARKET</b>"]
+        for item in instruments[:9]:
+            name = _safe(item.get("display_name") or item.get("instrument"), "instrumen")
+            status = str(item.get("freshness_status") or "").upper()
+            close = shared_format_price(item.get("close"))
+            change = shared_format_percent(item.get("change_pct"), 2, signed=True)
+            if status not in {"VALID", "DELAYED_ACCEPTED"} or close == FORMAT_MISSING:
+                lines.append(f"• {name}: data tidak tersedia")
+            else:
+                lines.append(f"• {name}: {escape_html(close)} ({escape_html(change)})")
+    if any(data.get(key) for key in ("leading", "rotating_in", "weakening", "rotating_out", "lagging")):
+        lines += ["", SEPARATOR, "<b>🔄 ROTASI SEKTOR</b>"]
+        for title, key in (("🔥 LEADING", "leading"), ("🟢 ROTATING IN", "rotating_in"), ("🟡 WEAKENING", "weakening"), ("🔴 ROTATING OUT", "rotating_out")):
+            values = shared_clean_items(data.get(key), 3, "")
+            if values:
+                lines += [f"<b>{title}</b>", *[f"• {escape_html(item)}" for item in values]]
+    lines += [
+        "", SEPARATOR,
+        "<b>📌 ARAHAN SDE</b>",
+        "Prioritaskan Technical Quality, Entry Readiness, dan broker flow yang selaras.",
+        "BUY CANDIDATE tetap menunggu trigger; jangan mengejar harga.",
+        "",
+        *_runtime_zapi_lines(data),
+        "",
+        "⚠️ Sentimen global digunakan sebagai konteks Market Outlook dan tidak mengubah scoring saham langsung.",
+    ]
+    return "\n".join(line for line in lines if line is not None).strip()
+
+
+def format_post_market(data: dict[str, Any]) -> str:
+    status = str(data.get("process_status") or "WAITING").replace("_", " ").upper()
+    requested = int(float(data.get("symbols_requested") or 0))
+    loaded = int(float(data.get("symbols_loaded") or 0))
+    valid = int(float(data.get("symbols_valid") or 0))
+    skipped = int(float(data.get("symbols_skipped") or 0))
+    coverage = data.get("coverage")
+    not_loaded = int(float(data.get("symbols_not_loaded") if data.get("symbols_not_loaded") not in (None, "") else max(0, requested - loaded)))
+    invalid = int(float(data.get("symbols_invalid") if data.get("symbols_invalid") not in (None, "") else max(0, loaded - valid)))
+    impact = str(data.get("data_impact") or ("TIDAK MATERIAL" if float(coverage or 0) >= 90 else "MATERIAL")).upper()
+    lines = [
+        "<b>🌆 SDE SWING — POST MARKET</b>",
+        f"📅 {escape_html(_date(data.get('trade_date'), long=True) or FORMAT_MISSING)}",
+        f"🕒 Proses selesai: {escape_html(_time(data.get('finished_at') or data.get('generated_at')) or FORMAT_MISSING)} WIB",
+        SEPARATOR,
+        f"<b>✅ PROCESS STATUS: {escape_html(status)}</b>",
+        "",
+        "<b>📊 MARKET SUMMARY</b>",
+        f"Regime: {_human(data.get('market_regime'), 'data tidak tersedia')}",
+        f"IHSG trend: {_human(data.get('ihsg_trend') or data.get('reason'), 'data tidak tersedia')}",
+        f"Breadth: {_human(data.get('breadth'), 'data tidak tersedia')}",
+        "",
+        "<b>🔄 SECTOR BIAS</b>",
+        f"Leading: {_human(', '.join(str(item) for item in data.get('leading', []) or []), 'data tidak tersedia')}",
+        f"Rotating in: {_human(', '.join(str(item) for item in data.get('rotating_in', []) or []), 'data tidak tersedia')}",
+        f"Weakening: {_human(', '.join(str(item) for item in data.get('weakening', []) or []), 'data tidak tersedia')}",
+        f"Lagging: {_human(', '.join(str(item) for item in data.get('lagging', []) or []), 'data tidak tersedia')}",
+        "",
+        "<b>📦 DATA QUALITY</b>",
+        f"• Universe awal           : {requested}",
+        f"• Loaded                  : {loaded}",
+        f"• Valid                   : {valid}",
+        f"• Skipped                : {skipped}",
+        f"• Universe: {requested} | Loaded: {loaded} | Valid: {valid} | Skipped: {skipped}",
+        f"• Not Loaded      : {not_loaded} saham",
+        f"• Invalid         : {invalid} saham",
+        f"Coverage: {escape_html(shared_format_percent(coverage, ratio_aware=True))}",
+        f"• Impact          : {escape_html(impact)}",
+        f"Impact: {_human(data.get('data_impact'), 'data tidak tersedia')}",
+        "",
+        "<b>🔎 CANDIDATE FUNNEL</b>",
+    ]
+    funnel = [
+        ("Universe awal", data.get("funnel_universe", requested)),
+        ("Lolos likuiditas", data.get("funnel_liquidity")),
+        ("Lolos teknikal", data.get("funnel_technical")),
+        ("Setup valid", data.get("funnel_setup")),
+        ("Entry Readiness", data.get("funnel_entry_ready")),
+        ("Broker tersedia", data.get("funnel_broker")),
+        ("Final Watchlist", data.get("funnel_final")),
+    ]
+    available_funnel = [(label, value) for label, value in funnel if value not in (None, "")]
+    for label, value in available_funnel:
+        if value not in (None, ""):
+            lines.append(f"• {escape_html(label):<24}: {escape_html(shared_format_number(value, 0))}")
+    if len(available_funnel) <= 1:
+        lines.append("• Tahap rinci belum tersedia dari artifact engine")
+    lines += [
+        "",
+        "<b>🚧 FILTER DOMINAN</b>",
+        *(
+            f"• {escape_html(str(item.get('label') or item.get('reason') or item.get('name')))}: {escape_html(shared_format_number(item.get('count'), 0))}"
+            for item in (data.get('dominant_filters', []) or [])[:3]
+            if isinstance(item, Mapping)
+        ),
+        "• Belum tersedia dari artifact engine" if not data.get("dominant_filters") else "",
+        "",
+        "<b>📊 SCREENING RESULT</b>",
+        f"• BUY READY     : {escape_html(shared_format_number(data.get('buy_ready_count'), 0))}",
+        f"• BUY CANDIDATE : {escape_html(shared_format_number(data.get('buy_candidate_count'), 0))}",
+        f"• WATCH         : {escape_html(shared_format_number(data.get('watch_count'), 0))}",
+        f"• WAITING       : {escape_html(shared_format_number(data.get('wait_count'), 0))}",
+        f"• AVOID         : {escape_html(shared_format_number(data.get('avoid_count'), 0))}",
+        "",
+        "<b>📌 INTERPRETASI</b>",
+        _safe(data.get('screening_interpretation'), "Hasil screening menunggu artifact keputusan lengkap."),
+        "",
+        "<b>📈 PIPELINE STATUS</b>",
+        f"Technical Snapshot: {_status(data.get('technical_status') or 'NOT AVAILABLE')}",
+        f"Candidate Screening: {_status(data.get('candidate_status') or 'NOT AVAILABLE')}",
+        f"Final Watchlist: {_status(data.get('final_watchlist_status') or 'WAITING')}",
+        "",
+        "<b>📡 SOURCE STATUS</b>",
+        f"Yahoo: {_source_status(data.get('historical_status') or data.get('yahoo_status') or 'VALID')}",
+        f"ZAPI IDX: {_source_status(data.get('zapi_status') or 'DEGRADED')}",
+        f"Stockbit: {_source_status(data.get('stockbit_status') or 'WAITING')}",
+        "",
+        "<b>🎯 NEXT PROCESS</b>",
+        "Final Watchlist memeriksa status keputusan, entry, trigger, target, stop loss, alasan, dan risiko.",
+    ]
+    if data.get("run_id"):
+        lines.append(f"Run ID: {escape_html(data['run_id'])}")
+    lines += [
+        "",
+        *_runtime_zapi_lines(data),
+    ]
+    if data.get("data_note") or data.get("degraded_reason"):
+        lines += ["", f"⚠️ Catatan: {_human(data.get('data_note') or data.get('degraded_reason'))}"]
+    return "\n".join(lines).strip()
+
+
+def format_broker_summary(data: dict[str, Any]) -> str:
+    def top_lines(items: Any) -> list[str]:
+        result = []
+        for index, row in enumerate(items or [], 1):
+            if not isinstance(row, Mapping):
+                continue
+            result.append(f"{index}. {_safe(str(row.get('symbol') or '').upper(), 'emiten')} — {_human(row.get('broker_state') or row.get('state'))}")
+        return result or ["• Data tidak tersedia"]
+
+    return "\n".join([
+        "🏦 <b>SDE SWING — BROKER SUMMARY</b>",
+        SEPARATOR,
+        f"📅 {escape_html(_date(data.get('trade_date')) or FORMAT_MISSING)} | POST MARKET",
+        f"<b>STATUS: {_status(data.get('process_status') or 'WAITING')}</b>",
+        "",
+        "<b>🌊 BROKER FLOW</b>",
+        f"Akumulasi: {escape_html(shared_format_number(data.get('accumulation_count'), 0))}",
+        f"Netral: {escape_html(shared_format_number(data.get('neutral_count'), 0))}",
+        f"Distribusi: {escape_html(shared_format_number(data.get('distribution_count'), 0))}",
+        f"Data tidak tersedia: {escape_html(shared_format_number(data.get('no_data_count'), 0))}",
+        "",
+        "<b>🔥 TOP ACCUMULATION</b>",
+        *top_lines(data.get("top_accumulation")),
+        "",
+        "<b>🔴 TOP DISTRIBUTION</b>",
+        *top_lines(data.get("top_distribution")),
+        "",
+        f"📡 Sumber: {_status(data.get('provider') or 'STOCKBIT')}",
+    ]).strip()
+
+
+def format_broker_multiday(data: dict[str, Any]) -> str:
+    def rows(items: Any) -> list[str]:
+        result = []
+        for index, row in enumerate(items or [], 1):
+            if isinstance(row, Mapping):
+                result.append(
+                    f"{index}. {_safe(str(row.get('symbol') or '').upper(), 'emiten')} — "
+                    f"1D {_human(row.get('state_1d'))} | 3D {_human(row.get('state_3d'))} | 5D {_human(row.get('state_5d'))}"
+                )
+        return result or ["• Data tidak tersedia"]
+
+    return "\n".join([
+        "📚 <b>SDE SWING — BROKER MULTI-DAY</b>",
+        SEPARATOR,
+        f"📅 {escape_html(_date(data.get('trade_date')) or FORMAT_MISSING)} | POST MARKET",
+        f"<b>STATUS: {_status(data.get('process_status') or 'WAITING')}</b>",
+        "",
+        "<b>🔥 AKUMULASI KONSISTEN</b>",
+        *rows(data.get("top_accumulation")),
+        "",
+        "<b>🔴 DISTRIBUSI KONSISTEN</b>",
+        *rows(data.get("top_distribution")),
+    ]).strip()
+
+
+def format_final_watchlist_summary(data: dict[str, Any]) -> str:
+    rows = [row for row in data.get("rows", []) or [] if isinstance(row, Mapping)]
+    counts = data.get("decision_counts") if isinstance(data.get("decision_counts"), Mapping) else {}
+    top = data.get("top_priority") or rows[:3]
+    lines = [
+        "<b>🎯 SDE SWING — FINAL WATCHLIST</b>",
+        f"📅 {escape_html(_date(data.get('trade_date'), long=True) or FORMAT_MISSING)}",
+        f"🕒 Dibuat: {escape_html(_time(data.get('generated_at') or data.get('created_at')) or FORMAT_MISSING)} WIB",
+        SEPARATOR,
+        "<b>📊 HASIL FINAL</b>",
+        f"• BUY READY      : {escape_html(shared_format_number(counts.get('BUY_READY', counts.get('BUY READY')), 0))}",
+        f"• BUY CANDIDATE  : {escape_html(shared_format_number(counts.get('BUY_CANDIDATE', counts.get('BUY CANDIDATE')), 0))}",
+        f"• WATCH          : {escape_html(shared_format_number(counts.get('WATCH'), 0))}",
+        f"• WAITING        : {escape_html(shared_format_number(counts.get('WAIT'), 0))}",
+        f"• AVOID          : {escape_html(shared_format_number(counts.get('AVOID'), 0))}",
+        f"Total aktif: {len(rows)}",
+        "",
+        "<b>🎯 PRIORITAS EKSEKUSI</b>",
+    ]
+    for index, row in enumerate(top[:3], 1):
+        confidence = shared_format_percent(row.get("confidence"), 1) if row.get("confidence") not in (None, "") else FORMAT_MISSING
+        lines.append(f"{index}. {_safe(str(row.get('symbol') or '').upper(), 'emiten')} — {_status(row.get('decision'))} | {escape_html(confidence)}")
+    if not top:
+        lines.append("• Belum ada saham aktif dalam Final Watchlist.")
+    lines += ["", "Prioritas memakai kesiapan eksekusi, bukan score saja.", *(_runtime_zapi_lines(data) or [])]
+    return "\n".join(lines).strip()
+
+
+def format_watchlist_detail(data: dict[str, Any]) -> str:
+    raw_status = str(data.get("decision") or "WATCH").upper().replace("_", " ")
+    status = shared_human_status(raw_status)
+    rr_text, rr_valid = _detail_rr(data)
+    if status == "BUY READY" and not rr_valid:
+        status = "WAITING"
+    confidence = shared_format_percent(data.get("confidence"), 1) if data.get("confidence") not in (None, "") else FORMAT_MISSING
+    symbol = _safe(str(data.get("symbol") or "").upper(), "emiten")
+    entry = _detail_entry(data)
+    if entry == FORMAT_MISSING:
+        entry = "menunggu konfirmasi"
+    trigger = _human(data.get("trigger_description"), "menunggu trigger entry")
+    exchange_status = str(data.get("exchange_status") or "NORMAL").upper()
+    risk_flags = shared_clean_items(data.get("risk_flags"), 3, "")
+    exchange_warning_lines = shared_exchange_warnings(
+        exchange_status,
+        data.get("risk_flags"),
+        data.get("exchange_veto"),
+    )
+    waiting = shared_clean_items(data.get("waiting_triggers"), 3, "")
+    reasons = shared_clean_items(
+        [data.get("main_reason_technical"), data.get("main_reason_broker"), data.get("main_reason_entry"), data.get("main_reason")],
+        3,
+        "",
+    )
+    risks = shared_clean_items(data.get("risk_items") or data.get("main_risk"), 3, "")
+    if exchange_status != "NORMAL":
+        risks.insert(0, f"Status Bursa {exchange_status}")
+    risks = risks[:3]
+    momentum = shared_format_momentum(
+        data.get("rsi"),
+        data.get("macd_hist") if data.get("macd_hist") not in (None, "") else data.get("macd"),
+        macd_signal=data.get("macd_signal"),
+    )
+    if momentum == FORMAT_MISSING and data.get("momentum_status"):
+        momentum = shared_human_enum(data.get("momentum_status"))
+    top_buyers = data.get("top_buyers") if isinstance(data.get("top_buyers"), (list, tuple)) else []
+    top_sellers = data.get("top_sellers") if isinstance(data.get("top_sellers"), (list, tuple)) else []
+    plan_status = "BUY READY" if status == "BUY READY" and rr_valid else status
+    lines = [
+        SEPARATOR,
+        f"<b>#{escape_html(str(data.get('rank') or '—'))} {symbol} | {escape_html(status)} | {escape_html(confidence)}</b>",
+        f"📅 {escape_html(_date(data.get('trade_date'), long=True) or FORMAT_MISSING)} | 🕒 {escape_html(_time(data.get('generated_at') or data.get('created_at')) or FORMAT_MISSING)} WIB",
+        "",
+        * _section("📈 TEKNIKAL",
+            f"Setup: {_human(data.get('setup'), 'data tidak tersedia')}",
+            f"Trend: {_human(data.get('trend'), 'data tidak tersedia')}",
+            f"Quality: {escape_html(shared_format_percent(data.get('technical_quality', data.get('technical_score')), 1))}",
+            f"Readiness: {escape_html(shared_format_percent(data.get('entry_readiness'), 1))}",
+            f"Momentum: {escape_html(momentum)}",
+            f"Volume: {_human(data.get('volume_description'), 'data tidak tersedia')}" + (f" — {escape_html(shared_format_number(data.get('volume_ratio_ma20'), 2))}x MA20" if data.get('volume_ratio_ma20') not in (None, "") else ""),
+        ),
+    ]
+    if exchange_status != "NORMAL" or risk_flags or exchange_warning_lines:
+        lines += [
+            "",
+            *_section(
+                "🏛️ STATUS BURSA",
+                f"Status: {escape_html(exchange_status)}",
+                *(f"• {escape_html(item)}" for item in exchange_warning_lines),
+                f"Risiko: {escape_html(', '.join(risk_flags))}" if risk_flags else "",
+                f"Veto: {_human(data.get('exchange_veto'), '')}" if data.get('exchange_veto') else "",
+            ),
+        ]
+    lines += [
+        "",
+        *_section("🌊 BROKER SUMMARY",
+            f"Status: {_human(data.get('broker_status') or data.get('broker_state'), 'data tidak tersedia')}",
+            f"Direction: {_human(data.get('broker_direction'), 'data tidak tersedia')}",
+            f"Confidence: {escape_html(shared_format_percent(data.get('broker_confidence', data.get('broker_score')), 1))}",
+            f"Net Flow: {escape_html(shared_format_money(data.get('broker_net_flow')))}",
+            f"Buy / Sell: {escape_html(shared_format_percent(data.get('broker_buy_ratio'), 1, ratio_aware=True))} / {escape_html(shared_format_percent(data.get('broker_sell_ratio'), 1, ratio_aware=True))}",
+            f"Flow: {_human(data.get('broker_alignment'), 'data tidak tersedia')}",
+        ),
+        "",
+        *_section("🟢 TOP BUYER", *_participant_lines(top_buyers)),
+        "",
+        *_section("🔴 TOP SELLER", *_participant_lines(top_sellers)),
+        "",
+        *_section("💰 POSISI BROKER",
+            f"Avg buyer: {escape_html(shared_format_price(data.get('avg_buyer_price')))}",
+            f"Avg seller: {escape_html(shared_format_price(data.get('avg_seller_price')))}",
+            f"Harga terakhir: {escape_html(shared_format_price(data.get('last_price')))}",
+            f"Jarak buy avg: {escape_html(shared_format_percent(data.get('distance_to_buyer_avg_pct'), 1, signed=True))}",
+            f"Raw coverage: {escape_html(shared_format_percent(data.get('broker_raw_coverage'), 1, ratio_aware=True))}",
+        ),
+        "",
+        *_section("🎯 RENCANA",
+            f"Status: {escape_html(plan_status)}",
+            f"Entry: {escape_html(entry)}",
+            f"Trigger: {escape_html(trigger)}",
+            f"TP1: {escape_html(shared_format_price(data.get('target_1')))}",
+            f"TP2: {escape_html(shared_format_price(data.get('target_2')))}",
+            f"SL: {escape_html(shared_format_price(data.get('stop_loss')))}",
+            f"R:R TP1: {escape_html(rr_text)}",
+        ),
+        "",
+        *_section("🔔 YANG DITUNGGU", *(f"• {escape_html(item)}" for item in waiting) or ("• Menunggu trigger entry yang valid",)),
+        "",
+        *_section("✅ ALASAN UTAMA", *(f"• {escape_html(item)}" for item in reasons) or ("• Data alasan belum tersedia",)),
+        "",
+        *_section("⚠️ RISIKO & INVALIDASI", *(f"• {escape_html(item)}" for item in risks) or ("• Data risiko belum tersedia",)),
+        "",
+        *_section("🧭 EKSEKUSI", _safe(data.get("execution_note"), "Belum boleh entry sebelum area dan trigger terkonfirmasi.")),
+    ]
+    if any(data.get(key) not in (None, "") for key in ("yahoo_status", "zapi_status", "reconciliation_status", "broker_status")):
+        lines += [
+            "",
+            "<b>📡 SOURCE STATUS</b>",
+            f"Yahoo: {_source_status(data.get('yahoo_status') or 'VALID')}",
+            f"ZAPI IDX: {_source_status(data.get('zapi_status') or data.get('reconciliation_status') or 'DEGRADED')}",
+            f"Stockbit: {_source_status(data.get('broker_status') or 'WAITING')}",
+        ]
     return "\n".join(lines).strip()

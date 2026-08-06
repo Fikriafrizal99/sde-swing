@@ -141,7 +141,7 @@ def test_telegram_counts_use_final_entry_plan_status() -> None:
         {"Symbol": "BBBB", "Decision_Status_Final": "BUY ON TRIGGER", "Plan_Status": "CONDITIONAL"},
     ])
     assert public_counts(decisions, plans) == {
-        "BUY CONFIRMED": 1,
+        "BUY READY": 1,
         "BUY CANDIDATE": 1,
         "WATCH HIGH": 0,
         "WATCH": 1,

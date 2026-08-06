@@ -2,7 +2,7 @@
 """Centralized professional Telegram UI formatter for SDE Swing.
 
 This module renders the final SDE decisions and validated entry plans.
-BUY CONFIRMED is shown only when a BUY/STRONG BUY decision also has a READY plan.
+BUY READY is shown only when a decision has an executable, valid entry plan.
 """
 from __future__ import annotations
 
@@ -23,26 +23,38 @@ if str(PROJECT_ROOT) not in sys.path:
 import pandas as pd
 
 from modules.broker_bridge.broker_raw import normalize_broker_code, normalize_broker_raw_frame
+from modules.telegram.formatters import (
+    exchange_warnings as shared_exchange_warnings,
+    format_momentum as shared_format_momentum,
+    human_enum as shared_human_enum,
+    human_status as shared_human_status,
+    risk_reward as shared_risk_reward,
+)
 
 SEPARATOR = "━━━━━━━━━━━━━━━━━━━━━━━━━━"
 MISSING = "data tidak tersedia"
 
 PUBLIC_STATUS_MAP = {
-    "BUY READY": "BUY CONFIRMED",
+    "BUY READY": "BUY READY",
     "BUY ON TRIGGER": "BUY CANDIDATE",
     "STRONG BUY": "BUY CANDIDATE",
     "BUY": "BUY CANDIDATE",
     "BUY CANDIDATE": "BUY CANDIDATE",
-    "WATCH HIGH": "WATCH HIGH",
+    "WATCH HIGH": "WATCH",
     "WATCH": "WATCH",
     "SPECULATIVE": "WATCH",
     "AVOID": "AVOID",
     "HOLD": "HOLD",
     "TAKE PROFIT": "TAKE PROFIT",
+    "WAITING": "WAITING",
+    "BLOCKED": "BLOCKED",
+    "SUSPENDED": "SUSPENDED",
+    "UMA": "UMA",
+    "RELISTING": "RELISTING",
 }
 
 STATUS_ICON_MAP = {
-    "BUY CONFIRMED": "🟢",
+    "BUY READY": "🟢",
     "BUY CANDIDATE": "🟠",
     "WATCH HIGH": "🟡",
     "WATCH": "🔵",
@@ -208,7 +220,7 @@ def row_value(row: pd.Series | dict[str, Any], *aliases: str, default: Any = Non
 
 def public_status(raw: Any) -> str:
     decision = normalize_text(raw, "WATCH").upper()
-    return PUBLIC_STATUS_MAP.get(decision, decision)
+    return PUBLIC_STATUS_MAP.get(decision, shared_human_status(decision))
 
 
 def status_icon(status: Any) -> str:
@@ -225,12 +237,16 @@ def effective_public_status(raw: Any, plan: pd.Series | None = None) -> str:
             return public_status(final_status)
     readiness, _ = plan_readiness(current_plan) if not current_plan.empty else ("WAITING", "")
     raw_decision = normalize_text(raw, "WATCH").upper()
+    if raw_decision in {"BUY READY"} and readiness != "READY":
+        return "WAITING"
+    if raw_decision in {"STRONG BUY", "BUY"} and not current_plan.empty and readiness != "READY":
+        return "WAITING"
     if raw_decision in {"BUY READY"}:
-        return "BUY CONFIRMED"
+        return "BUY READY"
     if raw_decision in {"BUY ON TRIGGER"}:
         return "BUY CANDIDATE"
     if raw_decision in {"STRONG BUY", "BUY"} and readiness == "READY":
-        return "BUY CONFIRMED"
+        return "BUY READY"
     if raw_decision in {"STRONG BUY", "BUY"} and readiness != "READY":
         return "BUY CANDIDATE"
     return base
@@ -273,7 +289,7 @@ def unique_final_decisions(decisions: pd.DataFrame) -> pd.DataFrame:
 def public_counts(decisions: pd.DataFrame, entry_plans: pd.DataFrame | None = None) -> dict[str, int]:
     work = unique_final_decisions(decisions)
     plans = entry_plans if entry_plans is not None else pd.DataFrame()
-    counts = {"BUY CONFIRMED": 0, "BUY CANDIDATE": 0, "WATCH HIGH": 0, "WATCH": 0, "AVOID": 0}
+    counts = {"BUY READY": 0, "BUY CANDIDATE": 0, "WATCH HIGH": 0, "WATCH": 0, "AVOID": 0}
     decision_col = find_col(work, "Decision_Status_Final", "Decision_Status", "Decision_V3", "Decision")
     symbol_col = find_col(work, "Symbol", "EMITEN", "Ticker")
     if not decision_col:
@@ -292,7 +308,7 @@ def signal_bar(counts: dict[str, int], width: int = 20) -> str:
     total = sum(max(0, int(value)) for value in counts.values())
     if total <= 0:
         return "⚪" * min(width, 10)
-    positive = counts.get("BUY CONFIRMED", 0)
+    positive = counts.get("BUY READY", 0)
     candidate = counts.get("BUY CANDIDATE", 0)
     watch_high = counts.get("WATCH HIGH", 0)
     watch = counts.get("WATCH", 0)
@@ -338,7 +354,7 @@ def market_breadth(technical: pd.DataFrame) -> str:
 
 
 def market_direction_narrative(counts: dict[str, int], regime: Any) -> str:
-    positive = counts.get("BUY CONFIRMED", 0) + counts.get("BUY CANDIDATE", 0) + counts.get("WATCH HIGH", 0)
+    positive = counts.get("BUY READY", 0) + counts.get("BUY CANDIDATE", 0) + counts.get("WATCH HIGH", 0)
     watch = counts.get("WATCH", 0)
     avoid = counts.get("AVOID", 0)
     state = normalize_text(regime, "UNKNOWN").upper()
@@ -358,7 +374,7 @@ def execution_guidance(raw_status: Any, plan_status: Any = "") -> str:
         return "Setup belum layak dieksekusi karena rencana entry gagal memenuhi guardrail. Tetap pantau, jangan memaksakan entry."
     if plan in {"ACCEPT", "ACCEPTED", "APPROVED", "VALID", "READY", "ACTIVE"}:
         return "Rencana entry sudah valid. Eksekusi hanya di area entry, gunakan stop loss yang ditetapkan, dan jangan mengejar harga."
-    if status == "BUY CONFIRMED":
+    if status == "BUY READY":
         return "Setup dan entry plan sudah terkonfirmasi. Entry bertahap hanya di area yang ditentukan; jangan mengejar harga."
     if status == "BUY CANDIDATE":
         return "Kualitas, timing, dan broker cukup mendukung. Tunggu area entry atau trigger yang ditetapkan sebelum eksekusi."
@@ -400,6 +416,14 @@ def momentum_state(row: pd.Series) -> str:
     if macd is not None and macd > 0:
         return f"positif — RSI {rsi:.1f}" if rsi is not None else "positif"
     return f"netral — RSI {rsi:.1f}" if rsi is not None else "netral"
+
+
+def momentum_state(row: pd.Series) -> str:
+    """Return the shared user-facing RSI/MACD momentum label."""
+    rsi = to_float(row_value(row, "RSI_14"))
+    macd = row_value(row, "MACD_Hist", "MACD_Histogram", "MACD")
+    signal = row_value(row, "MACD_Signal", "MACDSignal")
+    return shared_format_momentum(rsi, macd, macd_signal=signal)
 
 
 def volume_state(row: pd.Series) -> str:
@@ -480,7 +504,7 @@ def compact_trigger_text(status: str, entry: str) -> str:
         return f"Area {area if area.startswith('Rp') else 'Rp' + area}"
     if lower in {"menunggu konfirmasi", "menunggu trigger entry", "tunggu breakout valid"}:
         return value[:1].upper() + value[1:]
-    prefix = "Entry" if status == "BUY CONFIRMED" else "Area"
+    prefix = "Entry" if status == "BUY READY" else "Area"
     return f"{prefix} {value if value.startswith('Rp') else 'Rp' + value}"
 
 
@@ -821,7 +845,7 @@ def broker_overview_lines(row: pd.Series) -> list[str]:
 
 def setup_type_text(row: pd.Series) -> str:
     value = normalize_text(row_value(row, "Setup_Type", "Setup_Label"), "DEVELOPING")
-    return value.upper().replace("_", " ")
+    return shared_human_enum(value, "developing").title()
 
 
 def _effective_status_series(ranked: pd.DataFrame, entry_plans: pd.DataFrame) -> pd.Series:
@@ -843,9 +867,9 @@ def select_final_watchlist_rows(decisions: pd.DataFrame, entry_plans: pd.DataFra
     ranked["__report_status"] = _effective_status_series(ranked, entry_plans)
     groups = []
     limits = {
-        "BUY CONFIRMED": cfg.max_buy_confirmed,
+        "BUY READY": cfg.max_buy_confirmed,
         "BUY CANDIDATE": cfg.max_buy_candidate,
-        "WATCH HIGH": cfg.max_watch_high,
+        "WATCH": cfg.max_watch_high,
     }
     for status, limit in limits.items():
         group = ranked[ranked["__report_status"] == status].head(max(0, int(limit)))
@@ -896,6 +920,34 @@ def valid_plan(plan: pd.Series) -> bool:
     status = normalize_text(row_value(plan, "Plan_Status"), "").upper()
     levels = [row_value(plan, "Entry_Zone_Low"), row_value(plan, "Entry_Zone_High"), row_value(plan, "Initial_Stop"), row_value(plan, "Target_1")]
     return status in {"ACCEPT", "ACCEPTED", "APPROVED", "VALID", "READY", "ACTIVE"} and all(to_float(value) is not None for value in levels)
+
+
+def plan_risk_reward(plan: pd.Series) -> tuple[str, bool]:
+    if plan.empty:
+        return "R:R belum valid", False
+    return shared_risk_reward(
+        row_value(plan, "Entry_Zone_Low", "Entry_Low", "Entry_Min"),
+        row_value(plan, "Entry_Zone_High", "Entry_High", "Entry_Max"),
+        row_value(plan, "Target_1", "TP1", "Target1"),
+        row_value(plan, "Initial_Stop", "Stop_Loss", "Stop"),
+        entry_reference=row_value(plan, "Entry_Reference", "Entry_Ref", "Entry"),
+    )
+
+
+def valid_plan(plan: pd.Series) -> bool:
+    if plan.empty:
+        return False
+    status = normalize_text(row_value(plan, "Plan_Status"), "").upper()
+    levels = [
+        row_value(plan, "Entry_Zone_Low", "Entry_Low", "Entry_Min"),
+        row_value(plan, "Entry_Zone_High", "Entry_High", "Entry_Max"),
+        row_value(plan, "Initial_Stop", "Stop_Loss", "Stop"),
+        row_value(plan, "Target_1", "TP1", "Target1"),
+    ]
+    _rr_text, rr_valid = plan_risk_reward(plan)
+    return status in {"ACCEPT", "ACCEPTED", "APPROVED", "VALID", "READY", "ACTIVE"} and all(
+        to_float(value) is not None for value in levels
+    ) and rr_valid
 
 
 def plan_readiness(plan: pd.Series) -> tuple[str, str]:
@@ -952,8 +1004,49 @@ def entry_setup_lines(plan: pd.Series) -> tuple[str, str, str]:
     return f"{low}–{high}", targets, stop
 
 
+def entry_setup_lines(plan: pd.Series) -> tuple[str, str, str]:
+    """Render entry levels consistently; invalid plans stay explicitly waiting."""
+    if plan.empty:
+        return "menunggu konfirmasi", "belum ditetapkan", "berdasarkan invalidation setup"
+    status = normalize_text(row_value(plan, "Plan_Status"), "").upper()
+    reason = normalize_text(row_value(plan, "Rejection_Reason"), "").upper()
+    if status == "REJECT":
+        return "menunggu konfirmasi", "belum ditetapkan", "berdasarkan invalidation setup"
+    if status == "CONDITIONAL":
+        if reason == "MINOR_RESISTANCE_NEAR":
+            trigger = fmt_price(row_value(plan, "Minor_Resistance", "Nearest_Resistance"))
+            return (f"tunggu close > {trigger}" if trigger != MISSING else "tunggu breakout valid"), "ditetapkan setelah trigger", "ditetapkan setelah trigger"
+        low = fmt_price(row_value(plan, "Entry_Zone_Low", "Entry_Low", "Entry_Min"))
+        high = fmt_price(row_value(plan, "Entry_Zone_High", "Entry_High", "Entry_Max"))
+        entry = f"pantau area {low}–{high}" if MISSING not in {low, high} else "menunggu trigger entry"
+        return entry, "ditetapkan setelah trigger", "ditetapkan setelah trigger"
+    low = fmt_price(row_value(plan, "Entry_Zone_Low", "Entry_Low", "Entry_Min"))
+    high = fmt_price(row_value(plan, "Entry_Zone_High", "Entry_High", "Entry_Max"))
+    tp1 = fmt_price(row_value(plan, "Target_1", "TP1", "Target1"))
+    tp2 = fmt_price(row_value(plan, "Target_2", "TP2", "Target2"))
+    stop = fmt_price(row_value(plan, "Initial_Stop", "Stop_Loss", "Stop"))
+    if MISSING in {low, high, tp1, stop}:
+        return "menunggu konfirmasi", tp1, stop
+    targets = tp1 if tp2 == MISSING else f"{tp1} / {tp2}"
+    return f"{low}–{high}", targets, stop
+
+
 def rank_watchlist(decisions: pd.DataFrame, entry_plans: pd.DataFrame) -> pd.DataFrame:
     work = unique_final_decisions(decisions)
+    if work.empty:
+        return work
+    exchange_status_col = find_col(work, "Exchange_Status")
+    veto_col = find_col(work, "Exchange_Veto", "Veto", "Veto_Reason")
+    decision_status_col = find_col(work, "Decision_Status_Final", "Decision_Status", "Decision_V3", "Decision")
+    if exchange_status_col or veto_col or decision_status_col:
+        blocked = pd.Series(False, index=work.index)
+        if exchange_status_col:
+            blocked |= work[exchange_status_col].astype(str).str.upper().isin({"SUSPENDED", "BLOCKED"})
+        if veto_col:
+            blocked |= work[veto_col].astype(str).str.upper().isin({"SUSPENDED", "RELISTING_HISTORY_INSUFFICIENT"})
+        if decision_status_col:
+            blocked |= work[decision_status_col].astype(str).str.upper().isin({"SUSPENDED", "BLOCKED"})
+        work = work[~blocked].copy()
     if work.empty:
         return work
     decision_col = find_col(work, "Decision_V3", "Decision")
@@ -965,7 +1058,7 @@ def rank_watchlist(decisions: pd.DataFrame, entry_plans: pd.DataFrame) -> pd.Dat
         # Rank by the public status shown to the user. WATCH and SPECULATIVE are
         # both displayed as WATCH, so hidden internal status must not create an
         # apparently inconsistent ordering.
-        public_priority = {"BUY CONFIRMED": 0, "BUY CANDIDATE": 1, "WATCH HIGH": 2, "WATCH": 3}
+        public_priority = {"BUY READY": 0, "BUY CANDIDATE": 1, "WATCH HIGH": 2, "WATCH": 3}
         if symbol_col:
             work["__effective_status"] = work.apply(
                 lambda row: effective_public_status(row[decision_col], plan_for_symbol(entry_plans, str(row[symbol_col]))), axis=1
@@ -1221,7 +1314,7 @@ def format_daily_signal_recap(
     cfg = config or UiConfig()
     counts = public_counts(decisions, entry_plans)
     total = sum(counts.values())
-    positive = counts["BUY CONFIRMED"] + counts["BUY CANDIDATE"] + counts["WATCH HIGH"] + counts["WATCH"]
+    positive = counts["BUY READY"] + counts["BUY CANDIDATE"] + counts["WATCH HIGH"] + counts["WATCH"]
     positive_pct = positive / total * 100 if total else 0
     avoid_pct = counts["AVOID"] / total * 100 if total else 0
     regime = normalize_text(market_status.get("market_regime"), "UNKNOWN").upper()
@@ -1234,10 +1327,9 @@ def format_daily_signal_recap(
         signal_bar(counts),
         "",
         "<pre>" + "\n".join([
-            f"BUY CONFIRMED : {counts['BUY CONFIRMED']:>3} emiten",
+            f"BUY READY     : {counts['BUY READY']:>3} emiten",
             f"BUY CANDIDATE : {counts['BUY CANDIDATE']:>3} emiten",
-            f"WATCH HIGH    : {counts['WATCH HIGH']:>3} emiten",
-            f"WATCH         : {counts['WATCH']:>3} emiten",
+            f"WATCH         : {counts['WATCH HIGH'] + counts['WATCH']:>3} emiten",
             f"AVOID         : {counts['AVOID']:>3} emiten",
         ]) + "</pre>",
         cfg.separator,
@@ -1250,7 +1342,7 @@ def format_daily_signal_recap(
         esc(market_direction_narrative(counts, regime)),
         "",
         "<b>Prioritaskan:</b>",
-        "• BUY CONFIRMED dan WATCH HIGH terbaik",
+        "• BUY READY dan WATCH terbaik",
         "• Harga masih dekat area entry",
         "• Broker flow mendukung",
         "• Risk reward masih layak",
@@ -1436,10 +1528,9 @@ def format_closing_bell(
         "",
         cfg.separator,
         "📋 <b>HASIL SDE SWING</b>",
-        f"🟢 BUY CONFIRMED : {counts['BUY CONFIRMED']} emiten",
+        f"🟢 BUY READY     : {counts['BUY READY']} emiten",
         f"🟠 BUY CANDIDATE : {counts['BUY CANDIDATE']} emiten",
-        f"🟡 WATCH HIGH    : {counts['WATCH HIGH']} emiten",
-        f"🔵 WATCH         : {counts['WATCH']} emiten",
+        f"🟡 WATCH         : {counts['WATCH HIGH'] + counts['WATCH']} emiten",
         f"🔴 AVOID         : {counts['AVOID']} emiten",
         "",
         "🏆 <b>TOP WATCHLIST BESOK</b>",
@@ -1493,13 +1584,13 @@ def format_watchlist(
         counts = ranked["__report_status"].value_counts().to_dict()
     no_buy_mode = (
         not preliminary
-        and counts.get("BUY CONFIRMED", 0) == 0
+        and counts.get("BUY READY", 0) == 0
         and counts.get("BUY CANDIDATE", 0) == 0
-        and counts.get("WATCH HIGH", 0) > 0
+        and (counts.get("WATCH HIGH", 0) + counts.get("WATCH", 0)) > 0
     )
 
     if ranked.empty:
-        lines += ["", "⚪ Belum ada BUY CONFIRMED, BUY CANDIDATE, atau WATCH HIGH yang memenuhi filter."]
+        lines += ["", "⚪ Belum ada BUY READY, BUY CANDIDATE, atau WATCH yang memenuhi filter."]
     else:
         if no_buy_mode:
             lines += [
@@ -1510,11 +1601,11 @@ def format_watchlist(
 
         actionable_counter = 0
         watch_counter = 0
-        group_order = ("BUY CONFIRMED", "BUY CANDIDATE", "WATCH HIGH")
+        group_order = ("BUY READY", "BUY CANDIDATE", "WATCH")
         group_titles = {
-            "BUY CONFIRMED": "✅ <b>BUY CONFIRMED</b>",
+            "BUY READY": "✅ <b>BUY READY</b>",
             "BUY CANDIDATE": "🟠 <b>BUY CANDIDATE</b>",
-            "WATCH HIGH": "🟡 <b>WATCH HIGH</b>",
+            "WATCH": "🟡 <b>WATCH</b>",
         }
         for status in group_order:
             group = ranked[ranked["__report_status"] == status] if "__report_status" in ranked.columns else ranked.iloc[0:0]
@@ -1532,14 +1623,14 @@ def format_watchlist(
                 entry, targets, stop = entry_setup_lines(plan)
                 readiness, readiness_reason = plan_readiness(plan)
 
-                if status in {"BUY CONFIRMED", "BUY CANDIDATE"}:
+                if status in {"BUY READY", "BUY CANDIDATE"}:
                     actionable_counter += 1
                     lines += [
                         f"{actionable_counter}. <b>{esc(symbol)}</b> — {esc(score)}%",
                         f"   {esc(compact_setup_label(row))}",
                         f"   🎯 {esc(compact_trigger_text(effective_status, entry))}",
                     ]
-                    if status == "BUY CONFIRMED":
+                    if status == "BUY READY":
                         target_text = normalize_text(targets, "belum ditetapkan")
                         stop_text = normalize_text(stop, "belum ditetapkan")
                         if target_text != "belum ditetapkan":
@@ -1583,17 +1674,17 @@ def format_watchlist(
     summary_parts = []
     if no_buy_mode:
         summary_parts = [
-            "0 Buy Confirmed",
+            "0 Buy Ready",
             "0 Buy Candidate",
-            f"{counts.get('WATCH HIGH', 0)} Watch High",
+            f"{counts.get('WATCH HIGH', 0) + counts.get('WATCH', 0)} Watch",
         ]
     else:
-        if counts.get("BUY CONFIRMED", 0):
-            summary_parts.append(f"{counts['BUY CONFIRMED']} Buy Confirmed")
+        if counts.get("BUY READY", 0):
+            summary_parts.append(f"{counts['BUY READY']} Buy Ready")
         if counts.get("BUY CANDIDATE", 0):
             summary_parts.append(f"{counts['BUY CANDIDATE']} Buy Candidate")
-        if counts.get("WATCH HIGH", 0):
-            summary_parts.append(f"{counts['WATCH HIGH']} Watch High")
+        if counts.get("WATCH HIGH", 0) + counts.get("WATCH", 0):
+            summary_parts.append(f"{counts.get('WATCH HIGH', 0) + counts.get('WATCH', 0)} Watch")
     if summary_parts:
         lines += ["", cfg.separator, " | ".join(summary_parts)]
     if no_buy_mode:
@@ -1625,12 +1716,25 @@ def format_signal_detail(
     readiness, readiness_reason = plan_readiness(entry_plan)
     entry, targets, stop = entry_setup_lines(entry_plan)
     tp1, tp2 = (targets.split(" / ", 1) + ["belum ditetapkan"])[:2] if " / " in targets else (targets, "belum ditetapkan")
+    rr_display, rr_valid = plan_risk_reward(entry_plan)
+    if status == "BUY READY" and not rr_valid:
+        status = "WAITING"
+        readiness = "WAITING"
+        readiness_reason = "R:R belum valid; menunggu rencana entry yang valid"
+    exchange_status = normalize_text(row_value(row, "Exchange_Status"), "NORMAL").upper()
+    exchange_veto = normalize_text(row_value(row, "Exchange_Veto", "Veto", "Veto_Reason"), "")
+    risk_flags = normalize_text(row_value(row, "Risk_Flags"), "")
+    exchange_warning_lines = shared_exchange_warnings(exchange_status, risk_flags, exchange_veto)
     risk_note = "Divergence broker terdeteksi; gunakan konfirmasi tambahan." if broker_flow_divergence(row) else "Disiplin pada area entry dan level invalidation."
     buy_lines = broker_party_detail_lines(row, broker_raw, "BUY", cfg.max_broker_detail_rows)
     sell_lines = broker_party_detail_lines(row, broker_raw, "SELL", cfg.max_broker_detail_rows)
     lines = [
         f"📊 <b>{esc(symbol)} | {status_icon(status)} {esc(status)} | {esc(score)}%</b>",
         f"📅 {esc(fmt_date(trade_date))} | 🕒 {esc(fmt_time(generated_at))}",
+        f"🏛️ Status Bursa: <b>{esc(exchange_status)}</b>" if exchange_status != "NORMAL" else "",
+        *(f"⚠️ Bursa: {esc(item)}" for item in exchange_warning_lines),
+        f"⚠️ Risiko Bursa: {esc(risk_flags.replace(',', ', '))}" if risk_flags else "",
+        f"🚫 Veto: {esc(exchange_veto)}" if exchange_veto else "",
         cfg.separator,
         "📈 <b>TEKNIKAL</b>",
         "<pre>" + "\n".join([
@@ -1658,6 +1762,7 @@ def format_signal_detail(
             f"TP1   : {esc(tp1)}",
             f"TP2   : {esc(tp2)}",
             f"SL    : {esc(stop)}",
+            f"R:R TP1: {esc(rr_display)}",
         ]) + "</pre>",
         "🧭 <b>EKSEKUSI</b>",
         esc(execution_guidance(raw_status, plan_status)),
@@ -1683,7 +1788,7 @@ def human_warning(quality: str, warnings: list[str], fallback: bool, broker_over
 def warning_impact(quality: str, fallback: bool, broker_override: bool) -> str:
     if quality.upper() == "VALID" and not fallback and not broker_override:
         return "Tidak ada dampak material terhadap keputusan."
-    return "Jangan gunakan hasil ini sebagai dasar entry sampai kualitas data kembali valid. Kandidat tidak boleh dinaikkan menjadi BUY CONFIRMED tanpa override yang sah."
+    return "Jangan gunakan hasil ini sebagai dasar entry sampai kualitas data kembali valid. Kandidat tidak boleh dinaikkan menjadi BUY READY tanpa override yang sah."
 
 
 def format_data_warning(
@@ -1721,6 +1826,15 @@ def format_data_warning(
     ]
     if warning_list:
         lines += ["", *[f"• {esc(item)}" for item in warning_list[:5]]]
+    if any("ZAPI" in item.upper() for item in warning_list) or "ZAPI" in str(data_source or "").upper():
+        lines += [
+            "",
+            "⚠️ <b>PROSES BERJALAN DALAM MODE TERBATAS</b>",
+            "Sumber     : Zapi",
+            "Masalah    : Data status Bursa tidak tersedia atau sedang terdegradasi",
+            "Dampak     : Analisis teknikal tetap berjalan",
+            "Fallback   : Cache terakhir digunakan bila tersedia",
+        ]
     lines += ["", "🧭 <b>DAMPAK</b>", esc(impact)]
     return "\n".join(lines)
 
@@ -1777,7 +1891,7 @@ def format_pipeline_status(
     status = normalize_text(run_manifest.get("Pipeline_Status"), "UNKNOWN").upper()
     icon = "✅" if status in {"SUCCESS", "COMPLETED", "OK"} else "⚠️"
     counts = public_counts(decisions, entry_plans)
-    return "\n".join([
+    result = [
         f"{icon} <b>SDE SWING - PIPELINE SELESAI</b>",
         cfg.separator,
         "<pre>" + "\n".join([
@@ -1788,13 +1902,24 @@ def format_pipeline_status(
             f"Data Quality : {esc(normalize_text(run_manifest.get('Data_Quality_Status'), 'UNKNOWN'))}",
         ]) + "</pre>",
         "📊 <b>RINGKASAN</b>",
-        f"🟢 BUY CONFIRMED : {counts['BUY CONFIRMED']}",
+        f"🟢 BUY READY     : {counts['BUY READY']}",
         f"🟠 BUY CANDIDATE : {counts['BUY CANDIDATE']}",
-        f"🟡 WATCH HIGH    : {counts['WATCH HIGH']}",
-        f"🔵 WATCH         : {counts['WATCH']}",
+        f"🟡 WATCH         : {counts['WATCH HIGH'] + counts['WATCH']}",
         f"🔴 AVOID         : {counts['AVOID']}",
         f"🚪 Exit Alert    : {0 if exit_alerts.empty else len(exit_alerts)}",
-    ])
+    ]
+    if any(key in run_manifest for key in ("Zapi_Request_Count", "Zapi_Metadata_Cache_Status", "Zapi_Degraded")):
+        result += [
+            "",
+            "🔌 <b>ZAPI ENRICHMENT</b>",
+            f"Request       : {esc(fmt_number(run_manifest.get('Zapi_Request_Count'), 0))}/{esc(fmt_number(run_manifest.get('Zapi_Request_Cap', 5), 0))}",
+            f"Metadata      : {esc(shared_human_enum(run_manifest.get('Zapi_Metadata_Cache_Status'), MISSING))}",
+            f"Metadata date : {esc(normalize_text(run_manifest.get('Zapi_Metadata_Cache_Date'), MISSING))}",
+            f"Activity      : {esc(shared_human_enum(run_manifest.get('Zapi_Market_Activity_Cache_Status'), MISSING))}",
+            f"Suspend/UMA/Relisting: {int(run_manifest.get('Suspended_Symbol_Count', 0) or 0)}/{int(run_manifest.get('Uma_Symbol_Count', 0) or 0)}/{int(run_manifest.get('Relisting_Symbol_Count', 0) or 0)}",
+            f"Mode          : <b>{'DEGRADED' if run_manifest.get('Zapi_Degraded') else 'NORMAL'}</b>",
+        ]
+    return "\n".join(result)
 
 
 def format_exit_alert(row: pd.Series, generated_at: Any = None, config: UiConfig | None = None) -> str:

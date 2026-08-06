@@ -31,8 +31,17 @@ def _cached_for_trade_date(path: Path, trade_date: date) -> bool:
     if not path.exists() or path.stat().st_size == 0:
         return False
     try:
-        return datetime.fromtimestamp(path.stat().st_mtime).date() == trade_date
-    except OSError:
+        cached_date = None
+        try:
+            cached = pd.read_csv(path, nrows=1)
+            if "Retrieved_Date" in cached.columns and not cached.empty:
+                cached_date = pd.to_datetime(cached.iloc[0]["Retrieved_Date"], errors="coerce").date()
+        except Exception:
+            cached_date = None
+        cached_date = cached_date or datetime.fromtimestamp(path.stat().st_mtime).date()
+        age = (trade_date - cached_date).days
+        return 0 <= age < 7
+    except (OSError, ValueError, TypeError):
         return False
 
 
@@ -98,6 +107,10 @@ def refresh_sector_metadata(
         return {"status": "NOT_CONFIGURED", "source_mode": "UNAVAILABLE", "reason": reason, "request_count": 0}
 
     zapi_client = client or ZapiIdxClient.from_config(source)
+    zapi_client.max_requests_per_process = min(
+        5,
+        int(getattr(zapi_client, "max_requests_per_process", 5) or 5),
+    )
     if client is None and not zapi_client.is_configured():
         reason = "ZAPI_MISSING_CREDENTIAL"
         _emit(event_callback, "ZAPI_SECTOR_METADATA_SKIPPED", reason=reason, request_count=0)

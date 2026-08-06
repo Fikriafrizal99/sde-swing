@@ -125,6 +125,101 @@ def candidate_content_hash(df_or_path: pd.DataFrame | Path) -> str:
     return dataframe_hash(df[cols] if cols else df)
 
 
+def load_exchange_status(path: str | Path | None) -> dict[str, dict[str, object]]:
+    """Load non-scoring Zapi exchange flags from the persistent artifact."""
+    if not path:
+        return {}
+    source = Path(path)
+    if not source.exists() or source.stat().st_size == 0:
+        return {}
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    rows = payload.get("symbols", {}) if isinstance(payload, dict) else {}
+    return rows if isinstance(rows, dict) else {}
+
+
+def _append_rejection(value: object, reason: str) -> str:
+    existing = str(value or "")
+    try:
+        values = json.loads(existing) if existing.startswith("[") else []
+    except (TypeError, ValueError):
+        values = []
+    if not isinstance(values, list):
+        values = []
+    if reason not in values:
+        values.append(reason)
+    return json.dumps(values, ensure_ascii=False)
+
+
+def apply_exchange_status_filter(
+    ranking: pd.DataFrame,
+    exchange_status: dict[str, dict[str, object]],
+) -> pd.DataFrame:
+    """Attach risk flags and veto suspended/insufficient relisting rows.
+
+    This never changes a technical score.  UMA stays eligible but is carried
+    forward as a risk flag for decision and report layers.
+    """
+    if ranking.empty or not exchange_status or "Symbol" not in ranking.columns:
+        return ranking
+    out = ranking.copy()
+    normalized_states: dict[str, dict[str, object]] = {}
+    for raw_symbol, state in exchange_status.items():
+        key = str(raw_symbol or "").strip().upper()
+        if key.startswith("IDX:"):
+            key = key[4:]
+        if key.endswith(".JK"):
+            key = key[:-3]
+        if key and isinstance(state, dict):
+            normalized_states[key] = state
+    for column, default in (
+        ("Risk_Flags", ""),
+        ("Exchange_Status", "NORMAL"),
+        ("Exchange_Veto", ""),
+        ("Exchange_History_Candles", 0),
+        ("Candidate_Rejected_By", ""),
+    ):
+        if column not in out.columns:
+            out[column] = default
+    for idx in out.index:
+        symbol = str(out.at[idx, "Symbol"]).strip().upper()
+        if symbol.startswith("IDX:"):
+            symbol = symbol[4:]
+        if symbol.endswith(".JK"):
+            symbol = symbol[:-3]
+        state = normalized_states.get(symbol, {}) or {}
+        if not state:
+            # Enrichment is a carried-forward annotation.  Do not erase any
+            # pre-existing fields for a row that is outside its universe.
+            continue
+        status = str(state.get("status") or "NORMAL").upper()
+        raw_flags = state.get("risk_flags") or []
+        if isinstance(raw_flags, str):
+            raw_flags = [item.strip() for item in raw_flags.split(",") if item.strip()]
+        flags = [str(item).upper() for item in raw_flags]
+        veto = str(state.get("veto") or "").upper()
+        try:
+            candles = int(state.get("history_candle_count") or 0)
+        except (TypeError, ValueError):
+            candles = 0
+        out.at[idx, "Exchange_Status"] = status
+        out.at[idx, "Exchange_History_Candles"] = candles
+        out.at[idx, "Risk_Flags"] = ",".join(sorted(set(flags)))
+        out.at[idx, "Exchange_Veto"] = veto
+        if status == "SUSPENDED":
+            out.at[idx, "Candidate_Status"] = "FILTERED"
+            out.at[idx, "Exchange_Veto"] = "SUSPENDED"
+            out.at[idx, "Candidate_Rejected_By"] = _append_rejection(out.at[idx, "Candidate_Rejected_By"], "SUSPENDED")
+            out.at[idx, "Candidate_Reason"] = "Diblokir karena saham sedang disuspensi Bursa"
+        elif "RELISTING" in flags and veto == "RELISTING_HISTORY_INSUFFICIENT":
+            out.at[idx, "Candidate_Status"] = "FILTERED"
+            out.at[idx, "Candidate_Rejected_By"] = _append_rejection(out.at[idx, "Candidate_Rejected_By"], "RELISTING_HISTORY_INSUFFICIENT")
+            out.at[idx, "Candidate_Reason"] = "Histori relisting belum memenuhi kebutuhan indikator"
+    return out
+
+
 def score_candidates(df: pd.DataFrame, min_avg_value: float, decision_config: dict | None = None) -> pd.DataFrame:
     """Score technical quality and pre-entry readiness separately.
 
@@ -549,6 +644,7 @@ def main() -> int:
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--manifest-dir", default=None)
     parser.add_argument("--data-quality-status", default="VALID")
+    parser.add_argument("--exchange-status", default="", help="Persistent Zapi exchange-status artifact; enrichment only")
     args = parser.parse_args()
     args.run_id = args.run_id or make_run_id()
     config_path = Path(args.config)
@@ -584,6 +680,7 @@ def main() -> int:
     technical_date_text = technical_data_date.date().isoformat() if pd.notna(technical_data_date) else ""
     source_hash = file_sha256(input_path)
     ranking = score_candidates(df, args.min_avg_value, cfg.get("decision", {}))
+    ranking = apply_exchange_status_filter(ranking, load_exchange_status(args.exchange_status))
     generated_at = datetime.now().isoformat(timespec="seconds")
     lineage_cols = {
         "Run_ID": args.run_id,

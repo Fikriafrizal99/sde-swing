@@ -12,7 +12,6 @@ from typing import Callable
 from modules.global_market.global_market_snapshot import build_global_market_snapshot
 from modules.market_data.market_outlook_regime import calculate_market_outlook_regime, save_market_outlook_regime
 from modules.market_data.sector_rotation import produce_sector_rotation
-from modules.market_data.zapi_sector_metadata import refresh_sector_metadata
 from modules.job_runner.core import (
     broker_readiness,
     load_technical_snapshot,
@@ -21,6 +20,8 @@ from modules.job_runner.core import (
     run_broker_fusion_from_snapshot,
     run_broker_multiday_stage,
     run_post_market_technical_stage,
+    run_zapi_enrichment,
+    _universe_symbols,
     SourceValidationBlocked,
     run_final_from_snapshot,
     run_master_pipeline,
@@ -230,23 +231,38 @@ def job_market_outlook(ctx) -> int:
         "source_mode": global_snapshot.get("source_mode"),
         "coverage": global_snapshot.get("coverage_ratio"),
     })
+    metadata_path = None
+    rotation_metadata = str(ctx.config.get("paths", {}).get("sector_rotation_metadata", "")).strip()
+    if rotation_metadata:
+        metadata_path = resolve(rotation_metadata)
+    zapi_enrichment = run_zapi_enrichment(
+        ctx,
+        symbols=_universe_symbols(
+            ctx.path("normalized_watchlist", "modules/historical_downloader/Stockbit_Watchlist_2026-07-19_normalized.csv"),
+            ctx.path("historical_dir", "data/output/historical/by_symbol"),
+        ),
+        historical_dir=ctx.path("historical_dir", "data/output/historical/by_symbol"),
+        metadata_csv_path=metadata_path,
+    )
+    market_status.update({
+        "zapi_status": zapi_enrichment.get("status", "DEGRADED"),
+        "zapi_request_count": zapi_enrichment.get("request_count", 0),
+        "zapi_request_cap": zapi_enrichment.get("request_cap", 5),
+        "metadata_cache_status": zapi_enrichment.get("metadata_cache_status", ""),
+        "metadata_cache_date": zapi_enrichment.get("metadata_cache_date", ""),
+        "market_activity_cache_status": zapi_enrichment.get("market_activity_cache_status", ""),
+        "suspended_count": zapi_enrichment.get("suspended_count", 0),
+        "uma_count": zapi_enrichment.get("uma_count", 0),
+        "relisting_count": zapi_enrichment.get("relisting_count", 0),
+        "zapi_degraded": bool(zapi_enrichment.get("degraded")),
+        "zapi_degraded_reason": zapi_enrichment.get("degraded_reason", ""),
+    })
     configured_rotation = str(ctx.config.get("paths", {}).get("sector_rotation_output", "")).strip()
     if configured_rotation:
         rotation_path = resolve(configured_rotation)
-        rotation_metadata = str(ctx.config.get("paths", {}).get("sector_rotation_metadata", "")).strip()
-        metadata_path = resolve(rotation_metadata) if rotation_metadata else None
-        if metadata_path is not None:
-            metadata_result = refresh_sector_metadata(
-                metadata_path,
-                config_path=ctx.data_source_config_path,
-                trade_date=ctx.trade_date,
-                event_callback=lambda event, detail: append_job_log(
-                    ctx, event, json.dumps(detail, default=str)
-                ),
-            )
-            market_status["sector_metadata_status"] = metadata_result.get("status", "UNAVAILABLE")
-            market_status["sector_metadata_source_mode"] = metadata_result.get("source_mode", "UNAVAILABLE")
-            market_status["sector_metadata_request_count"] = metadata_result.get("request_count", 0)
+        market_status["sector_metadata_status"] = zapi_enrichment.get("metadata_cache_status", "UNAVAILABLE")
+        market_status["sector_metadata_source_mode"] = "CACHE" if zapi_enrichment.get("metadata_cache_status") in {"HIT", "STALE_FALLBACK"} else "ZAPI"
+        market_status["sector_metadata_request_count"] = zapi_enrichment.get("request_count", 0)
         rotation_payload = produce_sector_rotation(
             technical_path,
             rotation_path,
@@ -305,6 +321,16 @@ def job_market_outlook(ctx) -> int:
             "minimum_required_coverage_ratio": minimum_coverage,
             "sector_rotation_status": market_status.get("sector_rotation_status", ""),
             "sector_rotation_coverage": market_status.get("sector_rotation_coverage", 0.0),
+            "zapi_request_count": market_status.get("zapi_request_count", 0),
+            "zapi_request_cap": market_status.get("zapi_request_cap", 5),
+            "metadata_cache_status": market_status.get("metadata_cache_status", ""),
+            "metadata_cache_date": market_status.get("metadata_cache_date", ""),
+            "market_activity_cache_status": market_status.get("market_activity_cache_status", ""),
+            "suspended_count": market_status.get("suspended_count", 0),
+            "uma_count": market_status.get("uma_count", 0),
+            "relisting_count": market_status.get("relisting_count", 0),
+            "zapi_degraded": market_status.get("zapi_degraded", False),
+            "zapi_degraded_reason": market_status.get("zapi_degraded_reason", ""),
         })
     print("[5/5] Mengirim Market Outlook ke Telegram...", flush=True)
     delivery = deliver(ctx, payloads) if _reports_enabled(ctx) else []
@@ -334,6 +360,16 @@ def job_market_outlook(ctx) -> int:
         ],
         "sector_rotation_status": sector_status,
         "sector_rotation_coverage": market_status.get("sector_rotation_coverage", 0.0),
+        "zapi_request_count": market_status.get("zapi_request_count", 0),
+        "zapi_request_cap": market_status.get("zapi_request_cap", 5),
+        "metadata_cache_status": market_status.get("metadata_cache_status", ""),
+        "metadata_cache_date": market_status.get("metadata_cache_date", ""),
+        "market_activity_cache_status": market_status.get("market_activity_cache_status", ""),
+        "suspended_count": market_status.get("suspended_count", 0),
+        "uma_count": market_status.get("uma_count", 0),
+        "relisting_count": market_status.get("relisting_count", 0),
+        "zapi_degraded": market_status.get("zapi_degraded", False),
+        "zapi_degraded_reason": market_status.get("zapi_degraded_reason", ""),
         "errors": global_snapshot.get("errors", []),
         "output_paths": {
             "global_market_snapshot": str(resolve("data/output/global_market") / ctx.trade_date.isoformat() / "global_market_snapshot.json"),
@@ -449,6 +485,15 @@ def job_post_market(ctx) -> int:
         "provider_status": manifest.get("provider_status") or manifest.get("source_metadata", {}).get("provider_status", "" if _official_runtime(ctx) else "NOT_CONFIGURED"),
         "data_source_mode": manifest.get("data_source_mode") or manifest.get("source_metadata", {}).get("data_source_mode", "" if _official_runtime(ctx) else "NOT_CONFIGURED"),
         "source_coverage_ratio": manifest.get("source_coverage_ratio", 0.0),
+        "zapi_request_count": manifest.get("Zapi_Request_Count", manifest.get("source_metadata", {}).get("zapi_request_count", 0)),
+        "zapi_request_cap": manifest.get("Zapi_Request_Cap", manifest.get("source_metadata", {}).get("zapi_request_cap", 5)),
+        "metadata_cache_status": manifest.get("Zapi_Metadata_Cache_Status", manifest.get("source_metadata", {}).get("metadata_cache_status", "")),
+        "metadata_cache_date": manifest.get("Zapi_Metadata_Cache_Date", manifest.get("source_metadata", {}).get("metadata_cache_date", "")),
+        "market_activity_cache_status": manifest.get("Zapi_Market_Activity_Cache_Status", manifest.get("source_metadata", {}).get("market_activity_cache_status", "")),
+        "suspended_count": manifest.get("Suspended_Symbol_Count", manifest.get("source_metadata", {}).get("suspended_count", 0)),
+        "uma_count": manifest.get("Uma_Symbol_Count", manifest.get("source_metadata", {}).get("uma_count", 0)),
+        "relisting_count": manifest.get("Relisting_Symbol_Count", manifest.get("source_metadata", {}).get("relisting_count", 0)),
+        "zapi_degraded": manifest.get("Zapi_Degraded", manifest.get("source_metadata", {}).get("zapi_degraded", False)),
         "snapshot_ids": manifest.get("snapshot_ids", {"technical": manifest.get("Snapshot_ID", "")}),
         "warnings": manifest.get("Warnings", []),
         "preview_paths": [str(p) for p in preview_paths],

@@ -33,7 +33,7 @@ class TelegramProfessionalUiTests(unittest.TestCase):
         unique = unique_final_decisions(decisions)
         self.assertEqual(len(unique), 3)
         self.assertEqual(public_counts(decisions), {
-            "BUY CONFIRMED": 0,
+            "BUY READY": 0,
             "BUY CANDIDATE": 2,
             "WATCH HIGH": 0,
             "WATCH": 0,
@@ -86,10 +86,10 @@ class TelegramProfessionalUiTests(unittest.TestCase):
             "Target_2": 1873,
         }])
         text = format_watchlist("2026-07-27", decisions, plans, config=self.cfg)
-        self.assertIn("BUY CONFIRMED", text)
-        self.assertIn("🎯 Entry Rp1.708–1.742", text)
+        self.assertIn("BUY READY", text)
+        self.assertIn("🎯 Entry Rp1.708–Rp1.742", text)
         self.assertNotIn("TP 1.799 / 1.873", text)
-        self.assertIn("1 Buy Confirmed", text)
+        self.assertIn("1 Buy Ready", text)
 
     def test_watchlist_limits_items_and_excludes_avoid(self) -> None:
         cfg = UiConfig(max_buy_confirmed=0, max_buy_candidate=3, max_watch_high=2)

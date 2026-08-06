@@ -117,14 +117,25 @@ def _zapi_lineage(ctx: RunnerContext) -> tuple[dict[str, Any], dict[str, dict[st
     summary = snapshot.get("reconciliation") if isinstance(snapshot.get("reconciliation"), dict) else {}
     rows: dict[str, dict[str, Any]] = {}
     inputs = [str(latest)] if latest.exists() else []
-    reconciliation_path = str(summary.get("json_path") or "")
+    reconciliation_path = str(summary.get("path") or summary.get("json_path") or source_meta_path(snapshot) or "")
     if reconciliation_path and Path(reconciliation_path).exists():
         payload = read_json(Path(reconciliation_path))
+        if isinstance(payload.get("symbols"), dict):
+            for symbol, item in payload["symbols"].items():
+                if isinstance(item, dict) and _symbol(symbol):
+                    flattened = dict(item)
+                    flattened["metadata"] = item.get("metadata", {})
+                    rows[_symbol(symbol)] = flattened
         for item in payload.get("rows", []) if isinstance(payload.get("rows"), list) else []:
             if isinstance(item, dict) and _symbol(item.get("symbol")):
                 rows[_symbol(item.get("symbol"))] = item
         inputs.append(reconciliation_path)
     return summary, rows, inputs
+
+
+def source_meta_path(snapshot: Mapping[str, Any]) -> str:
+    metadata = snapshot.get("source_metadata") if isinstance(snapshot.get("source_metadata"), Mapping) else {}
+    return str(metadata.get("zapi_enrichment_path") or "")
 
 
 def market_outlook_payloads(
@@ -175,6 +186,17 @@ def market_outlook_payloads(
         "provider": provider,
         "source_mode": mode,
         "coverage": coverage,
+        "zapi_status": market_status.get("zapi_status", "ZAPI_ENRICHMENT_UNAVAILABLE"),
+        "zapi_request_count": market_status.get("zapi_request_count", 0),
+        "zapi_request_cap": market_status.get("zapi_request_cap", 5),
+        "metadata_cache_status": market_status.get("metadata_cache_status", ""),
+        "metadata_cache_date": market_status.get("metadata_cache_date", ""),
+        "market_activity_cache_status": market_status.get("market_activity_cache_status", ""),
+        "suspended_count": market_status.get("suspended_count", 0),
+        "uma_count": market_status.get("uma_count", 0),
+        "relisting_count": market_status.get("relisting_count", 0),
+        "zapi_degraded": market_status.get("zapi_degraded", False),
+        "degraded_reason": market_status.get("zapi_degraded_reason", ""),
     }
     artifact = _builder(ctx).build_market_outlook(data)
     global_path = resolve("data/output/global_market") / ctx.trade_date.isoformat() / "global_market_snapshot.json"
@@ -242,6 +264,15 @@ def post_market_payloads(ctx: RunnerContext, manifest: dict[str, Any]) -> list[R
         "zapi_coverage": validated["zapi_coverage"],
         "reconciliation_status": validated["zapi_status"],
         "degraded_reason": validated["degraded_reason"],
+        "zapi_request_count": validated.get("zapi_request_count", manifest.get("Zapi_Request_Count", 0)),
+        "zapi_request_cap": validated.get("zapi_request_cap", manifest.get("Zapi_Request_Cap", 5)),
+        "metadata_cache_status": validated.get("metadata_cache_status", manifest.get("Zapi_Metadata_Cache_Status", "")),
+        "metadata_cache_date": validated.get("metadata_cache_date", manifest.get("Zapi_Metadata_Cache_Date", "")),
+        "market_activity_cache_status": validated.get("market_activity_cache_status", manifest.get("Zapi_Market_Activity_Cache_Status", "")),
+        "suspended_count": validated.get("suspended_count", manifest.get("Suspended_Symbol_Count", 0)),
+        "uma_count": validated.get("uma_count", manifest.get("Uma_Symbol_Count", 0)),
+        "relisting_count": validated.get("relisting_count", manifest.get("Relisting_Symbol_Count", 0)),
+        "zapi_degraded": validated.get("zapi_degraded", manifest.get("Zapi_Degraded", False)),
         "stockbit_status": "WAITING",
     }
     artifact = _builder(ctx).build_post_market(data)
@@ -458,13 +489,24 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
         symbol = _symbol(_value(raw, "Symbol", "EMITEN", "Ticker"))
         if not symbol:
             continue
-        plan = plans.get(symbol, {})
+        raw_decision = str(_value(raw, "Decision_Status_Final", "Decision_V3", "Decision", default="")).upper().replace("_", " ")
+        exchange_veto = str(_value(raw, "Exchange_Veto", "Veto", "Veto_Reason", default="")).upper()
         zapi = zapi_rows.get(symbol, {})
+        exchange_status = str(_value(raw, "Exchange_Status", default=zapi.get("status", "NORMAL"))).upper()
+        exchange_veto = exchange_veto or str(zapi.get("veto") or "").upper()
+        if raw_decision in {"BLOCKED", "SUSPENDED"} or exchange_status in {"SUSPENDED", "BLOCKED"} or exchange_veto in {"SUSPENDED", "RELISTING_HISTORY_INSUFFICIENT"}:
+            # A veto is auditable in the decision CSV, but never a final
+            # watchlist item.
+            continue
+        plan = plans.get(symbol, {})
         rows.append({
             "trade_date": ctx.trade_date.isoformat(),
             "rank": _value(raw, "Rank_V3", "Rank", default=index),
             "symbol": symbol,
             "decision": _value(raw, "Decision_Status_Final", "Decision_V3", "Decision", default=""),
+            "risk_flags": _value(raw, "Risk_Flags", default=",".join(zapi.get("risk_flags") or [])),
+            "exchange_status": exchange_status,
+            "exchange_veto": exchange_veto,
             "confidence": _value(raw, "Confidence", "Final_Score_V3", "Final_Score", default=""),
             "setup": _value(raw, "Setup_Type", "Setup_Label", default=""),
             "entry_low": _value(plan, "Entry_Zone_Low", "Entry_Low", "Entry_Min", default=""),
@@ -511,6 +553,15 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
         "coverage": coverage,
         "zapi_status": zapi_summary.get("status") or "ZAPI_LINEAGE_MISSING",
         "reconciliation_status": zapi_summary.get("status") or "ZAPI_LINEAGE_MISSING",
+        "zapi_request_count": zapi_summary.get("request_count", 0),
+        "zapi_request_cap": zapi_summary.get("request_cap", 5),
+        "metadata_cache_status": zapi_summary.get("metadata_cache_status", ""),
+        "metadata_cache_date": zapi_summary.get("metadata_cache_date", ""),
+        "market_activity_cache_status": zapi_summary.get("market_activity_cache_status", ""),
+        "suspended_count": zapi_summary.get("suspended_count", 0),
+        "uma_count": zapi_summary.get("uma_count", 0),
+        "relisting_count": zapi_summary.get("relisting_count", 0),
+        "zapi_degraded": zapi_summary.get("degraded", False),
     }
     artifacts = _builder(ctx).build_final_watchlist(data)
     return [_artifact_payload(_artifact_with_lineage(

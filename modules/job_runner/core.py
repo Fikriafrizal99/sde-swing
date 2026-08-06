@@ -14,7 +14,7 @@ import pandas as pd
 
 from swing_utils import file_sha256, find_col, read_json as read_json_safely, write_json
 from modules.data_sources.config import load_data_source_config
-from modules.data_sources.yahoo_zapi_validator import validate_yahoo_against_zapi
+from modules.market_data.zapi_enrichment import ZapiEnrichmentService
 
 from .runtime import RunnerContext, append_job_log, now_wib, resolve, stage_watchdog
 
@@ -169,6 +169,119 @@ def _read_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, low_memory=False)
 
 
+def _universe_symbols(path: Path, historical_dir: Path | None = None) -> list[str]:
+    """Return one normalized universe for enrichment and technical stages."""
+    symbols: set[str] = set()
+    if path.exists() and path.stat().st_size:
+        try:
+            frame = pd.read_csv(path, low_memory=False)
+            column = find_col(frame, "Symbol", "Ticker", "Emiten", "Code")
+            if column:
+                symbols.update(
+                    str(value).strip().upper().replace(".JK", "")
+                    for value in frame[column].tolist()
+                    if str(value).strip()
+                )
+        except Exception:
+            pass
+    if not symbols and historical_dir and historical_dir.exists():
+        symbols.update(
+            path.stem[:-3] if path.stem.upper().endswith(".JK") else path.stem.upper()
+            for path in historical_dir.glob("*.csv")
+        )
+    return sorted(symbol for symbol in symbols if symbol and symbol not in {"IHSG", "^JKSE"})
+
+
+def run_zapi_enrichment(
+    ctx: RunnerContext,
+    *,
+    symbols: list[str],
+    historical_dir: Path | None = None,
+    metadata_csv_path: Path | None = None,
+) -> dict[str, Any]:
+    """Refresh/read non-blocking Zapi metadata and exchange activity caches."""
+    zcfg = ctx.config.get("zapi", {})
+    cache_root = ctx.path("zapi_cache_root", "data/state/zapi")
+
+    def zapi_event(event: str, detail: dict[str, Any]) -> None:
+        append_job_log(ctx, event, __import__("json").dumps(detail, ensure_ascii=False, default=str))
+
+    try:
+        service = getattr(ctx, "_zapi_enrichment_service", None)
+        if service is None:
+            service = ZapiEnrichmentService(
+                config_path=ctx.data_source_config_path,
+                cache_root=cache_root,
+                event_callback=zapi_event,
+                metadata_ttl_days=int(zcfg.get("metadata_ttl_days", 7) or 7),
+                max_requests=min(int(zcfg.get("max_requests_per_process", 5) or 5), 5),
+                minimum_historical_candles=int(zcfg.get("minimum_historical_candles", 200) or 200),
+            )
+            setattr(ctx, "_zapi_enrichment_service", service)
+        result = service.enrich(
+            symbols,
+            trade_date=ctx.trade_date,
+            historical_dir=historical_dir,
+            metadata_csv_path=metadata_csv_path,
+            # Full Manual can be repeated during the same trading day.  The
+            # persistent date/TTL caches are authoritative for this optional
+            # source, so a generic pipeline force flag must not create another
+            # Zapi refresh.
+            force=False,
+        )
+        append_job_log(
+            ctx,
+            "ZAPI_RUNTIME_REPORT",
+            __import__("json").dumps(
+                {
+                    key: result.get(key)
+                    for key in (
+                        "request_count", "request_cap", "metadata_cache_status", "metadata_cache_date",
+                        "market_activity_cache_status", "suspended_count", "uma_count", "relisting_count",
+                        "degraded", "degraded_reason",
+                    )
+                },
+                ensure_ascii=False,
+                default=str,
+            ),
+        )
+        return result
+    except Exception as exc:
+        detail = {
+            "status": "DEGRADED",
+            "source": "ZAPI_IDX",
+            "degraded": True,
+            "degraded_reason": f"{type(exc).__name__}: {exc}",
+            "trade_date": ctx.trade_date.isoformat(),
+            "request_count": 0,
+            "request_cap": min(int(zcfg.get("max_requests_per_process", 5) or 5), 5),
+            "metadata_cache_status": "UNAVAILABLE",
+            "metadata_cache_date": "",
+            "market_activity_cache_status": "UNAVAILABLE",
+            "suspended_symbols": [],
+            "uma_symbols": [],
+            "relisting_symbols": [],
+            "suspended_count": 0,
+            "uma_count": 0,
+            "relisting_count": 0,
+            "symbols": {},
+        }
+        # Keep the degraded result addressable by the downstream candidate and
+        # final stages.  Use the same stage-specific manifest root as the
+        # normal post-market path, including dry-run isolation.
+        try:
+            fallback_path = _stage_paths(ctx)["manifest_dir"] / f"ZAPI_ENRICHMENT_{ctx.run_id}.json"
+            detail["path"] = str(fallback_path)
+            write_json(fallback_path, detail)
+        except Exception:
+            # The original exception is the useful runtime fact; inability to
+            # persist its fallback artifact must not turn optional Zapi into a
+            # hard pipeline failure.
+            pass
+        append_job_log(ctx, "ZAPI_ENRICHMENT_DEGRADED", detail["degraded_reason"])
+        return detail
+
+
 def _stage_paths(ctx: RunnerContext) -> dict[str, Path]:
     paths = ctx.config.get("paths", {})
     if ctx.dry_run:
@@ -289,77 +402,23 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
         run_command(ctx, "POST MARKET HISTORICAL DOWNLOADER", downloader_cmd)
         yahoo_manifest = read_json_safely(manifest_dir / f"YAHOO_REFRESH_MANIFEST_{ctx.run_id}.json")
     data_quality = str(yahoo_manifest.get("Data_Quality_Status", "VALID"))
-    validation_cfg = ctx.scheduler_config.get("source_validation", {})
-    reconciliation: dict[str, Any] = {"status": "ZAPI_DISABLED", "reason": "SOURCE_VALIDATION_DISABLED"}
-    if bool(validation_cfg.get("enabled", True)):
-        symbols = sorted({
-            path.stem[:-3] if path.stem.upper().endswith(".JK") else path.stem
-            for path in stage_paths["historical_by_symbol"].glob("*.csv")
-        })
-        closed_date = str(
-            yahoo_manifest.get("Latest_Closed_Candle_Date")
-            or yahoo_manifest.get("Latest_Valid_Close_Date")
-            or ctx.trade_date.isoformat()
-        )
-        non_blocking = bool(validation_cfg.get("non_blocking", False))
-        source_config_path = ctx.config.get("data_sources_config", "config/data_sources.json")
-        source_cfg = load_data_source_config(source_config_path).source("ZAPI_IDX")
-        start_detail = {
-            "enabled": bool(source_cfg and source_cfg.enabled),
-            "blocking_mode": not non_blocking,
-            "base_url_configured": "YES" if source_cfg and source_cfg.base_url() else "NO",
-            "api_key_configured": "YES" if source_cfg and source_cfg.api_key() else "NO",
-            "symbol_count": len(symbols),
-            "connect_timeout_seconds": source_cfg.connect_timeout_seconds if source_cfg else None,
-            "read_timeout_seconds": source_cfg.read_timeout_seconds if source_cfg else None,
-            "retries": source_cfg.retry if source_cfg else 0,
-            "backoff_base_seconds": source_cfg.backoff_base_seconds if source_cfg else 0,
-            "block_on_price_mismatch": bool(validation_cfg.get("block_on_price_mismatch", True)),
-        }
-        append_job_log(ctx, "ZAPI_VALIDATION_START", __import__("json").dumps(start_detail))
-
-        def zapi_event(event: str, detail: dict[str, Any]) -> None:
-            append_job_log(ctx, event, __import__("json").dumps(detail, default=str))
-
-        try:
-            with stage_watchdog(ctx, "ZAPI_VALIDATION", 30.0):
-                reconciliation = validate_yahoo_against_zapi(
-                    historical_dir=stage_paths["historical_by_symbol"],
-                    symbols=symbols,
-                    market_date=closed_date,
-                    output_dir=resolve(validation_cfg.get("output_dir", "data/output/source_validation")),
-                    config_path=source_config_path,
-                    price_tolerance_pct=float(validation_cfg.get("price_tolerance_pct", 0.005)),
-                    volume_tolerance_pct=float(validation_cfg.get("volume_tolerance_pct", 0.20)),
-                    maximum_stale_days=int(validation_cfg.get("maximum_stale_days", 1) or 1),
-                    minimum_coverage_ratio=float(validation_cfg.get("minimum_coverage_ratio", 0.90)),
-                    blocking=not non_blocking,
-                    max_symbols=int(validation_cfg.get("max_symbols", 0) or 0),
-                    run_id=ctx.run_id,
-                    event_callback=zapi_event,
-                    market_holidays=freshness.get("market_holidays", []),
-                    special_trading_days=freshness.get("special_trading_days", []),
-                    bulk_page_size=int(validation_cfg.get("bulk_page_size", 100) or 100),
-                    block_on_price_mismatch=bool(validation_cfg.get("block_on_price_mismatch", True)),
-                )
-        except Exception as exc:
-            append_job_log(ctx, "ZAPI_RECONCILIATION_EXCEPTION", __import__("traceback").format_exc())
-            raise RuntimeError(f"ZAPI_RECONCILIATION_EXCEPTION:{type(exc).__name__}:{exc}") from exc
-        append_job_log(ctx, "YAHOO_ZAPI_RECONCILIATION", str({
-            "status": reconciliation.get("status"),
-            "symbols_requested": reconciliation.get("symbols_requested"),
-            "symbols_successful": reconciliation.get("symbols_successful"),
-            "coverage_ratio": reconciliation.get("coverage_ratio"),
-            "blocking_failures": reconciliation.get("blocking_failures"),
-        }))
-        failed = str(reconciliation.get("status", "")).upper() == "FAILED_BLOCKING"
-        skipped = str(reconciliation.get("status", "")).upper() in {
-            "ZAPI_MISSING_CREDENTIAL", "ZAPI_DISABLED"
-        }
-        if not non_blocking and (failed or skipped):
-            raise SourceValidationBlocked(reconciliation)
-        if str(reconciliation.get("status", "")).upper() == "SUCCESS_WITH_WARNING":
-            data_quality = "VALID_WITH_ZAPI_WARNING"
+    # Zapi is an optional enrichment layer.  It is deliberately called after
+    # Yahoo technical data has been produced and is never allowed to veto that
+    # pipeline.  In particular, this replaces the old mass Yahoo-vs-Zapi
+    # /stock-summary reconciliation path.
+    universe_path = resolve(paths.get("normalized_watchlist", "modules/historical_downloader/Stockbit_Watchlist_2026-07-19_normalized.csv"))
+    symbols = _universe_symbols(universe_path, stage_paths["historical_by_symbol"])
+    zapi_enrichment = run_zapi_enrichment(
+        ctx,
+        symbols=symbols,
+        historical_dir=stage_paths["historical_by_symbol"],
+        metadata_csv_path=resolve(paths.get("sector_rotation_metadata", "data/input/sector_metadata.csv")),
+    )
+    zapi_status_path = Path(str(zapi_enrichment.get("path") or stage_paths["manifest_dir"] / f"ZAPI_ENRICHMENT_{ctx.run_id}.json"))
+    if not zapi_status_path.exists():
+        write_json(zapi_status_path, zapi_enrichment)
+    if zapi_enrichment.get("degraded"):
+        data_quality = data_quality if data_quality != "VALID" else "VALID_WITH_ZAPI_WARNING"
     if data_source != "FIXTURE":
         run_command(ctx, "POST MARKET IHSG UPDATER", [
             sys.executable,
@@ -407,6 +466,8 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
         str(manifest_dir),
         "--data-quality-status",
         data_quality,
+        "--exchange-status",
+        str(zapi_status_path),
     ])
     candidate_manifest = read_json_safely(manifest_dir / f"CANDIDATE_MANIFEST_{ctx.run_id}.json")
     navigator_path = export_broker_navigator_symbols(ctx, stage_paths, manifest_dir)
@@ -417,7 +478,7 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
         tech_manifest,
         candidate_manifest,
         navigator_path=navigator_path,
-        reconciliation=reconciliation,
+        reconciliation=zapi_enrichment,
     )
     return {
         "Run_ID": ctx.run_id,
@@ -440,13 +501,29 @@ def run_post_market_technical_stage(ctx: RunnerContext) -> dict[str, Any]:
         "provider_status": snapshot.get("source_metadata", {}).get("provider_status") or source_metadata.get("provider_status", ""),
         "data_source_mode": snapshot.get("source_metadata", {}).get("data_source_mode") or source_metadata.get("data_source_mode", ""),
         "source_coverage_ratio": snapshot.get("source_metadata", {}).get("source_coverage_ratio"),
-        "Reconciliation_Status": reconciliation.get("status", ""),
-        "Reconciliation_Manifest": reconciliation.get("json_path", ""),
-        "reconciliation": {key: value for key, value in reconciliation.items() if key != "rows"},
+        "Reconciliation_Status": zapi_enrichment.get("status", ""),
+        "Reconciliation_Manifest": zapi_enrichment.get("path", ""),
+        "reconciliation": {key: value for key, value in zapi_enrichment.items() if key != "symbols"},
         "snapshot_ids": {"technical": snapshot.get("snapshot_id", "")},
         "Config_Version": ctx.runtime_version,
         "Broker_Navigator_Path": str(navigator_path),
-        "Warnings": [x for x in [yahoo_manifest.get("Warning"), candidate_manifest.get("Reason")] if x],
+        "Warnings": [
+            x for x in [
+                yahoo_manifest.get("Warning"),
+                candidate_manifest.get("Reason"),
+                "ZAPI_DEGRADED; technical Yahoo pipeline tetap berjalan" if zapi_enrichment.get("degraded") else "",
+            ] if x
+        ],
+        "Zapi_Request_Count": zapi_enrichment.get("request_count", 0),
+        "Zapi_Request_Cap": zapi_enrichment.get("request_cap", 5),
+        "Zapi_Metadata_Cache_Status": zapi_enrichment.get("metadata_cache_status", ""),
+        "Zapi_Metadata_Cache_Date": zapi_enrichment.get("metadata_cache_date", ""),
+        "Zapi_Market_Activity_Cache_Status": zapi_enrichment.get("market_activity_cache_status", ""),
+        "Suspended_Symbol_Count": zapi_enrichment.get("suspended_count", 0),
+        "Uma_Symbol_Count": zapi_enrichment.get("uma_count", 0),
+        "Relisting_Symbol_Count": zapi_enrichment.get("relisting_count", 0),
+        "Zapi_Degraded": bool(zapi_enrichment.get("degraded")),
+        "Zapi_Enrichment_Path": zapi_enrichment.get("path", ""),
         "Output_Files": snapshot.get("output_paths", {}),
         "source_metadata": source_metadata,
     }
@@ -556,13 +633,25 @@ def create_technical_snapshot(
             "data_source_mode": yahoo_manifest.get("Data_Source_Mode", "FILE" if str(yahoo_manifest.get("Data_Source", "")).upper() != "LIVE_YAHOO" else "LIVE"),
             "source_coverage_ratio": round((symbols_valid / symbols_requested), 4) if symbols_requested else 0.0,
             "historical_source": "YAHOO",
-            "latest_validation_source": reconciliation.get("validation_source", "ZAPI_IDX"),
+            "latest_validation_source": "NONE; ZAPI enrichment only",
             "zapi_status": reconciliation.get("status", "ZAPI_DISABLED"),
+            # Metadata record count is not a technical coverage ratio.  Keep
+            # the field at zero unless an explicit coverage metric exists.
             "zapi_coverage_ratio": reconciliation.get("coverage_ratio", 0.0),
             "reconciliation_status": reconciliation.get("status", "ZAPI_DISABLED"),
-            "degraded_reason": reconciliation.get("reason", ""),
+            "degraded_reason": reconciliation.get("degraded_reason", reconciliation.get("reason", "")),
+            "zapi_enrichment_path": reconciliation.get("path", ""),
+            "zapi_request_count": reconciliation.get("request_count", 0),
+            "zapi_request_cap": reconciliation.get("request_cap", 5),
+            "metadata_cache_status": reconciliation.get("metadata_cache_status", ""),
+            "metadata_cache_date": reconciliation.get("metadata_cache_date", ""),
+            "market_activity_cache_status": reconciliation.get("market_activity_cache_status", ""),
+            "suspended_count": reconciliation.get("suspended_count", 0),
+            "uma_count": reconciliation.get("uma_count", 0),
+            "relisting_count": reconciliation.get("relisting_count", 0),
+            "zapi_degraded": bool(reconciliation.get("degraded")),
         },
-        "reconciliation": {key: value for key, value in reconciliation.items() if key != "rows"},
+        "reconciliation": {key: value for key, value in reconciliation.items() if key != "symbols"},
         "broker_navigator_path": str(navigator_path) if navigator_path else "",
         "output_paths": copied,
         "file_hashes": {label: file_sha256(path) for label, path in copied.items()},
@@ -1479,6 +1568,25 @@ def run_final_from_snapshot(ctx: RunnerContext) -> dict[str, Any]:
         str(manifest.get("Data_Quality_Status", "VALID")),
     ])
     final = decision_dir / "FINAL_DECISION_V3.csv"
+    from modules.decision.exchange_status import apply_exchange_status_to_decisions
+
+    enrichment_path = (
+        snapshot.get("source_metadata", {}).get("zapi_enrichment_path")
+        or ctx.path("zapi_enrichment_latest", "data/state/zapi/enrichment_latest.json")
+    )
+    exchange_result = apply_exchange_status_to_decisions(final, enrichment_path)
+    manifest["Exchange_Status"] = exchange_result
+    manifest["Zapi_Request_Count"] = snapshot.get("source_metadata", {}).get("zapi_request_count", 0)
+    manifest["Zapi_Request_Cap"] = snapshot.get("source_metadata", {}).get("zapi_request_cap", 5)
+    manifest["Zapi_Metadata_Cache_Status"] = snapshot.get("source_metadata", {}).get("metadata_cache_status", "")
+    manifest["Zapi_Metadata_Cache_Date"] = snapshot.get("source_metadata", {}).get("metadata_cache_date", "")
+    manifest["Zapi_Market_Activity_Cache_Status"] = snapshot.get("source_metadata", {}).get("market_activity_cache_status", "")
+    manifest["Suspended_Symbol_Count"] = exchange_result.get("suspended_count", snapshot.get("source_metadata", {}).get("suspended_count", 0))
+    manifest["Uma_Symbol_Count"] = exchange_result.get("uma_count", snapshot.get("source_metadata", {}).get("uma_count", 0))
+    manifest["Relisting_Symbol_Count"] = snapshot.get("source_metadata", {}).get("relisting_count", 0)
+    manifest["Zapi_Degraded"] = bool(snapshot.get("source_metadata", {}).get("zapi_degraded", False))
+    if manifest["Zapi_Degraded"]:
+        manifest.setdefault("Warnings", []).append("ZAPI_DEGRADED; technical and broker pipeline continued")
     manifest["Decision_Output"] = str(final)
     manifest["Output_Files"]["Decision"] = str(final)
     write_json(run_manifest_path, manifest)

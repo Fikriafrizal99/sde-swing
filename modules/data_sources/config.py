@@ -41,6 +41,9 @@ class SourceConfig:
     connect_timeout_seconds: float = 5.0
     read_timeout_seconds: float = 30.0
     retry: int = 2
+    # Hard upper bound for requests made by one runtime process.  This is
+    # intentionally source-local: Yahoo/Stockbit have their own controls.
+    max_requests_per_process: int = 0
     backoff_base_seconds: float = 0.2
     rate_limit_per_second: float = 0.0
     cache_ttl_seconds: float = 0.0
@@ -138,7 +141,8 @@ def parse_config(payload: dict[str, Any]) -> DataSourceConfig:
             timeout=float(raw.get("timeout", 30.0) or 30.0),
             connect_timeout_seconds=float(raw.get("connect_timeout_seconds", min(float(raw.get("timeout", 30.0) or 30.0), 5.0)) or 0.0),
             read_timeout_seconds=float(raw.get("read_timeout_seconds", raw.get("timeout", 30.0)) or 0.0),
-            retry=int(raw.get("retry", 2) or 0),
+            retry=min(int(raw.get("retry", 2) or 0), 2) if name == "ZAPI_IDX" else int(raw.get("retry", 2) or 0),
+            max_requests_per_process=max(0, int(raw.get("max_requests_per_process", 0) or 0)),
             backoff_base_seconds=float(raw.get("backoff_base_seconds", 0.2) or 0.0),
             rate_limit_per_second=float(raw.get("rate_limit_per_second", 0.0) or 0.0),
             cache_ttl_seconds=float(raw.get("cache_ttl_seconds", 0.0) or 0.0),

@@ -424,7 +424,7 @@ def final_watchlist_payloads(ctx: RunnerContext, run_manifest: dict[str, Any] | 
 
     ranked = select_final_watchlist_rows(decisions, entry, cfg)
     if not ranked.empty and "__report_status" in ranked.columns:
-        ranked = ranked[ranked["__report_status"].isin({"BUY CONFIRMED", "BUY CANDIDATE"})]
+        ranked = ranked[ranked["__report_status"].isin({"BUY READY", "BUY CANDIDATE"})]
     else:
         ranked = ranked.head(0)
     ranked = ranked.head(int(ctx.scheduler_config.get("final_watchlist", {}).get("max_detail_symbols", 5)))

@@ -230,6 +230,7 @@ def _send_document(ctx: RunnerContext, payload: ReportPayload) -> dict[str, Any]
     caption = _attachment_caption(payload)
     if caption:
         data["caption"] = caption[:1024]
+        data["parse_mode"] = "HTML"
     topic_id = _topic_id(ctx, payload)
     if topic_id:
         data["message_thread_id"] = topic_id

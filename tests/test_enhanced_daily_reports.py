@@ -136,20 +136,22 @@ def test_final_watchlist_uses_agreed_format_and_exports_active_rows(tmp_path: Pa
         "🎯 RENCANA",
         "🔔 YANG DITUNGGU",
         "✅ ALASAN UTAMA",
-        "⚠️ RISIKO DAN INVALIDATION",
+        "⚠️ RISIKO &amp; INVALIDASI",
         "🧭 EKSEKUSI",
     ]
     for section in required_sections:
         assert section in text
-    for forbidden in ("VALIDASI DATA", "SOURCE PROVENANCE", "ZAPI IDX", "Yahoo", "MARKET CONTEXT"):
+    for forbidden in ("VALIDASI DATA", "SOURCE PROVENANCE", "MARKET CONTEXT"):
         assert forbidden not in text
+    assert "Yahoo: VALID" in text
+    assert "ZAPI IDX: MATCH WITH TOLERANCE" in text
 
-    assert "Trend         : BULLISH" in text
-    assert "Trend         : ★★★★" not in text
-    assert "Momentum      : POSITIVE — RSI 57" in text
-    assert "Volume        : CONFIRMED — 1,24x MA20" in text
-    assert "R:R    : 1:2,26" in text
-    assert "1. AK — Rp1 miliar | Avg 103 | Lokal" in text
+    assert "Trend: bullish" in text
+    assert "Trend: ★★★★" not in text
+    assert "Momentum: NETRAL — RSI 57,0" in text
+    assert "Volume: confirmed — 1,24x MA20" in text
+    assert "R:R TP1: 1:1,67" in text
+    assert "1. AK | +Rp1,00 miliar | Avg Rp103 | lokal" in text
 
     assert len(csv_items) == 1
     assert "validasi data" not in csv_items[0].caption.lower()

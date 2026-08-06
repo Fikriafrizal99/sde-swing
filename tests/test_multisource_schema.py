@@ -87,7 +87,7 @@ def test_data_source_config_loads_and_validates():
     # validation path and must not silently replace the technical series.
     assert cfg.resolution_chain("DailyBar") == ["HISTORICAL_PROVIDER"]
     assert cfg.resolution_chain("BrokerFlow") == ["STOCKBIT"]
-    assert cfg.resolution_chain("ForeignFlow") == ["ZAPI_IDX"]
+    assert cfg.resolution_chain("ForeignFlow") == ["STOCKBIT"]
     # Technical indicators are internal only.
     assert cfg.ownership_for("TechnicalIndicator").primary == "INTERNAL"
 

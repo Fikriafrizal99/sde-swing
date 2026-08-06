@@ -333,9 +333,16 @@ class HttpZapiTransport(Transport):
 class ZapiIdxClient(SourceClient):
     name = "ZAPI_IDX"
 
-    def __init__(self, transport: Transport, source_config: SourceConfig, *, explicit_mock: bool | None = None) -> None:
+    def __init__(
+        self,
+        transport: Transport,
+        source_config: SourceConfig,
+        *,
+        explicit_mock: bool | None = None,
+        max_requests_per_process: int | None = None,
+    ) -> None:
         super().__init__(
-            retry=source_config.retry,
+            retry=min(max(0, int(source_config.retry)), 2),
             timeout=source_config.timeout,
             backoff_base=source_config.backoff_base_seconds,
         )
@@ -344,6 +351,11 @@ class ZapiIdxClient(SourceClient):
         self._explicit_mock = isinstance(transport, MockZapiTransport) if explicit_mock is None else bool(explicit_mock)
         self.last_response: dict[str, Any] = {}
         self.request_attempt_count = 0
+        configured_cap = max_requests_per_process
+        if configured_cap is None:
+            configured_cap = source_config.max_requests_per_process or 5
+        self.max_requests_per_process = max(0, int(configured_cap))
+        self.request_cap_reached = False
         self._event_callback: Any | None = None
         self._cache: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[float, dict[str, Any]]] = {}
         self._last_request_at = 0.0
@@ -393,12 +405,25 @@ class ZapiIdxClient(SourceClient):
             raise SourceNotConfigured(reason)
         if not self.is_configured() and not (self._explicit_mock or kwargs.pop("allow_mock", False)):
             raise SourceNotConfigured("ZAPI_CREDENTIALS_NOT_CONFIGURED")
+        capability = self._source_config.capabilities.get(record_type, {})
+        capability_status = str(capability.get("status", "")).strip().upper() if isinstance(capability, Mapping) else ""
+        if (
+            record_type in {"DailyBar", "MarketIndex"}
+            and capability_status in {"DISABLED_IN_PRODUCTION", "UNSUPPORTED"}
+            and not self._explicit_mock
+        ):
+            raise SourceUnsupported(f"ZAPI_RECORD_TYPE_DISABLED_IN_PRODUCTION:{record_type}")
         specs = ZAPI_ENDPOINTS.get(record_type)
         if specs is None:
             reason = ZAPI_UNSUPPORTED_RECORD_TYPES.get(record_type, "no verified endpoint")
             raise SourceUnsupported(f"{C.ZAPI_ENDPOINT_UNSUPPORTED}:{record_type}:{reason}")
 
         if record_type == "SymbolMetadata":
+            endpoint_kind = str(kwargs.pop("metadata_endpoint", "") or "").strip().lower()
+            if endpoint_kind == "companies":
+                return {"companies": self._fetch_endpoint(specs[0], symbol, kwargs), "_zapi_endpoints": [specs[0].path]}
+            if endpoint_kind == "securities":
+                return {"securities": self._fetch_endpoint(specs[1], symbol, kwargs), "_zapi_endpoints": [specs[1].path]}
             company = self._fetch_endpoint(specs[0], symbol, kwargs)
             # Sector rotation only needs the company directory.  Allow that
             # presentation-only cache to avoid an unnecessary securities
@@ -435,6 +460,15 @@ class ZapiIdxClient(SourceClient):
             if remaining > 0:
                 time.sleep(remaining)
         def request_once() -> TransportResponse:
+            if self.max_requests_per_process and self.request_attempt_count >= self.max_requests_per_process:
+                self.request_cap_reached = True
+                self._emit(
+                    "ZAPI_REQUEST_HARD_CAP_REACHED",
+                    request_count=self.request_attempt_count,
+                    max_requests=self.max_requests_per_process,
+                    endpoint=spec.path,
+                )
+                raise SourceUnavailable("ZAPI_REQUEST_HARD_CAP_REACHED")
             self.request_attempt_count += 1
             request_timeout: Any = self.timeout
             if isinstance(self._transport, HttpZapiTransport):
@@ -594,6 +628,23 @@ class ZapiIdxAdapter(Adapter):
                 board=_text(security.get("ListingBoard") or company.get("PapanPencatatan")),
                 sector=_text(company.get("Sektor")),
                 sub_sector=_text(company.get("SubSektor")),
+                industry=_text(
+                    security.get("Industry")
+                    or security.get("SubIndustry")
+                    or company.get("Industri")
+                    or company.get("Industry")
+                ),
+                sub_industry=_text(
+                    security.get("SubIndustry")
+                    or company.get("SubIndustri")
+                    or company.get("SubIndustry")
+                ),
+                listing_date=_text(security.get("ListingDate") or company.get("TanggalListing")),
+                active_status=_text(
+                    company.get("ActiveStatus")
+                    or company.get("Status")
+                    or security.get("Status")
+                ),
                 listed_shares=_f(security.get("Shares")),
                 is_tradable=_tradable(company),
             )

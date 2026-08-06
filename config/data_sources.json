@@ -7,7 +7,7 @@
     "DailyBar": {
       "primary": "HISTORICAL_PROVIDER",
       "fallback": [],
-      "note": "Yahoo/historical provider remains the source of truth for the canonical technical series; ZAPI validates the latest closed candle only."
+      "note": "Yahoo/historical provider is the sole source of OHLCV and technical series. ZAPI never validates or supplies DailyBar in the production pipeline."
     },
     "IntradayQuote": {
       "primary": "INTERNAL",
@@ -24,9 +24,9 @@
       "fallback": []
     },
     "ForeignFlow": {
-      "primary": "ZAPI_IDX",
+      "primary": "STOCKBIT",
       "fallback": [],
-      "note": "NOT_CONFIGURED until a verified ZAPI foreign-flow schema is available. Stockbit BrokerFlow remains a separate metric."
+      "note": "Foreign flow is derived from Stockbit Broker Summary/Raw broker rows only."
     },
     "TradingStatus": {
       "primary": "ZAPI_IDX",
@@ -34,8 +34,8 @@
       "fail_open_or_closed": "FAIL_CLOSED"
     },
     "MarketIndex": {
-      "primary": "ZAPI_IDX",
-      "fallback": ["HISTORICAL_PROVIDER"]
+      "primary": "HISTORICAL_PROVIDER",
+      "fallback": []
     },
     "CorporateAction": {
       "primary": "INTERNAL",
@@ -43,7 +43,7 @@
     },
     "SymbolMetadata": {
       "primary": "ZAPI_IDX",
-      "fallback": ["STOCKBIT"]
+      "fallback": []
     },
     "TechnicalIndicator": {
       "primary": "INTERNAL",
@@ -58,7 +58,8 @@
       "timeout": 15,
       "connect_timeout_seconds": 5,
       "read_timeout_seconds": 15,
-      "retry": 3,
+      "retry": 2,
+      "max_requests_per_process": 5,
       "backoff_base_seconds": 0.5,
       "rate_limit_per_second": 4,
       "cache_ttl_seconds": 300,
@@ -73,14 +74,16 @@
       "documentation_configured": true,
       "capabilities": {
         "DailyBar": {
-          "status": "SUPPORTED",
+          "status": "DISABLED_IN_PRODUCTION",
           "endpoint": "/stock-summary",
-          "params": ["length", "start", "date", "code"]
+          "params": ["length", "start", "date", "code"],
+          "reason": "Legacy adapter compatibility only; Yahoo owns all OHLCV and technical calculations."
         },
         "MarketIndex": {
-          "status": "SUPPORTED",
+          "status": "DISABLED_IN_PRODUCTION",
           "endpoint": "/index-summary",
-          "params": ["length", "start", "date"]
+          "params": ["length", "start", "date"],
+          "reason": "Historical/Yahoo owns market-index data in the production pipeline."
         },
         "SymbolMetadata": {
           "status": "SUPPORTED",
@@ -106,8 +109,8 @@
           "reason": "No documented endpoint."
         },
         "ForeignFlow": {
-          "status": "NOT_CONFIGURED",
-          "reason": "No verified canonical mapping enabled."
+          "status": "UNSUPPORTED",
+          "reason": "Stockbit Broker Summary/Raw is the sole foreign-flow source."
         },
         "CorporateAction": {
           "status": "UNSUPPORTED",
