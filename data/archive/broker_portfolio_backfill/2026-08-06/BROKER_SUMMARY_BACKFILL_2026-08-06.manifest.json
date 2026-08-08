@@ -1,0 +1,11 @@
+{
+  "broker_date": "2026-08-06",
+  "from_date": "2026-08-06",
+  "to_date": "2026-08-06",
+  "source": "PORTFOLIO_BACKFILL",
+  "source_file": "C:\\Users\\Moch Fikri Arrizal\\Downloads\\BROKER_PORTFOLIO_BACKFILL_SUMMARY_2026-08-07.csv",
+  "coverage": 1.0,
+  "DATA_QUALITY_STATUS": "VALID_BACKFILL_DAILY",
+  "daily_only": true,
+  "symbol_count": 2
+}
