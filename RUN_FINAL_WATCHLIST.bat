@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul
 cd /d "%~dp0"
 title SDE Swing - Final Watchlist
@@ -11,7 +11,7 @@ echo                SDE SWING - FINAL WATCHLIST
 echo ================================================================
 echo.
 echo [1] Normal - broker break jika data hari ini belum tersedia
-echo [2] Preview - tidak kirim Telegram
+echo [2] Preview existing - tidak kirim Telegram
 echo [3] Kirim ulang - delivery-only hasil hari trading terakhir
 echo [4] Cek status Final Watchlist
 echo [0] Kembali
@@ -26,21 +26,21 @@ if "%MODE%"=="3" goto RESEND
 
 set "ARGS="
 if "%MODE%"=="1" set "ARGS=--job final_watchlist --interactive-broker"
-if "%MODE%"=="2" set "ARGS=--job final_watchlist --dry-run --force"
+if "%MODE%"=="2" set "ARGS=--job final_watchlist --preview-existing --no-telegram"
 if not defined ARGS goto MENU
-%SDE_PYTHON_CMD% run_sde_job.py %ARGS%
-set "RC=%ERRORLEVEL%"
+%SDE_PYTHON_CMD% -u run_sde_job_integrated.py %ARGS%
+set "RC=!ERRORLEVEL!"
 goto STATUS
 
 :RESEND
 set "RESEND_DATE="
-for /f "usebackq delims=" %%D in (`%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py`) do set "RESEND_DATE=%%D"
+for /f "delims=" %%D in ('%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py 2^>nul') do set "RESEND_DATE=%%D"
 if not defined RESEND_DATE goto RESEND_DATE_FAILED
 
 echo.
-echo Mengirim ulang hasil Final Watchlist trade date %RESEND_DATE% tanpa menjalankan engine...
-%SDE_PYTHON_CMD% tools\resend_final_watchlist.py --trade-date %RESEND_DATE%
-set "RC=%ERRORLEVEL%"
+echo Mengirim ulang hasil Final Watchlist trade date !RESEND_DATE! tanpa menjalankan engine...
+%SDE_PYTHON_CMD% -u tools\resend_final_watchlist.py --trade-date !RESEND_DATE!
+set "RC=!ERRORLEVEL!"
 goto STATUS
 
 :STATUS_ONLY
@@ -62,6 +62,6 @@ goto MENU
 echo.
 %SDE_PYTHON_CMD% tools\print_job_status.py --job final_watchlist
 echo.
-echo Exit code: %RC%
+echo Exit code: !RC!
 pause
 goto MENU
