@@ -13,6 +13,7 @@ from modules.telegram.daily_report_ui import format_watchlist_detail
 from modules.telegram.final_watchlist_chart import (
     IDX_SEPARATOR,
     _enrich_final_watchlist_broker_row,
+    compact_final_watchlist_caption,
     generate_final_watchlist_chart,
     idx_tick_size,
     round_idx_price,
@@ -121,6 +122,57 @@ def test_idx_tick_rounding_for_final_watchlist_display():
     assert "💰 Buy Cost 3.800" in text
     assert "Jarak Buy Avg +0.74%" in text
     assert "🟢 Support 3.370 | 🔴 Resistance 3.980" in text
+
+
+def test_long_final_watchlist_is_compacted_to_single_photo_caption():
+    text = """<b>📈 SDE SWING — FINAL WATCHLIST</b>
+━━━━━━━━━━━━━━━━━━━━
+📌 TPIA | DEVELOPING
+🕒 2026-08-07
+━━━━━━━━━━━━━━━━━━━━
+
+<b>🎯 TRADE SETUP</b>
+💰 Current 2.230 | Entry 2.210–2.250
+🛑 SL 2.090 | 🎯 TP1 2.370 | 🚀 TP2 6.300
+⚖️ RR 1:0.75
+📊 bullish | 🧠 Confidence 75%
+
+<b>🏦 BROKER SUMMARY</b>
+📌 INSUFFICIENT DATA | Score 78/100
+💵 Net Flow -Rp83,99 miliar | 📅 Buy/Sell 0/1
+🎯 Concentration B 12.66% | S 10.79%
+
+<b>🟢 Top Buy</b>
+1. BK — Rp127,28 miliar | Avg Rp2.210 | Asing
+2. CC — Rp226,62 miliar | Avg Rp2.200 | Pemerintah
+3. AK — Rp187,21 miliar | Avg Rp2.200 | Asing
+
+<b>🔴 Top Sell</b>
+1. SQ — Rp155,11 miliar | Avg Rp2.210 | Lokal
+2. ZP — Rp80,36 miliar | Avg Rp2.200 | Asing
+3. PD — Rp64,70 miliar | Avg Rp2.200 | Lokal
+
+📊 Pattern INSUFFICIENT DATA
+💰 Buy Cost 2.160 | Jarak Buy Avg ENGINE DATA NOT AVAILABLE
+🌊 Flow INSUFFICIENT DATA | Persistence STABLE DOMINANCE
+
+━━━━━━━━━━━━━━━━━━━━
+<b>📌 SETUP CONTEXT</b>
+📈 bullish | NOT READY
+🟢 Support 1.790 | 🔴 Resistance 2.370
+📐 Fibonacci VALID
+
+<b>Reason:</b>
+trend kuat; RSI sehat; MACD positif; volume mendukung; buyer concentration dominan; Acc; Big Acc; confidence 82%"""
+    assert len(text) > 1024
+    compact = compact_final_watchlist_caption(text)
+    assert len(compact) <= 1024
+    assert "1. BK — Rp127,28 miliar | Avg Rp2.210 | Asing" in compact
+    assert "1. SQ — Rp155,11 miliar | Avg Rp2.210 | Lokal" in compact
+    assert "Jarak Buy Avg N/A" in compact
+    assert "SETUP CONTEXT" in compact
+    assert "Reason:" in compact
+    assert "\n\n" not in compact
 
 
 def test_historical_row_restores_broker_value_type_and_distance_from_engine_artifacts(tmp_path: Path, monkeypatch):
