@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -11,6 +12,7 @@ import pandas as pd
 
 
 _REQUIRED_OHLCV = ("Date", "Open", "High", "Low", "Close", "Volume")
+IDX_SEPARATOR = "━━━━━━━━━━━━━━━━━━━━"  # exactly 20 characters, no indentation
 
 
 def _number(value: Any) -> float | None:
@@ -22,6 +24,38 @@ def _number(value: Any) -> float | None:
         return None
 
 
+def idx_tick_size(price: float) -> float:
+    """Return the IDX regular-market tick size for a positive stock price.
+
+    Presentation follows the five BEI price fractions:
+    <200=1, 200-<500=2, 500-<2000=5, 2000-<5000=10, >=5000=25.
+    """
+    value = abs(float(price))
+    if value < 200:
+        return 1.0
+    if value < 500:
+        return 2.0
+    if value < 2_000:
+        return 5.0
+    if value < 5_000:
+        return 10.0
+    return 25.0
+
+
+def round_idx_price(value: Any) -> float | None:
+    """Round a display price to the nearest executable IDX tick.
+
+    Engine-owned values are not mutated; this helper is presentation-only.
+    Half ticks are rounded upward rather than using Python bankers rounding.
+    """
+    number = _number(value)
+    if number is None:
+        return None
+    tick = idx_tick_size(number)
+    rounded = math.floor(number / tick + 0.5) * tick
+    return float(rounded)
+
+
 def _pick(row: Mapping[str, Any], *keys: str) -> Any:
     lookup = {str(key).strip().lower(): value for key, value in row.items()}
     for key in keys:
@@ -31,10 +65,40 @@ def _pick(row: Mapping[str, Any], *keys: str) -> Any:
     return None
 
 
-def _price_label(value: float) -> str:
-    if abs(value - round(value)) < 1e-8:
-        return f"{value:,.0f}".replace(",", ".")
-    return f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+def _price_label(value: Any) -> str:
+    rounded = round_idx_price(value)
+    if rounded is None:
+        return "ENGINE_DATA_NOT_AVAILABLE"
+    return f"{rounded:,.0f}".replace(",", ".")
+
+
+def _install_telegram_idx_price_formatter() -> None:
+    """Keep Telegram FINAL WATCHLIST prices aligned with the chart display.
+
+    ``daily_report_ui`` owns the card text while this module owns the chart.
+    The enhanced report builder imports this module at its presentation hook,
+    so installing the formatter here keeps one IDX display rule without
+    touching engine artifacts or recomputing the trade plan.
+    """
+    try:
+        from modules.telegram import daily_report_ui as daily_ui
+
+        def _telegram_idx_price(value: Any) -> str:
+            rounded = round_idx_price(value)
+            if rounded is None:
+                return daily_ui._fw_text(value)
+            return f"{rounded:,.0f}".replace(",", ".")
+
+        daily_ui._fw_price = _telegram_idx_price
+        # Legacy formatters use the shared constant; canonical FINAL WATCHLIST
+        # already contains the same literal separator. Keep both at 20 chars.
+        daily_ui.SEPARATOR = IDX_SEPARATOR
+    except Exception:
+        # Chart generation must remain import-safe even in isolated tooling.
+        pass
+
+
+_install_telegram_idx_price_formatter()
 
 
 def _historical_file(historical_dir: Path, symbol: str) -> Path:
@@ -82,14 +146,16 @@ def generate_final_watchlist_chart(
     if not symbol:
         raise ValueError("FINAL WATCHLIST chart requires symbol")
 
-    current = _number(_pick(row, "last_price", "current_price", "Reference_Close"))
-    entry_low = _number(_pick(row, "entry_low", "Entry_Zone_Low"))
-    entry_high = _number(_pick(row, "entry_high", "Entry_Zone_High"))
-    stop = _number(_pick(row, "active_stop_loss", "stop_loss", "Initial_Stop"))
-    tp1 = _number(_pick(row, "target_1", "Target_1"))
-    tp2 = _number(_pick(row, "target_2", "Target_2"))
-    support = _number(_pick(row, "support", "Support_Level"))
-    resistance = _number(_pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance"))
+    # Round only the visual/executable levels. The source row and engine files
+    # retain their original precision for audit and calculations.
+    current = round_idx_price(_pick(row, "last_price", "current_price", "Reference_Close"))
+    entry_low = round_idx_price(_pick(row, "entry_low", "Entry_Zone_Low"))
+    entry_high = round_idx_price(_pick(row, "entry_high", "Entry_Zone_High"))
+    stop = round_idx_price(_pick(row, "active_stop_loss", "stop_loss", "Initial_Stop"))
+    tp1 = round_idx_price(_pick(row, "target_1", "Target_1"))
+    tp2 = round_idx_price(_pick(row, "target_2", "Target_2"))
+    support = round_idx_price(_pick(row, "support", "Support_Level"))
+    resistance = round_idx_price(_pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance"))
     required_levels = {
         "current": current, "entry_low": entry_low, "entry_high": entry_high,
         "stop": stop, "tp1": tp1, "tp2": tp2,
@@ -141,8 +207,8 @@ def generate_final_watchlist_chart(
         ax.axhline(float(value), linestyle=style, linewidth=lw, alpha=0.85)
         ax.text(x_label, float(value), label, va="center", fontsize=8.5, clip_on=False)
 
-    swing_high = _number(_pick(row, "swing_high", "Swing_High"))
-    swing_low = _number(_pick(row, "swing_low", "Swing_Low"))
+    swing_high = round_idx_price(_pick(row, "swing_high", "Swing_High"))
+    swing_low = round_idx_price(_pick(row, "swing_low", "Swing_Low"))
     if swing_high is not None:
         ax.axhline(swing_high, linestyle="-.", linewidth=0.85, alpha=0.55)
         ax.text(x_label, swing_high, f"SWING HIGH {_price_label(swing_high)}", va="center", fontsize=8, clip_on=False)
@@ -153,7 +219,7 @@ def generate_final_watchlist_chart(
     fib_status = str(_pick(row, "fib_status", "Fibonacci_Status", "Fib_Status") or "").upper()
     if "VALID" in fib_status and "NOT" not in fib_status:
         for key, label in (("fib_382", "FIB 38.2%"), ("fib_500", "FIB 50%"), ("fib_618", "FIB 61.8%"), ("fib_1618", "FIB 161.8%")):
-            value = _number(_pick(row, key, key.upper()))
+            value = round_idx_price(_pick(row, key, key.upper()))
             if value is not None:
                 ax.axhline(value, linestyle=":", linewidth=0.75, alpha=0.45)
                 ax.text(x_label, value, f"{label} {_price_label(value)}", va="center", fontsize=7.5, clip_on=False)
