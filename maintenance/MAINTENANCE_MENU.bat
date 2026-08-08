@@ -14,6 +14,7 @@ echo [3] Verify manifest
 echo [4] Generate Task Scheduler XML
 echo [5] Release validation
 echo [6] Get Telegram Chat ID
+echo [7] Repair Yahoo/YFinance runtime
 echo [0] Kembali
 echo.
 set "M="
@@ -41,6 +42,10 @@ if "%M%"=="5" (
 )
 if "%M%"=="6" (
   call maintenance\GET_CHAT_ID.bat
+  goto MENU
+)
+if "%M%"=="7" (
+  call maintenance\REPAIR_YAHOO_RUNTIME.bat
   goto MENU
 )
 if "%M%"=="0" exit /b 0
