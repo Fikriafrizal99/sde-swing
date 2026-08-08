@@ -1,5 +1,4 @@
 @echo off
-set EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul
 cd /d "%~dp0\.."
 title SDE - Telegram Topic Configuration
@@ -54,19 +53,19 @@ if not defined REPORT_ID (
   pause
   goto MENU
 )
-for /f "delims=0123456789" %%A in ("!REPORT_ID!") do (
+for /f "delims=0123456789" %%A in ("%REPORT_ID%") do (
   echo [FAILED] Thread ID harus berupa angka.
   pause
   goto MENU
 )
-setx TELEGRAM_THREAD_REPORT_ID "!REPORT_ID!" >nul
+setx TELEGRAM_THREAD_REPORT_ID "%REPORT_ID%" >nul
 if errorlevel 1 (
   echo [FAILED] Gagal menyimpan TELEGRAM_THREAD_REPORT_ID.
   pause
   goto MENU
 )
-set "TELEGRAM_THREAD_REPORT_ID=!REPORT_ID!"
-echo [OK] TELEGRAM_THREAD_REPORT_ID=!REPORT_ID! tersimpan dan aktif untuk sesi RUN_SDE ini.
+set "TELEGRAM_THREAD_REPORT_ID=%REPORT_ID%"
+echo [OK] TELEGRAM_THREAD_REPORT_ID=%REPORT_ID% tersimpan dan aktif untuk sesi RUN_SDE ini.
 echo.
 %SDE_PYTHON_CMD% -u tools\check_telegram_report_route.py
 pause
