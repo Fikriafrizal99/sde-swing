@@ -6,6 +6,8 @@ title SDE - Active Portfolio Management
 
 set "NON_BLOCKING=0"
 if /I "%~1"=="--non-blocking" set "NON_BLOCKING=1"
+set "FORCE_ARG=--force"
+if "%NON_BLOCKING%"=="1" set "FORCE_ARG="
 
 call tools\set_python_cmd.bat
 if not defined SDE_PYTHON_CMD (
@@ -32,6 +34,8 @@ echo Trade date : !TRADE_DATE!
 echo Engine utama tidak dijalankan ulang.
 echo Hanya posisi portfolio aktual dengan status OPEN yang dianalisis.
 echo Broker context: Current + 3D + 5D + 7D + Since Entry.
+if "%NON_BLOCKING%"=="0" echo Delivery    : MANUAL FORCE RESEND ke topic report.
+if "%NON_BLOCKING%"=="1" echo Delivery    : AUTO DEDUPE ke topic report.
 echo.
 
 echo [1/2] Refresh data posisi OPEN...
@@ -43,7 +47,7 @@ if not "!REFRESH_RC!"=="0" (
 
 echo.
 echo [2/2] Jalankan Position Management...
-%SDE_PYTHON_CMD% -u modules\portfolio\position_management_runtime.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date "!TRADE_DATE!" --telegram
+%SDE_PYTHON_CMD% -u modules\portfolio\position_management_runtime.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date "!TRADE_DATE!" --telegram !FORCE_ARG!
 set "RC=!ERRORLEVEL!"
 
 echo.
