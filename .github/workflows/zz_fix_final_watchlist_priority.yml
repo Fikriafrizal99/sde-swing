@@ -1,0 +1,124 @@
+name: Apply Final Watchlist Priority Hotfix
+
+on:
+  push:
+    branches:
+      - agent/sde-swing-v1-7-0-multisource
+    paths:
+      - .github/workflows/zz_fix_final_watchlist_priority.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/sde-swing-v1-7-0-multisource
+          fetch-depth: 0
+
+      - name: Patch final watchlist ranking and summary
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          report_path = Path('modules/job_runner/enhanced_daily_reports.py')
+          text = report_path.read_text(encoding='utf-8')
+
+          old = '''        rows = self._enrich_watchlist_rows([dict(row) for row in data.get("rows", [])])
+          interpreted: list[dict[str, Any]] = []
+          for row in rows:
+          '''
+          new = '''        rows = self._enrich_watchlist_rows([dict(row) for row in data.get("rows", [])])
+          # Spend the limited AI budget on the actual best candidates first.
+          # `confidence` is Final_Score_V3 from the decision engine, so this is
+          # presentation ordering only and never recalculates an engine score.
+          ai_priority = {"BUY_READY": 0, "BUY_CANDIDATE": 1, "WATCH": 2}
+          rows.sort(key=lambda row: (
+              ai_priority.get(self._decision_bucket(row.get("decision")), 99),
+              -self._ranking_value(row, "confidence"),
+              int(_float(row.get("rank"), 9999)),
+          ))
+          interpreted: list[dict[str, Any]] = []
+          for row in rows:
+          '''
+          if old not in text:
+              raise SystemExit('ranking pre-sort anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''        selected.sort(key=lambda row: (
+              priority.get(self._decision_bucket(row.get("decision")), 99),
+              -self._ranking_value(row, "entry_readiness"),
+              abs(self._ranking_value(row, "entry_distance_pct", 9999.0)),
+              -self._ranking_value(row, "broker_confidence", self._ranking_value(row, "broker_score")),
+              -self._ranking_value(row, "technical_quality", self._ranking_value(row, "technical_score")),
+              -self._ranking_value(row, "risk_reward"),
+              -self._ranking_value(row, "confidence"),
+              int(_float(row.get("rank"), 9999)),
+          ))
+          '''
+          new = '''        selected.sort(key=lambda row: (
+              priority.get(self._decision_bucket(row.get("decision")), 99),
+              # Final_Score_V3 is the canonical cross-factor score produced by
+              # the decision engine. Rank by it before presentation tie-breaks.
+              -self._ranking_value(row, "confidence"),
+              -self._ranking_value(row, "entry_readiness"),
+              abs(self._ranking_value(row, "entry_distance_pct", 9999.0)),
+              -self._ranking_value(row, "broker_confidence", self._ranking_value(row, "broker_score")),
+              -self._ranking_value(row, "technical_quality", self._ranking_value(row, "technical_score")),
+              -self._ranking_value(row, "risk_reward"),
+              int(_float(row.get("rank"), 9999)),
+          ))
+          '''
+          if old not in text:
+              raise SystemExit('selected sort anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '            "top_priority": selected[:3],\n'
+          new = '            "top_priority": selected[:5],\n'
+          if old not in text:
+              raise SystemExit('top_priority anchor not found')
+          text = text.replace(old, new, 1)
+          report_path.write_text(text, encoding='utf-8')
+
+          ui_path = Path('modules/telegram/daily_report_ui.py')
+          ui = ui_path.read_text(encoding='utf-8')
+          marker = 'def format_final_watchlist_summary(data: dict[str, Any]) -> str:'
+          start = ui.rfind(marker)
+          if start < 0:
+              raise SystemExit('final summary formatter not found')
+          section = ui[start:]
+          if '"<b>🎯 PRIORITAS EKSEKUSI</b>",' not in section:
+              raise SystemExit('priority title anchor not found')
+          section = section.replace('"<b>🎯 PRIORITAS EKSEKUSI</b>",', '"<b>🏆 TOP 5 PRIORITAS</b>",', 1)
+          if 'for index, row in enumerate(top[:3], 1):' not in section:
+              raise SystemExit('top3 loop anchor not found')
+          section = section.replace('for index, row in enumerate(top[:3], 1):', 'for index, row in enumerate(top[:5], 1):', 1)
+          old_footer = '    lines += ["", "Prioritas memakai kesiapan eksekusi, bukan score saja.", *(_runtime_zapi_lines(data) or [])]\n'
+          new_footer = '''    lines += [
+              "",
+              SEPARATOR,
+              "📌 5 kartu berikut adalah 5 saham terbaik berdasarkan status eksekusi dan Final Score.",
+              "📎 CSV tetap memuat seluruh saham aktif.",
+          ]
+          '''
+          if old_footer not in section:
+              raise SystemExit('summary footer anchor not found')
+          section = section.replace(old_footer, new_footer, 1)
+          ui = ui[:start] + section
+          ui_path.write_text(ui, encoding='utf-8')
+          PY
+
+      - name: Commit hotfix and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/zz_fix_final_watchlist_priority.yml
+          git add modules/job_runner/enhanced_daily_reports.py modules/telegram/daily_report_ui.py
+          git commit -m "fix: rank final watchlist by canonical final score"
+          git push origin HEAD:agent/sde-swing-v1-7-0-multisource
