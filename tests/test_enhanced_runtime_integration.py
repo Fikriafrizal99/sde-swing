@@ -101,3 +101,105 @@ def test_zapi_lineage_reads_string_reconciliation_path(tmp_path: Path, monkeypat
     assert summary["json_path"] == str(reconciliation)
     assert rows["BBCA"]["symbol"] == "BBCA"
     assert str(reconciliation) in inputs
+
+
+def test_final_watchlist_uses_v3_confidence_and_one_primary_broker_window(tmp_path: Path, monkeypatch) -> None:
+    decision_dir = tmp_path / "decision"
+    exit_dir = tmp_path / "exit"
+    manifest_dir = tmp_path / "manifests"
+    broker_dir = tmp_path / "broker_multiday"
+    for path in (decision_dir, exit_dir, manifest_dir, broker_dir):
+        path.mkdir(parents=True, exist_ok=True)
+
+    pd.DataFrame([{
+        "Symbol": "TPIA",
+        "Decision_Status_Final": "WATCH",
+        "Confidence": 75,
+        "Final_Score_V3": 82,
+        "Setup_Type": "DEVELOPING",
+        "Technical_State": "★★★",
+        "Broker_Confirmation": "ACCUMULATION",
+        "Broker_Score": 78,
+        "Data_Quality_Status": "VALID",
+    }]).to_csv(decision_dir / "FINAL_DECISION_V3.csv", index=False)
+    pd.DataFrame([{
+        "Symbol": "TPIA",
+        "Entry_Zone_Low": 2207.70,
+        "Entry_Zone_High": 2252.30,
+        "Initial_Stop": 2094.64,
+        "Target_1": 2370,
+        "Target_2": 6300,
+        "RR_To_Resistance": 0.75,
+        "Plan_Status": "NOT READY",
+    }]).to_csv(exit_dir / "ENTRY_PLANS.csv", index=False)
+    (manifest_dir / "DECISION_ENGINE_MANIFEST_TEST-CANONICAL.json").write_text(
+        json.dumps({"Data_Quality_Status": "VALID", "Decision_Owner": "FINAL_DECISION_ENGINE"}),
+        encoding="utf-8",
+    )
+
+    pd.DataFrame([{
+        "Symbol": "TPIA",
+        "Primary_Window": "1D",
+        "Window": "1D",
+        "Classification": "DISTRIBUTION",
+        "available_sessions": 1,
+        "positive_day_ratio": 0.0,
+        "negative_day_ratio": 1.0,
+        "cumulative_net_value": -4_310_000_000,
+        "buyer_concentration": 0.7047,
+        "seller_concentration": 0.3888,
+        "weighted_broker_buy_cost": 2155.01,
+        "distance_to_buy_cost_pct": 3.4798,
+    }]).to_csv(broker_dir / "BROKER_WINDOW_COMPARISON.csv", index=False)
+    pd.DataFrame([{
+        "Symbol": "TPIA",
+        "Context": "DISTRIBUTION",
+        "Confidence": 78,
+    }]).to_csv(broker_dir / "BROKER_MULTIDAY_SUMMARY.csv", index=False)
+    pd.DataFrame([{
+        "Symbol": "TPIA",
+        "Divergence_Label": "NEGATIVE_DIVERGENCE",
+        "Seller_Rotation_Status": "STABLE_DOMINANCE",
+    }]).to_csv(broker_dir / "BROKER_MULTIDAY_DETAIL.csv", index=False)
+
+    ctx = RunnerContext(
+        job="final_watchlist",
+        config_path=tmp_path / "pipeline.json",
+        scheduler_config_path=tmp_path / "scheduler.json",
+        trade_date=date(2026, 8, 7),
+        run_id="TEST-CANONICAL",
+        config={
+            "paths": {
+                "decision_output_dir": str(decision_dir),
+                "exit_output_dir": str(exit_dir),
+                "manifest_dir": str(manifest_dir),
+                "broker_multiday_output_dir": str(broker_dir),
+            },
+        },
+        scheduler_config={},
+        calendar_config={},
+    )
+
+    captured: dict = {}
+
+    class CapturingBuilder:
+        def build_final_watchlist(self, data):
+            captured.update(data)
+            return []
+
+    monkeypatch.setattr(enhanced_runtime_bridge, "validate_final_watchlist_sources", lambda *args, **kwargs: {})
+    monkeypatch.setattr(enhanced_runtime_bridge, "_zapi_lineage", lambda _ctx: ({}, {}, []))
+    monkeypatch.setattr(enhanced_runtime_bridge, "_builder", lambda _ctx: CapturingBuilder())
+
+    assert enhanced_runtime_bridge.final_watchlist_payloads(ctx, {"Run_ID": "TEST-CANONICAL"}) == []
+    row = captured["rows"][0]
+    assert row["confidence"] == 82
+    assert row["technical_state"] == "NOT READY"
+    assert row["broker_status"] == "DISTRIBUTION"
+    assert row["broker_score"] == 78
+    assert float(row["broker_net_flow"]) == -4_310_000_000
+    assert row["buy_days"] == 0 and row["sell_days"] == 1
+    assert row["broker_pattern"] == "NEGATIVE_DIVERGENCE"
+    assert float(row["distance_to_buy_cost"]) == 3.4798
+    assert row["multi_day_flow"] == "DISTRIBUTION"
+    assert row["flow_persistence"] == "STABLE_DOMINANCE"
