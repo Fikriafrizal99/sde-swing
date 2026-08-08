@@ -1128,13 +1128,9 @@ _fw_original_build_final_watchlist = EnhancedDailyReportBuilder.build_final_watc
 
 
 def _fw_build_final_watchlist(self, data):
-    # User contract: every FINAL WATCHLIST item gets a card/chart; CSV remains last.
-    original_limit = self.max_watchlist_messages
-    self.max_watchlist_messages = 10000
-    try:
-        artifacts = _fw_original_build_final_watchlist(self, data)
-    finally:
-        self.max_watchlist_messages = original_limit
+    # Preserve the canonical delivery limit: CSV keeps every eligible row,
+    # while Telegram detail/chart artifacts are built only for Top N (default 5).
+    artifacts = _fw_original_build_final_watchlist(self, data)
 
     trade_date = str(data.get("trade_date", ""))
     csv_path = self.output_root / "final_watchlist" / f"sde-final-watchlist-{trade_date}.csv"
