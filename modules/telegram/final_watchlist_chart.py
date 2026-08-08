@@ -90,14 +90,32 @@ def _price_label(value: Any) -> str:
     return f"{rounded:,.0f}".replace(",", ".")
 
 
+def _shorten_reason_to_limit(compact: str, limit: int) -> str | None:
+    for marker in ("<b>Reason:</b>", "Reason:"):
+        marker_pos = compact.rfind(marker)
+        if marker_pos < 0:
+            continue
+        head = compact[: marker_pos + len(marker)].rstrip()
+        reason = compact[marker_pos + len(marker):].strip()
+        room = limit - len(head) - 2
+        if room <= 1:
+            continue
+        shortened = reason[:room].rstrip(" ;,.")
+        if len(shortened) < len(reason):
+            shortened = shortened.rstrip() + "…"
+        candidate = f"{head} {shortened}"
+        if len(candidate) <= limit:
+            return candidate
+    return None
+
+
 def compact_final_watchlist_caption(text: Any, limit: int = _FINAL_WATCHLIST_CAPTION_LIMIT) -> str:
     """Keep a chart + FINAL WATCHLIST card inside one Telegram photo message.
 
-    Telegram photo captions are capped at 1024 characters.  The formatter first
+    Telegram photo captions are capped at 1024 characters. The formatter first
     removes presentation-only whitespace and abbreviates verbose labels while
-    preserving all engine facts.  Only if a pathological Reason still exceeds
-    the limit is the Reason tail shortened.  No second Telegram message is
-    created for FINAL WATCHLIST details.
+    preserving all engine facts. If more space is still required, only the tail
+    of Reason is shortened. Bold markup is kept whenever possible.
     """
     compact = str(text or "").strip()
     if len(compact) <= limit:
@@ -122,24 +140,18 @@ def compact_final_watchlist_caption(text: Any, limit: int = _FINAL_WATCHLIST_CAP
     if len(compact) <= limit:
         return compact
 
-    # Bold tags are cosmetic. Removing them is preferable to splitting one
-    # stock card into two separate Telegram messages.
+    shortened = _shorten_reason_to_limit(compact, limit)
+    if shortened is not None:
+        return shortened
+
+    # Last resort for an unusually verbose non-Reason card: remove cosmetic
+    # bold markup before trimming. Core engine facts remain ahead of Reason.
     compact = compact.replace("<b>", "").replace("</b>", "")
     if len(compact) <= limit:
         return compact
-
-    marker = "Reason:"
-    marker_pos = compact.rfind(marker)
-    if marker_pos >= 0:
-        head = compact[: marker_pos + len(marker)].rstrip()
-        reason = compact[marker_pos + len(marker):].strip()
-        room = limit - len(head) - 2
-        if room > 1:
-            shortened = reason[:room].rstrip(" ;,.")
-            if len(shortened) < len(reason):
-                shortened = shortened.rstrip() + "…"
-            return f"{head} {shortened}"[:limit]
-
+    shortened = _shorten_reason_to_limit(compact, limit)
+    if shortened is not None:
+        return shortened
     return compact[: limit - 1].rstrip() + "…"
 
 
@@ -255,7 +267,7 @@ def _artifact_value_for_symbol(
 def _enrich_final_watchlist_broker_row(row: Mapping[str, Any]) -> dict[str, Any]:
     """Fill presentation-only broker fields from already-produced engine artifacts.
 
-    This never recomputes broker metrics.  It only restores fields that were
+    This never recomputes broker metrics. It only restores fields that were
     dropped by an older Final Watchlist row/CSV before Telegram rendering.
     """
     enriched = dict(row or {})
