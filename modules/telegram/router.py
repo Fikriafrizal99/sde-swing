@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Three-topic Telegram routing with environment-only credentials."""
+"""Telegram routing with category defaults and explicit report-topic isolation."""
 
 from dataclasses import dataclass
 import os
@@ -49,13 +49,40 @@ class TelegramRouter:
         return "REPORT"
 
     def resolve(self, report_type: str, topic: str = "") -> TelegramRoute:
-        category = self.category_for(report_type, topic)
-        env_name = f"TELEGRAM_THREAD_{category}_ID"
-        env_thread = str(self.environ.get(env_name, "") or "").strip()
+        report = str(report_type or "").strip()
+        label = str(topic or "").strip()
+        report_lower = report.lower()
+        label_lower = label.lower()
+        category = self.category_for(report, label)
         ui = self.config.get("telegram_ui", {}) if isinstance(self.config, dict) else {}
         ui_routing = ui.get("topic_routing", {}) if isinstance(ui, dict) else {}
-        configured = ui_routing.get(report_type) or ui_routing.get(topic) or ui_routing.get(category) or ""
-        thread = env_thread or str(configured).strip()
+
+        # Per-report/per-topic configuration is always safe and specific.
+        specific_config = (
+            ui_routing.get(report)
+            or ui_routing.get(report_lower)
+            or ui_routing.get(label)
+            or ui_routing.get(label_lower)
+            or ""
+        )
+
+        env_name = f"TELEGRAM_THREAD_{category}_ID"
+        env_thread = str(self.environ.get(env_name, "") or "").strip()
+        category_config = str(ui_routing.get(category) or ui_routing.get(category.lower()) or "").strip()
+
+        if category == "REPORT" and label_lower not in {"report", "reports"}:
+            # Market Outlook, Post Market, broker reports, evaluation, etc. are
+            # also REPORT-category payloads, but they have their own routes in
+            # scheduler/config. A generic TELEGRAM_THREAD_REPORT_ID must not
+            # hijack those routes. Return fallback when no specific UI mapping
+            # exists so delivery.py can apply its per-report scheduler mapping.
+            thread = str(specific_config).strip()
+        else:
+            # Explicit topic="report" is the dedicated general Report topic.
+            # Environment remains first so local deployment can configure the
+            # real Telegram message_thread_id without committing it to Git.
+            thread = env_thread or str(specific_config).strip() or category_config
+
         return TelegramRoute(
             category=category,
             target_thread=category,
