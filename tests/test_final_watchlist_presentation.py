@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
 from modules.job_runner.delivery import _idempotency_key
+from modules.job_runner.enhanced_daily_reports import EnhancedDailyReportBuilder
 from modules.job_runner.reports import ReportPayload
 from modules.telegram.daily_report_ui import format_watchlist_detail
 from modules.telegram.final_watchlist_chart import generate_final_watchlist_chart
@@ -106,3 +108,53 @@ def test_final_watchlist_idempotency_tracks_material_setup_not_run_id(tmp_path: 
         setattr(payload, "attachment_path", image)
     assert _idempotency_key(DummyContext(), first) == _idempotency_key(DummyContext(), second)
     assert _idempotency_key(DummyContext(), first) != _idempotency_key(DummyContext(), changed)
+
+
+class DummyInterpreter:
+    def interpret(self, data, fallback):
+        return SimpleNamespace(
+            main_reason=fallback["main_reason"],
+            main_risk=fallback["main_risk"],
+            execution_note=fallback["execution_note"],
+            source="TEST",
+            status="SUCCESS",
+            warning="",
+        )
+
+
+def test_final_watchlist_keeps_all_rows_in_csv_but_only_top_five_details(tmp_path: Path):
+    rows = []
+    for index in range(8):
+        rows.append({
+            "symbol": f"T{index:03d}",
+            "decision": "BUY CONFIRMED" if index < 3 else "WATCH",
+            "confidence": 90 - index,
+            "technical_score": 90 - index,
+            "broker_score": 80 - index,
+            "entry_readiness": 100 - index,
+            "entry_distance_pct": index / 10,
+            "risk_reward": 2.0,
+            "setup": "BREAKOUT",
+            "entry_low": 100 + index,
+            "entry_high": 102 + index,
+            "stop_loss": 95 + index,
+            "target_1": 110 + index,
+            "target_2": 120 + index,
+            "main_reason": "Valid setup",
+            "main_risk": "Invalid jika SL ditembus",
+        })
+
+    builder = EnhancedDailyReportBuilder(
+        output_root=tmp_path,
+        interpreter=DummyInterpreter(),
+        max_watchlist_messages=5,
+    )
+    artifacts = builder.build_final_watchlist({"trade_date": "2026-08-08", "rows": rows})
+
+    details = [item for item in artifacts if item.report_type == "final_watchlist_detail"]
+    csv_items = [item for item in artifacts if item.report_type == "final_watchlist_csv"]
+
+    assert len(details) == 5
+    assert len(csv_items) == 1
+    csv_frame = pd.read_csv(csv_items[0].attachment_path)
+    assert len(csv_frame) == 8
