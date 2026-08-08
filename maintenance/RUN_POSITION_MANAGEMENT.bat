@@ -26,6 +26,15 @@ if not defined TRADE_DATE (
   exit /b 1
 )
 
+set "TELEGRAM_ARG=--telegram"
+%SDE_PYTHON_CMD% -u tools\check_telegram_report_route.py
+set "ROUTE_RC=!ERRORLEVEL!"
+if not "!ROUTE_RC!"=="0" (
+  set "TELEGRAM_ARG=--no-telegram"
+  set "FORCE_ARG="
+  echo [WARNING] Portfolio Management tetap dianalisis, tetapi Telegram dilewati agar tidak masuk topic yang salah.
+)
+
 echo.
 echo ================================================================
 echo          SDE - ACTIVE PORTFOLIO MANAGEMENT
@@ -34,8 +43,12 @@ echo Trade date : !TRADE_DATE!
 echo Engine utama tidak dijalankan ulang.
 echo Hanya posisi portfolio aktual dengan status OPEN yang dianalisis.
 echo Broker context: Current + 3D + 5D + 7D + Since Entry.
-if "%NON_BLOCKING%"=="0" echo Delivery    : MANUAL FORCE RESEND ke topic report.
-if "%NON_BLOCKING%"=="1" echo Delivery    : AUTO DEDUPE ke topic report.
+if "!ROUTE_RC!"=="0" (
+  if "%NON_BLOCKING%"=="0" echo Delivery    : MANUAL FORCE RESEND ke topic Report.
+  if "%NON_BLOCKING%"=="1" echo Delivery    : AUTO DEDUPE ke topic Report.
+) else (
+  echo Delivery    : SKIPPED - topic Report belum valid/terpisah.
+)
 echo.
 
 echo [1/2] Refresh data posisi OPEN...
@@ -47,9 +60,9 @@ if not "!REFRESH_RC!"=="0" (
 
 echo.
 echo [2/2] Jalankan Position Management...
-%SDE_PYTHON_CMD% -u modules\portfolio\position_management_runtime.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date "!TRADE_DATE!" --telegram !FORCE_ARG!
+%SDE_PYTHON_CMD% -u modules\portfolio\position_management_runtime.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date "!TRADE_DATE!" !TELEGRAM_ARG! !FORCE_ARG!
 set "RC=!ERRORLEVEL!"
-%SDE_PYTHON_CMD% -u modules\portfolio\portfolio_delivery_status.py
+if "!ROUTE_RC!"=="0" %SDE_PYTHON_CMD% -u modules\portfolio\portfolio_delivery_status.py
 
 echo.
 if "!RC!"=="0" (
