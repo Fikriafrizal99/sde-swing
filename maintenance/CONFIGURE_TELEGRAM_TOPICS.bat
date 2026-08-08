@@ -19,10 +19,13 @@ echo.
 echo Report portfolio TIDAK lagi memakai thread Market/Post Market.
 echo Routing Report menggunakan environment variable:
 echo   TELEGRAM_THREAD_REPORT_ID
-
+echo.
+echo ID baru hanya disimpan jika Telegram mengonfirmasi topic tersebut valid
+echo untuk bot + TELEGRAM_CHAT_ID yang dipakai SDE.
+echo.
 echo [1] Tampilkan Chat ID + Forum Topic IDs dari Telegram
-echo [2] Set TELEGRAM_THREAD_REPORT_ID
-echo [3] Cek routing efektif Report vs Market/Post
+echo [2] Set + Validasi TELEGRAM_THREAD_REPORT_ID
+echo [3] Cek routing LIVE Report vs Market/Post
 echo [4] Lihat nilai topic environment saat ini
 echo [0] Kembali
 echo.
@@ -38,7 +41,7 @@ goto MENU
 :SHOW
 cls
 echo Kirim satu pesan seperti REPORT TEST di topic Report terlebih dahulu.
-echo Setelah itu hasil di bawah akan menampilkan message_thread_id.
+echo Hanya gunakan thread ID dari TELEGRAM_CHAT_ID yang sama dengan SDE.
 echo.
 %SDE_PYTHON_CMD% -u modules\telegram\get_chat_id.py
 pause
@@ -58,16 +61,32 @@ for /f "delims=0123456789" %%A in ("%REPORT_ID%") do (
   pause
   goto MENU
 )
+
+set "OLD_REPORT_ID=%TELEGRAM_THREAD_REPORT_ID%"
+set "TELEGRAM_THREAD_REPORT_ID=%REPORT_ID%"
+echo.
+echo [VALIDATE] Memeriksa thread %REPORT_ID% langsung ke Telegram...
+%SDE_PYTHON_CMD% -u tools\check_telegram_report_route.py
+set "VALIDATE_RC=%ERRORLEVEL%"
+if not "%VALIDATE_RC%"=="0" (
+  set "TELEGRAM_THREAD_REPORT_ID=%OLD_REPORT_ID%"
+  echo.
+  echo [FAILED] Thread %REPORT_ID% TIDAK disimpan karena tidak lolos live validation.
+  echo Kirim REPORT TEST di topic Report lalu gunakan menu [1] untuk membaca ulang ID.
+  pause
+  goto MENU
+)
+
 setx TELEGRAM_THREAD_REPORT_ID "%REPORT_ID%" >nul
 if errorlevel 1 (
-  echo [FAILED] Gagal menyimpan TELEGRAM_THREAD_REPORT_ID.
+  set "TELEGRAM_THREAD_REPORT_ID=%OLD_REPORT_ID%"
+  echo [FAILED] Validasi berhasil tetapi gagal menyimpan TELEGRAM_THREAD_REPORT_ID.
   pause
   goto MENU
 )
 set "TELEGRAM_THREAD_REPORT_ID=%REPORT_ID%"
-echo [OK] TELEGRAM_THREAD_REPORT_ID=%REPORT_ID% tersimpan dan aktif untuk sesi RUN_SDE ini.
 echo.
-%SDE_PYTHON_CMD% -u tools\check_telegram_report_route.py
+echo [OK] TELEGRAM_THREAD_REPORT_ID=%REPORT_ID% sudah LIVE VALID dan tersimpan.
 pause
 goto MENU
 
@@ -83,6 +102,7 @@ echo TELEGRAM_THREAD_SIGNAL_ID = %TELEGRAM_THREAD_SIGNAL_ID%
 echo TELEGRAM_THREAD_REPORT_ID = %TELEGRAM_THREAD_REPORT_ID%
 echo TELEGRAM_THREAD_SYSTEM_ID = %TELEGRAM_THREAD_SYSTEM_ID%
 echo.
-echo Nilai setx juga akan aktif otomatis pada terminal/launcher baru.
+echo Catatan: angka saja belum menjamin valid. Gunakan menu [3] untuk live validation.
+echo Nilai setx aktif otomatis pada terminal/launcher baru.
 pause
 goto MENU
