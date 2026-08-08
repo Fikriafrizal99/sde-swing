@@ -18,7 +18,7 @@ echo          SDE - PORTFOLIO AKTUAL PENGGUNA
 echo ================================================================
 echo Source of truth: data\database\sde_swing_history.db
 echo.
-echo [1] Catat BUY aktual dari Final Watchlist
+echo [1] Catat BUY aktual
 echo [2] Catat SELL aktual
 echo [3] Lihat portfolio
 echo [0] Keluar
@@ -54,7 +54,7 @@ set "NOTES_ARG="
 if defined BUY_DATE set "DATE_ARG=--buy-date !BUY_DATE!"
 if defined SIGNAL_ID set "SIGNAL_ARG=--signal-id !SIGNAL_ID!"
 if defined NOTES set NOTES_ARG=--notes "!NOTES!"
-%SDE_PYTHON_CMD% -u modules\analytics\outcome_tracker.py portfolio record-buy --db data\database\sde_swing_history.db --symbol "!SYMBOL!" --quantity "!QTY!" --price "!PRICE!" !DATE_ARG! !SIGNAL_ARG! !NOTES_ARG!
+%SDE_PYTHON_CMD% -u modules\analytics\outcome_tracker.py portfolio --db data\database\sde_swing_history.db record-buy --symbol "!SYMBOL!" --quantity "!QTY!" --price "!PRICE!" !DATE_ARG! !SIGNAL_ARG! !NOTES_ARG!
 set "RC=!ERRORLEVEL!"
 echo.
 if "!RC!"=="0" (echo [OK] BUY aktual tersimpan.) else (echo [FAILED] BUY gagal. Exit code !RC!.)
@@ -78,7 +78,7 @@ set "DATE_ARG="
 if defined POSITION_ID set "POSITION_ARG=--position-id !POSITION_ID!"
 if defined SYMBOL set "SYMBOL_ARG=--symbol !SYMBOL!"
 if defined SELL_DATE set "DATE_ARG=--sell-date !SELL_DATE!"
-%SDE_PYTHON_CMD% -u modules\analytics\outcome_tracker.py portfolio record-sell --db data\database\sde_swing_history.db --price "!PRICE!" !POSITION_ARG! !SYMBOL_ARG! !DATE_ARG!
+%SDE_PYTHON_CMD% -u modules\analytics\outcome_tracker.py portfolio --db data\database\sde_swing_history.db record-sell --price "!PRICE!" !POSITION_ARG! !SYMBOL_ARG! !DATE_ARG!
 set "RC=!ERRORLEVEL!"
 echo.
 if "!RC!"=="0" (echo [OK] SELL aktual tersimpan.) else (echo [FAILED] SELL gagal. Exit code !RC!.)
