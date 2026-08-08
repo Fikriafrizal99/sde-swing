@@ -49,6 +49,7 @@ echo.
 echo [2/2] Jalankan Position Management...
 %SDE_PYTHON_CMD% -u modules\portfolio\position_management_runtime.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date "!TRADE_DATE!" --telegram !FORCE_ARG!
 set "RC=!ERRORLEVEL!"
+%SDE_PYTHON_CMD% -u modules\portfolio\portfolio_delivery_status.py
 
 echo.
 if "!RC!"=="0" (
