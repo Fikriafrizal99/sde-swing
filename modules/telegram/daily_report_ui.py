@@ -18,7 +18,7 @@ from modules.telegram.formatters import (
     risk_reward as shared_risk_reward,
 )
 
-SEPARATOR = "━━━━━━━━━━━━━━━━━━━━"
+SEPARATOR = "━━━━━━━━━━━━━━━━━━━"
 
 
 def _label(value: Any, fallback: str = "") -> str:
