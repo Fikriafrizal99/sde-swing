@@ -21,11 +21,13 @@ echo          SDE - BACKFILL BROKER PORTFOLIO
 echo ================================================================
 echo Jalur ini TERPISAH dari Broker Summary Final Watchlist.
 echo Database tujuan tetap: data\database\sde_swing_history.db
+echo Tampermonkey: SDE Broker Portfolio Backfill v2.1+
 echo.
 echo [1] Siapkan backfill semua portfolio OPEN
 echo [2] Siapkan backfill satu emiten / manual
 echo [3] Import hasil Tampermonkey ke database
 echo [4] Cek coverage histori broker portfolio
+echo [5] Refresh ulang histori OPEN + nominal top broker
 echo [0] Keluar
 echo.
 set "CHOICE="
@@ -35,6 +37,7 @@ if "%CHOICE%"=="1" goto PREPARE_ALL
 if "%CHOICE%"=="2" goto PREPARE_ONE
 if "%CHOICE%"=="3" goto IMPORT
 if "%CHOICE%"=="4" goto STATUS
+if "%CHOICE%"=="5" goto PREPARE_FORCE
 if "%CHOICE%"=="0" goto END
 
 echo Pilihan tidak valid.
@@ -49,7 +52,7 @@ if "!RC!"=="0" (
   echo.
   echo [NEXT]
   echo 1. Buka Stockbit Broker Summary satu saham.
-  echo 2. Di Tampermonkey gunakan script: SDE Broker Portfolio Backfill v1.
+  echo 2. Di Tampermonkey gunakan script: SDE Broker Portfolio Backfill v2.1+.
   echo 3. Impor file: %TASK_FILE%
   echo 4. Jalankan backfill lalu kembali ke menu [3] untuk import hasil.
 )
@@ -79,8 +82,22 @@ if defined TO_DATE set "DATE_ARGS=!DATE_ARGS! --to-date !TO_DATE!"
 set "RC=!ERRORLEVEL!"
 if "!RC!"=="0" (
   echo.
-  echo [NEXT] Impor %TASK_FILE% ke Tampermonkey 'SDE Broker Portfolio Backfill v1'.
+  echo [NEXT] Impor %TASK_FILE% ke Tampermonkey 'SDE Broker Portfolio Backfill v2.1+'.
   echo Script menerima emiten OPEN maupun emiten manual di luar Final Watchlist.
+)
+pause
+goto MENU
+
+:PREPARE_FORCE
+echo.
+echo Mode ini sengaja mengambil ulang tanggal yang SUDAH ada agar snapshot baru
+ echo membawa nominal TOP BUYER/TOP SELLER untuk interpretasi portfolio.
+echo Final Watchlist tetap tidak disentuh.
+%SDE_PYTHON_CMD% -u %BACKFILL_PY% prepare --force --output "%TASK_FILE%"
+set "RC=!ERRORLEVEL!"
+if "!RC!"=="0" (
+  echo.
+  echo [NEXT] Impor %TASK_FILE% ke Tampermonkey v2.1+, jalankan sekali, lalu import hasil lewat menu [3].
 )
 pause
 goto MENU
