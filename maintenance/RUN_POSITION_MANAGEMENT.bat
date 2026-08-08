@@ -33,6 +33,15 @@ echo Engine utama tidak dijalankan ulang.
 echo Hanya posisi portfolio aktual dengan status OPEN yang dianalisis.
 echo.
 
+echo [1/2] Refresh data posisi OPEN...
+%SDE_PYTHON_CMD% -u modules\portfolio\refresh_open_positions.py --config config\pipeline.json --trade-date "!TRADE_DATE!"
+set "REFRESH_RC=!ERRORLEVEL!"
+if not "!REFRESH_RC!"=="0" (
+  echo [WARNING] Refresh posisi OPEN tidak lengkap. Analisis dilanjutkan dengan last valid local data.
+)
+
+echo.
+echo [2/2] Jalankan Position Management...
 %SDE_PYTHON_CMD% -u modules\portfolio\position_management_engine.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date "!TRADE_DATE!" --telegram
 set "RC=!ERRORLEVEL!"
 
