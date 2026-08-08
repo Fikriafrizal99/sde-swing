@@ -48,12 +48,14 @@ def test_detail_reports_escape_dynamic_values_and_do_not_expose_raw_arrays() -> 
     text = format_watchlist_detail(payload)
     assert "BBCA&lt;&amp;" in text
     assert "BUY READY" in text
-    assert "SEHAT" in text
-    assert "UMA —" in text
-    assert "R:R TP1: 1:1,50" in text
     assert "WAIT_FOR_ENTRY_TRIGGER" not in text
     assert "['should not render" not in text
-    assert "<b>🟢 TOP BUYER</b>" in text
+    assert "should not render as a Python list" in text
+    assert "<b>🎯 TRADE SETUP</b>" in text
+    assert "<b>🏦 BROKER SUMMARY</b>" in text
+    assert "<b>🟢 Top Buy</b>" in text
+    assert "<b>🔴 Top Sell</b>" in text
+    assert "<b>📌 SETUP CONTEXT</b>" in text
 
 
 def test_professional_signal_downgrades_ready_when_rr_is_not_valid() -> None:

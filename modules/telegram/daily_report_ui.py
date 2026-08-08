@@ -1219,6 +1219,10 @@ def _fw_pick(row, *keys, default="ENGINE_DATA_NOT_AVAILABLE"):
 
 
 def _fw_text(value):
+    if isinstance(value, (list, tuple, set)):
+        value = "; ".join(str(item) for item in value if str(item).strip())
+    elif isinstance(value, dict):
+        value = "; ".join(f"{key}: {item}" for key, item in value.items())
     text = str(value if value is not None else "").strip()
     if not text or text.lower() in {"nan", "none", "null"}:
         return "ENGINE_DATA_NOT_AVAILABLE"
@@ -1322,7 +1326,7 @@ def format_watchlist_detail(row):
     tp1 = _fw_price(_fw_pick(row, "target_1", "Target_1"))
     tp2 = _fw_price(_fw_pick(row, "target_2", "Target_2"))
     rr = _fw_rr(_fw_pick(row, "risk_reward", "Target_2_RR", "Target_1_RR"))
-    technical_status = _fw_text(_fw_pick(row, "technical_status", "technical_state", "Plan_Status"))
+    technical_status = _fw_text(_fw_pick(row, "technical_status", "technical_state", "Plan_Status", "decision"))
     confidence = _fw_confidence(_fw_pick(row, "confidence", "Final_Score", "Final_Score_V3"))
 
     broker_signal = _fw_text(_fw_pick(row, "broker_status", "broker_signal", "Broker_Confirmation", "broker_direction"))

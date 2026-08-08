@@ -128,30 +128,22 @@ def test_final_watchlist_uses_agreed_format_and_exports_active_rows(tmp_path: Pa
     assert len(detail) == 5
     text = detail[0].text
     required_sections = [
-        "📈 TEKNIKAL",
-        "🌊 BROKER SUMMARY",
-        "🟢 TOP BUYER",
-        "🔴 TOP SELLER",
-        "💰 POSISI BROKER",
-        "🎯 RENCANA",
-        "🔔 YANG DITUNGGU",
-        "✅ ALASAN UTAMA",
-        "⚠️ RISIKO &amp; INVALIDASI",
-        "🧭 EKSEKUSI",
+        "<b>📈 SDE SWING — FINAL WATCHLIST</b>",
+        "<b>🎯 TRADE SETUP</b>",
+        "<b>🏦 BROKER SUMMARY</b>",
+        "<b>🟢 Top Buy</b>",
+        "<b>🔴 Top Sell</b>",
+        "<b>📌 SETUP CONTEXT</b>",
+        "<b>Reason:</b>",
     ]
     for section in required_sections:
         assert section in text
-    for forbidden in ("VALIDASI DATA", "SOURCE PROVENANCE", "MARKET CONTEXT"):
-        assert forbidden not in text
-    assert "Yahoo: VALID" in text
-    assert "ZAPI IDX: MATCH WITH TOLERANCE" in text
-
-    assert "Trend: bullish" in text
-    assert "Trend: ★★★★" not in text
-    assert "Momentum: NETRAL — RSI 57,0" in text
-    assert "Volume: confirmed — 1,24x MA20" in text
-    assert "R:R TP1: 1:1,67" in text
-    assert "1. AK | +Rp1,00 miliar | Avg Rp103 | lokal" in text
+    assert "S1 | BREAKOUT RETEST" in text
+    assert "💰 Current 103 | Entry 100–105" in text
+    assert "🛑 SL 95 | 🎯 TP1 115 | 🚀 TP2 120" in text
+    assert "AK @ 103" in text
+    assert "Yahoo: VALID" not in text
+    assert "ZAPI IDX:" not in text
 
     assert len(csv_items) == 1
     assert "validasi data" not in csv_items[0].caption.lower()

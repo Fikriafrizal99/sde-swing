@@ -448,5 +448,10 @@ def test_gemini_and_telegram_preserve_zapi_facts():
         "yahoo_status": "VALID", "zapi_status": "MATCH", "broker_status": "AVAILABLE",
         "zapi_freshness_days": 0,
     })
-    assert "ZAPI IDX: MATCH" in message
-    assert "Stockbit: AVAILABLE" in message
+    # FINAL WATCHLIST V2 intentionally follows the compact user contract and
+    # does not append provider/source diagnostics. The immutable facts remain
+    # preserved in the Gemini sanitization contract above and source reports.
+    assert "ZAPI IDX:" not in message
+    assert "Stockbit:" not in message
+    assert "<b>🏦 BROKER SUMMARY</b>" in message
+    assert "📌 AVAILABLE" in message
