@@ -47,6 +47,7 @@ echo 11. Test Telegram Terpisah
 echo 12. Register Semua BUY Mesin
 echo 13. Maintain Portfolio Aktual
 echo 14. Analisa Portfolio Aktif
+echo 15. Backfill Broker Portfolio
 echo  0. Keluar
 echo.
 set "CHOICE="
@@ -66,6 +67,7 @@ if "%CHOICE%"=="11" goto TELEGRAM_TEST
 if "%CHOICE%"=="12" goto REGISTER_BUY
 if "%CHOICE%"=="13" goto PORTFOLIO
 if "%CHOICE%"=="14" goto POSITION_MANAGEMENT
+if "%CHOICE%"=="15" goto PORTFOLIO_BROKER_BACKFILL
 if "%CHOICE%"=="0" goto END
 
 echo.
@@ -173,6 +175,11 @@ goto MENU
 :POSITION_MANAGEMENT
 call :LOG "selected_menu=14 action=RUN_POSITION_MANAGEMENT"
 call maintenance\RUN_POSITION_MANAGEMENT.bat
+goto MENU
+
+:PORTFOLIO_BROKER_BACKFILL
+call :LOG "selected_menu=15 action=BACKFILL_PORTFOLIO_BROKER"
+call maintenance\BACKFILL_PORTFOLIO_BROKER.bat
 goto MENU
 
 :RUN_JOB
