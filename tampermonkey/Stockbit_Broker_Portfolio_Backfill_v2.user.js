@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SDE Broker Portfolio Backfill v2
 // @namespace    https://stockbit.com/
-// @version      2.0.0
-// @description  Backfill Broker Summary DAILY untuk portfolio SDE dengan replay request; terpisah dari Broker Final Watchlist.
+// @version      2.1.0
+// @description  Backfill Broker Summary DAILY + nominal top broker untuk portfolio SDE; terpisah dari Broker Final Watchlist.
 // @match        https://stockbit.com/*
 // @match        https://*.stockbit.com/*
 // @grant        none
@@ -186,9 +186,7 @@
     if (Array.isArray(value)) return value.map(item => rewriteJsonDates(item, task, key));
     if (value && typeof value === 'object') {
       const out = {};
-      for (const [childKey, childValue] of Object.entries(value)) {
-        out[childKey] = rewriteJsonDates(childValue, task, childKey);
-      }
+      for (const [childKey, childValue] of Object.entries(value)) out[childKey] = rewriteJsonDates(childValue, task, childKey);
       return out;
     }
     const lower = String(key || '').toLowerCase();
@@ -206,7 +204,6 @@
     const source = templateRequest.clone();
     const url = rewriteUrl(source.url, task);
     if (source.method === 'GET' || source.method === 'HEAD') return new Request(url, source);
-
     let bodyText = '';
     try { bodyText = await source.clone().text(); } catch {}
     let rewrittenBody = bodyText;
@@ -261,8 +258,12 @@
     return {
       TASK_KEY: task.taskKey, FROM_DATE: fromDate, TO_DATE: toDate, EMITEN: symbol,
       TOTAL_BUY: totalBuy, TOTAL_SELL: totalSell, NET_FLOW: totalBuy - totalSell,
-      TOP_BUYER_1: getBrokerCode(buyers[0]), TOP_BUYER_2: getBrokerCode(buyers[1]), TOP_BUYER_3: getBrokerCode(buyers[2]),
-      TOP_SELLER_1: getBrokerCode(sellers[0]), TOP_SELLER_2: getBrokerCode(sellers[1]), TOP_SELLER_3: getBrokerCode(sellers[2]),
+      TOP_BUYER_1: getBrokerCode(buyers[0]), TOP_BUYER_1_VALUE: Math.abs(getBuyNetValue(buyers[0])),
+      TOP_BUYER_2: getBrokerCode(buyers[1]), TOP_BUYER_2_VALUE: Math.abs(getBuyNetValue(buyers[1])),
+      TOP_BUYER_3: getBrokerCode(buyers[2]), TOP_BUYER_3_VALUE: Math.abs(getBuyNetValue(buyers[2])),
+      TOP_SELLER_1: getBrokerCode(sellers[0]), TOP_SELLER_1_VALUE: getSellNetValue(sellers[0]),
+      TOP_SELLER_2: getBrokerCode(sellers[1]), TOP_SELLER_2_VALUE: getSellNetValue(sellers[1]),
+      TOP_SELLER_3: getBrokerCode(sellers[2]), TOP_SELLER_3_VALUE: getSellNetValue(sellers[2]),
       BUYER_CONCENTRATION: totalBuy ? top3Buy / totalBuy : 0,
       SELLER_CONCENTRATION: totalSell ? top3Sell / totalSell : 0,
       BROKER_ACCDIST: detector?.broker_accdist || '', AVG_ACCDIST: detector?.avg?.accdist || '',
@@ -295,10 +296,11 @@
     const dates = summaries.map(row => row.TO_DATE).filter(Boolean).sort();
     const stamp = dates.length ? dates[dates.length - 1] : new Date().toISOString().slice(0, 10);
     downloadCsv(`BROKER_PORTFOLIO_BACKFILL_SUMMARY_${stamp}.csv`, [
-      'FROM_DATE','TO_DATE','EMITEN','TOTAL_BUY','TOTAL_SELL','NET_FLOW','TOP_BUYER_1','TOP_BUYER_2','TOP_BUYER_3',
-      'TOP_SELLER_1','TOP_SELLER_2','TOP_SELLER_3','BUYER_CONCENTRATION','SELLER_CONCENTRATION','BROKER_ACCDIST',
-      'AVG_ACCDIST','AVG_AMOUNT','AVG_PERCENT','TOP3_ACCDIST','TOP3_AMOUNT','TOP3_PERCENT','TOTAL_BUYER_COUNT',
-      'TOTAL_SELLER_COUNT','TOTAL_VALUE','TOTAL_VOLUME','TASK_KEY'
+      'FROM_DATE','TO_DATE','EMITEN','TOTAL_BUY','TOTAL_SELL','NET_FLOW',
+      'TOP_BUYER_1','TOP_BUYER_1_VALUE','TOP_BUYER_2','TOP_BUYER_2_VALUE','TOP_BUYER_3','TOP_BUYER_3_VALUE',
+      'TOP_SELLER_1','TOP_SELLER_1_VALUE','TOP_SELLER_2','TOP_SELLER_2_VALUE','TOP_SELLER_3','TOP_SELLER_3_VALUE',
+      'BUYER_CONCENTRATION','SELLER_CONCENTRATION','BROKER_ACCDIST','AVG_ACCDIST','AVG_AMOUNT','AVG_PERCENT',
+      'TOP3_ACCDIST','TOP3_AMOUNT','TOP3_PERCENT','TOTAL_BUYER_COUNT','TOTAL_SELLER_COUNT','TOTAL_VALUE','TOTAL_VOLUME','TASK_KEY'
     ], summaries);
     await wait(400);
     downloadCsv(`BROKER_PORTFOLIO_BACKFILL_STATUS_${stamp}.csv`,
@@ -347,9 +349,7 @@
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = await response.json();
         const result = makeSummary(payload, request.url, task);
-        if (result.EMITEN !== task.symbol) {
-          throw new Error(`SYMBOL_MISMATCH returned=${result.EMITEN || '?'} expected=${task.symbol}`);
-        }
+        if (result.EMITEN !== task.symbol) throw new Error(`SYMBOL_MISMATCH returned=${result.EMITEN || '?'} expected=${task.symbol}`);
         if (result.FROM_DATE !== task.fromDate || result.TO_DATE !== task.toDate) {
           throw new Error(`DATE_MISMATCH returned=${result.FROM_DATE || '?'}→${result.TO_DATE || '?'} expected=${task.fromDate}→${task.toDate}`);
         }
@@ -388,7 +388,7 @@
     });
     panel.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <strong style="font-size:14px">SDE Portfolio Broker Backfill v2</strong><button id="${APP_ID}-min">—</button>
+        <strong style="font-size:14px">SDE Portfolio Broker Backfill v2.1</strong><button id="${APP_ID}-min">—</button>
       </div>
       <div id="${APP_ID}-body">
         <div style="color:#ffd180;margin-bottom:6px">Mode TERPISAH dari Broker Final Watchlist</div>
