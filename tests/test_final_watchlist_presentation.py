@@ -69,6 +69,7 @@ def test_final_watchlist_format_is_exact_and_bold():
     assert "🎯 Concentration B 72.00% | S 51.00%" in text
     assert "<b>📌 SETUP CONTEXT</b>" in text
     assert "<b>Reason:</b>" in text
+    assert "ENGINE_DATA_NOT_AVAILABLE" not in text
 
 
 def test_chart_uses_same_historical_candle_directory(tmp_path: Path):
