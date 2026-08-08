@@ -57,6 +57,59 @@ def _float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _missing_final_fact(value: Any) -> bool:
+    return value is None or str(value).strip().lower() in {
+        "", "nan", "none", "null", "engine_data_not_available", "data_not_available",
+    }
+
+
+def _optional_float(value: Any) -> float | None:
+    if _missing_final_fact(value):
+        return None
+    try:
+        return float(str(value).replace(",", ""))
+    except Exception:
+        return None
+
+
+def _final_watchlist_plan_rr(plan: dict[str, Any]) -> Any:
+    """Return the executable trade-plan RR, never a nearby resistance RR."""
+    return _value(
+        plan,
+        "Target_2_RR",
+        "Risk_Reward",
+        "RR",
+        "Target_1_RR",
+        default="",
+    )
+
+
+def _final_watchlist_broker_score(multiday: dict[str, Any], raw: dict[str, Any]) -> Any:
+    """Preserve a valid zero multi-day confidence instead of truthy fallback."""
+    if "broker_score" in multiday:
+        return multiday.get("broker_score")
+    return _value(raw, "Broker_Score", "Broker_Confidence_Final", default="")
+
+
+def _final_watchlist_distance(multiday: dict[str, Any], raw: dict[str, Any]) -> Any:
+    """Fill display distance from the same visible current price and buy cost."""
+    existing = multiday.get("distance_to_buy_cost", "")
+    if not _missing_final_fact(existing):
+        return existing
+    buy_cost = _optional_float(multiday.get("bandar_buy_cost"))
+    current_price = _optional_float(
+        _value(raw, "Last_Price", "Current_Price", "Close", "Price", default="")
+    )
+    if buy_cost is None or buy_cost <= 0 or current_price is None:
+        return existing
+    return round(100.0 * (current_price - buy_cost) / buy_cost, 4)
+
+
+def _final_watchlist_reason(raw: dict[str, Any]) -> Any:
+    """Avoid Broker Fusion's single-session Decision_Reasons in a multi-day card."""
+    return _value(raw, "Main_Reason", "Decision_Reason", "Reason", default="")
+
+
 def _coverage(valid: int, requested: int) -> float:
     return round((valid / requested * 100.0), 1) if requested > 0 else 0.0
 
@@ -609,21 +662,12 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             "stop_loss": _value(plan, "Initial_Stop", "Stop_Loss", "Stop", default=""),
             "target_1": _value(plan, "Target_1", "TP1", default=""),
             "target_2": _value(plan, "Target_2", "TP2", default=""),
-            # Resistance pivots are optional.  Fall back to the executable
-            # target R-multiple when no resistance is confirmed above entry.
-            "risk_reward": _value(
-                plan,
-                "RR_To_Resistance",
-                "RR_To_Minor_Resistance",
-                "Risk_Reward",
-                "RR",
-                "Target_2_RR",
-                "Target_1_RR",
-                default="",
-            ),
+            # The generic RR line belongs to the executable target plan. A
+            # nearby resistance RR is separate context and must not replace it.
+            "risk_reward": _final_watchlist_plan_rr(plan),
             "technical_score": _value(raw, "Technical_Score_Final", "Technical_Score", default=""),
             "technical_state": technical_state,
-            "broker_score": multiday.get("broker_score") or _value(raw, "Broker_Score", "Broker_Confidence_Final", default=""),
+            "broker_score": _final_watchlist_broker_score(multiday, raw),
             "broker_state": multiday.get("broker_status") or broker_fallback,
             "broker_status": multiday.get("broker_status") or broker_fallback or "MISSING",
             "broker_net_flow": multiday.get("broker_net_flow", ""),
@@ -633,12 +677,16 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             "seller_concentration": multiday.get("seller_concentration", ""),
             "broker_pattern": multiday.get("broker_pattern", ""),
             "bandar_buy_cost": multiday.get("bandar_buy_cost", ""),
-            "distance_to_buy_cost": multiday.get("distance_to_buy_cost", ""),
+            "distance_to_buy_cost": _final_watchlist_distance(multiday, raw),
             "multi_day_flow": multiday.get("multi_day_flow", ""),
             "flow_persistence": multiday.get("flow_persistence", ""),
             "sector_state": _value(raw, "Sector_State", "Sector_Rotation_State", default=""),
             "market_regime": _value(raw, "Market_Regime", default=""),
-            "main_reason": _value(raw, "Main_Reason", "Decision_Reason", "Decision_Reasons", "Reason", default=""),
+            # Decision_Reasons is produced by the single-session Broker Fusion
+            # and can contradict the multi-day broker facts displayed above.
+            # Leave it out so the existing builder uses its consistent
+            # technical + multi-day fallback/interpreter path instead.
+            "main_reason": _final_watchlist_reason(raw),
             "main_risk": _value(raw, "Main_Risk", "Risk_Note", "Warnings", default=""),
             "data_status": _value(raw, "Data_Quality_Status", "Data_Status", default=""),
             "source": _value(raw, "Source", default=provider),
