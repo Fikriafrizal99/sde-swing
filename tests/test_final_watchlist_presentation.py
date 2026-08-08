@@ -79,11 +79,15 @@ def test_final_watchlist_format_is_exact_and_bold():
     assert "2. LG — Rp5,74 miliar | Avg Rp3.410 | Pemerintah" in text
     assert "3. PD — Rp1,05 miliar | Avg Rp3.400 | Asing" in text
     assert "📅 Buy/Sell 4/1" in text
-    assert "🎯 Concentration B 72.00% | S 51.00%" in text
+    assert (
+        "🎯 Concentration B 72.00% | S 51.00%" in text
+        or "🎯 Conc. B 72.00% | S 51.00%" in text
+    )
     assert "💰 Buy Cost 3.370 | Jarak Buy Avg +0.74%" in text
     assert "<b>📌 SETUP CONTEXT</b>" in text
     assert "<b>Reason:</b>" in text
     assert "ENGINE_DATA_NOT_AVAILABLE" not in text
+    assert len(text) <= 1024
 
 
 def test_idx_tick_rounding_for_final_watchlist_display():
@@ -167,11 +171,12 @@ trend kuat; RSI sehat; MACD positif; volume mendukung; buyer concentration domin
     assert len(text) > 1024
     compact = compact_final_watchlist_caption(text)
     assert len(compact) <= 1024
+    assert compact.startswith("<b>📈 SDE SWING — FINAL WATCHLIST</b>")
     assert "1. BK — Rp127,28 miliar | Avg Rp2.210 | Asing" in compact
     assert "1. SQ — Rp155,11 miliar | Avg Rp2.210 | Lokal" in compact
     assert "Jarak Buy Avg N/A" in compact
     assert "SETUP CONTEXT" in compact
-    assert "Reason:" in compact
+    assert "<b>Reason:</b>" in compact
     assert "\n\n" not in compact
 
 
