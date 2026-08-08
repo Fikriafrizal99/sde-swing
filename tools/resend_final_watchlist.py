@@ -2,7 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+# When this file is executed directly as ``python tools/resend_final_watchlist.py``,
+# Python puts ``tools`` on sys.path instead of the repository root.  Bootstrap
+# the root before importing the project packages so ``modules.*`` resolves on
+# Windows and other direct-script environments.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from modules.job_runner.delivery import deliver
 from modules.job_runner.enhanced_runtime_bridge import final_watchlist_payloads as enhanced_final_watchlist_payloads
