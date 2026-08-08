@@ -25,6 +25,8 @@ from modules.broker_bridge.broker_navigator_export import read_open_portfolio_sy
 from swing_utils import make_run_id
 
 WIB = ZoneInfo("Asia/Jakarta")
+YAHOO_IMPORT_TIMEOUT_SECONDS = 20
+YAHOO_RUNTIME_FAILURE_EXIT = 71
 
 
 def load_json(path: Path) -> dict:
@@ -55,6 +57,43 @@ def write_symbols(path: Path, symbols: list[str]) -> None:
         writer.writerows([[symbol] for symbol in symbols])
 
 
+def probe_yahoo_runtime(timeout_seconds: int = YAHOO_IMPORT_TIMEOUT_SECONDS) -> tuple[bool, str]:
+    """Fail fast when the local yfinance/protobuf runtime is broken or hangs.
+
+    Portfolio Management may safely continue with the last valid local OHLCV
+    after this preflight returns a failure.  The shared historical downloader
+    itself is intentionally not modified.
+    """
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import yfinance as yf; "
+            "import google.protobuf as pb; "
+            "print('OK|' + str(getattr(yf, '__version__', '?')) + '|' + str(getattr(pb, '__version__', '?')))"
+        ),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=PROJECT_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=max(int(timeout_seconds), 1),
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"dependency import timeout >{max(int(timeout_seconds), 1)}s"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+    if completed.returncode != 0:
+        output = (completed.stderr or completed.stdout or "").strip().splitlines()
+        detail = output[-1].strip() if output else f"exit code {completed.returncode}"
+        return False, detail[:300]
+    return True, (completed.stdout or "OK").strip().splitlines()[-1]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Refresh historical data for actual OPEN portfolio positions")
     parser.add_argument("--config", default="config/pipeline.json")
@@ -74,6 +113,28 @@ def main() -> int:
     if not symbols:
         print("PORTFOLIO HISTORY REFRESH: SKIPPED_NO_OPEN_POSITION")
         return 0
+
+    print(
+        f"PORTFOLIO HISTORY REFRESH: {len(symbols)} OPEN symbol(s) | "
+        f"{','.join(symbols)}",
+        flush=True,
+    )
+
+    runtime_ok, runtime_detail = probe_yahoo_runtime()
+    if not runtime_ok:
+        print(
+            f"[WARNING] Portfolio OHLCV refresh skipped: Yahoo runtime unavailable ({runtime_detail}).",
+            flush=True,
+        )
+        print(
+            "[ACTION] RUN_SDE.bat > Maintenance > Repair Yahoo/YFinance runtime.",
+            flush=True,
+        )
+        print(
+            "[SAFE FALLBACK] Position Management may continue with last valid local OHLCV; stale-data rules remain active.",
+            flush=True,
+        )
+        return YAHOO_RUNTIME_FAILURE_EXIT
 
     symbol_file = resolve("data/state/portfolio/OPEN_PORTFOLIO_SYMBOLS.csv")
     write_symbols(symbol_file, symbols)
@@ -128,11 +189,6 @@ def main() -> int:
     for day in freshness.get("special_trading_days", []) or []:
         command.extend(["--special-trading-day", str(day)])
 
-    print(
-        f"PORTFOLIO HISTORY REFRESH: {len(symbols)} OPEN symbol(s) | "
-        f"{','.join(symbols)}",
-        flush=True,
-    )
     completed = subprocess.run(command, cwd=PROJECT_ROOT)
     if completed.returncode != 0:
         print(
