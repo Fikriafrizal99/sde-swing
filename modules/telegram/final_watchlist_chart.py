@@ -12,18 +12,33 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import pandas as pd
 
+from modules.broker_bridge.broker_raw import broker_raw_trade_date, read_normalized_broker_raw
+
 
 _REQUIRED_OHLCV = ("Date", "Open", "High", "Low", "Close", "Volume")
 IDX_SEPARATOR = "━━━━━━━━━━━━━━━━━━━━"  # exactly 20 characters, no indentation
+_ENGINE_MISSING = {"", "nan", "none", "null", "engine_data_not_available", "data_not_available"}
 
 
 def _number(value: Any) -> float | None:
     try:
-        if value is None or str(value).strip().lower() in {"", "nan", "none", "null", "engine_data_not_available"}:
+        if value is None or str(value).strip().lower() in _ENGINE_MISSING:
             return None
         return float(str(value).replace(",", ""))
     except Exception:
         return None
+
+
+def _is_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, (list, tuple, dict, set)):
+        return len(value) == 0
+    return str(value).strip().lower() in _ENGINE_MISSING
+
+
+def _norm_key(value: Any) -> str:
+    return "".join(char.lower() if char.isalnum() else "_" for char in str(value or "")).strip("_")
 
 
 def idx_tick_size(price: float) -> float:
@@ -62,7 +77,7 @@ def _pick(row: Mapping[str, Any], *keys: str) -> Any:
     lookup = {str(key).strip().lower(): value for key, value in row.items()}
     for key in keys:
         value = lookup.get(key.lower())
-        if value is not None and str(value).strip().lower() not in {"", "nan", "none", "null"}:
+        if value is not None and str(value).strip().lower() not in _ENGINE_MISSING:
             return value
     return None
 
@@ -74,13 +89,159 @@ def _price_label(value: Any) -> str:
     return f"{rounded:,.0f}".replace(",", ".")
 
 
+def _parse_participant_items(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw.startswith("["):
+            try:
+                value = json.loads(raw)
+            except Exception:
+                return []
+        else:
+            return []
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [dict(item) for item in value if isinstance(item, Mapping)]
+
+
+def _raw_broker_side_map(symbol: str, trade_date: str) -> dict[str, dict[str, dict[str, Any]]]:
+    path = Path("data/input/broker/BROKER_RAW_LATEST.csv")
+    if not path.exists() or path.stat().st_size <= 0:
+        return {"BUY": {}, "SELL": {}}
+    try:
+        frame = read_normalized_broker_raw(path)
+    except Exception:
+        return {"BUY": {}, "SELL": {}}
+    if frame.empty:
+        return {"BUY": {}, "SELL": {}}
+    raw_date = broker_raw_trade_date(frame)
+    if trade_date and raw_date and raw_date != trade_date:
+        return {"BUY": {}, "SELL": {}}
+    subset = frame[frame["SYMBOL"].astype(str).str.upper().eq(symbol)].copy()
+    result: dict[str, dict[str, dict[str, Any]]] = {"BUY": {}, "SELL": {}}
+    for _, raw in subset.iterrows():
+        side = str(raw.get("SIDE") or "").upper()
+        broker = str(raw.get("BROKER_CODE") or "").strip().upper()
+        if side not in result or not broker:
+            continue
+        result[side][broker] = {
+            "broker": broker,
+            "value": raw.get("NET_VALUE"),
+            "avg_price": raw.get("AVG_PRICE"),
+            "classification": raw.get("BROKER_TYPE"),
+        }
+    return result
+
+
+def _merge_engine_participants(existing: Any, raw_map: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    items = _parse_participant_items(existing)
+    if not items and raw_map:
+        return [dict(item) for item in list(raw_map.values())[:3]]
+    merged: list[dict[str, Any]] = []
+    for item in items[:3]:
+        current = dict(item)
+        broker = str(current.get("broker") or current.get("code") or current.get("name") or "").strip().upper()
+        source = raw_map.get(broker, {}) if broker else {}
+        if source:
+            if _is_missing(current.get("value")) and not _is_missing(source.get("value")):
+                current["value"] = source.get("value")
+            if _is_missing(current.get("avg_price")) and not _is_missing(source.get("avg_price")):
+                current["avg_price"] = source.get("avg_price")
+            if all(_is_missing(current.get(key)) for key in ("classification", "broker_type", "type", "origin", "foreign_local")):
+                if not _is_missing(source.get("classification")):
+                    current["classification"] = source.get("classification")
+        merged.append(current)
+    return merged
+
+
+def _artifact_value_for_symbol(
+    path: Path,
+    symbol: str,
+    trade_date: str,
+    aliases: tuple[str, ...],
+) -> Any:
+    if not path.exists() or path.stat().st_size <= 0:
+        return None
+    try:
+        frame = pd.read_csv(path, low_memory=False, encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        frame = pd.read_csv(path, low_memory=False, encoding="latin-1")
+    except Exception:
+        return None
+    if frame.empty:
+        return None
+    columns = {_norm_key(col): col for col in frame.columns}
+    symbol_col = next((columns.get(_norm_key(name)) for name in ("symbol", "emiten", "ticker", "code") if columns.get(_norm_key(name))), None)
+    if symbol_col is None:
+        return None
+    rows = frame[frame[symbol_col].astype(str).str.upper().str.replace(".JK", "", regex=False).eq(symbol)]
+    if rows.empty:
+        return None
+
+    date_col = next((columns.get(_norm_key(name)) for name in ("trade_date", "to_date", "broker_data_date", "technical_date") if columns.get(_norm_key(name))), None)
+    if date_col is not None and trade_date:
+        dates = pd.to_datetime(rows[date_col], errors="coerce").dt.date.astype("string")
+        matching = rows[dates.eq(trade_date)]
+        if not matching.empty:
+            rows = matching
+        elif dates.notna().any():
+            return None
+
+    row = rows.iloc[-1]
+    for alias in aliases:
+        col = columns.get(_norm_key(alias))
+        if col is None:
+            continue
+        value = row.get(col)
+        if not _is_missing(value):
+            return value
+    return None
+
+
+def _enrich_final_watchlist_broker_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Fill presentation-only broker fields from already-produced engine artifacts.
+
+    This never recomputes broker metrics.  It only restores fields that were
+    dropped by an older Final Watchlist row/CSV before Telegram rendering.
+    """
+    enriched = dict(row or {})
+    symbol = str(_pick(enriched, "symbol", "Symbol") or "").strip().upper().replace(".JK", "")
+    trade_date = str(_pick(enriched, "analysis_date", "trade_date", "Trade_Date") or "").strip()
+    if not symbol:
+        return enriched
+
+    raw_map = _raw_broker_side_map(symbol, trade_date)
+    enriched["top_buyers"] = _merge_engine_participants(enriched.get("top_buyers"), raw_map.get("BUY", {}))
+    enriched["top_sellers"] = _merge_engine_participants(enriched.get("top_sellers"), raw_map.get("SELL", {}))
+
+    current_distance = _pick(enriched, "distance_to_buy_cost", "distance_to_buyer_avg_pct", "distance_to_buy_cost_pct")
+    if _is_missing(current_distance):
+        aliases = (
+            "DISTANCE_TO_BUY_COST",
+            "DISTANCE_TO_BUY_COST_PCT",
+            "DISTANCE_TO_BUYER_AVG_PCT",
+            "DISTANCE_TO_BUY_AVG_PCT",
+            "JARAK_BUY_AVG",
+        )
+        sources = (
+            Path("data/output/broker_multiday/BROKER_WINDOW_COMPARISON.csv"),
+            Path("data/input/FINAL_DECISION_V2.csv"),
+        )
+        for path in sources:
+            value = _artifact_value_for_symbol(path, symbol, trade_date, aliases)
+            if not _is_missing(value):
+                enriched["distance_to_buy_cost"] = value
+                break
+    return enriched
+
+
 def _install_telegram_idx_price_formatter() -> None:
     """Install FINAL WATCHLIST-only display helpers.
 
-    The engine artifacts stay untouched.  Telegram/card/chart prices are shown
+    The engine artifacts stay untouched. Telegram/card/chart prices are shown
     on executable IDX ticks, participant rows expose the value/average/type
-    already carried by the broker engine, and the historical ``Vs Cost`` label
-    is renamed to the clearer ``Jarak Buy Avg``.
+    already carried by broker artifacts, and historical missing fields are
+    restored from same-date engine outputs before rendering.
     """
     try:
         from modules.telegram import daily_report_ui as daily_ui
@@ -93,7 +254,7 @@ def _install_telegram_idx_price_formatter() -> None:
 
         def _telegram_broker_type(value: Any) -> str:
             text = str(value or "").strip()
-            if not text or text.lower() in {"nan", "none", "null", "engine_data_not_available"}:
+            if not text or text.lower() in _ENGINE_MISSING:
                 return ""
             normalized = text.replace("_", " ").strip().upper()
             aliases = {
@@ -109,27 +270,17 @@ def _install_telegram_idx_price_formatter() -> None:
             return aliases.get(normalized, text.replace("_", " ").title())
 
         def _telegram_broker_participants(value: Any) -> list[str]:
-            if isinstance(value, str):
-                raw = value.strip()
-                if raw.startswith("["):
-                    try:
-                        value = json.loads(raw)
-                    except Exception:
-                        value = []
-                else:
-                    value = []
-            items = list(value or []) if isinstance(value, (list, tuple)) else []
+            items = _parse_participant_items(value)
             lines: list[str] = []
             for index, item in enumerate(items[:3], start=1):
-                if not isinstance(item, Mapping):
-                    continue
                 broker = str(item.get("broker") or item.get("code") or item.get("name") or "").strip().upper()
                 if not broker:
                     continue
                 details: list[str] = []
                 transaction_value = item.get("value") or item.get("net_value") or item.get("amount")
-                if transaction_value not in (None, ""):
-                    money = daily_ui._fw_money(transaction_value)
+                number = _number(transaction_value)
+                if number is not None:
+                    money = daily_ui._fw_money(abs(number))
                     if money and money != "ENGINE_DATA_NOT_AVAILABLE":
                         details.append(money[1:] if money.startswith("+") else money)
                 average = item.get("avg_price") or item.get("average_price") or item.get("avg")
@@ -153,7 +304,8 @@ def _install_telegram_idx_price_formatter() -> None:
         original_formatter = daily_ui.format_watchlist_detail
 
         def _telegram_final_watchlist_formatter(row: Mapping[str, Any]) -> str:
-            text = original_formatter(row)
+            enriched = _enrich_final_watchlist_broker_row(row)
+            text = original_formatter(enriched)
             return text.replace(" | Vs Cost ", " | Jarak Buy Avg ")
 
         daily_ui._fw_price = _telegram_idx_price
