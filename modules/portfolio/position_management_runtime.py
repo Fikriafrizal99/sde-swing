@@ -2,12 +2,10 @@
 """History-aware runtime for actual OPEN portfolio positions.
 
 The stable Position Management decision rules remain in
-``position_management_engine.py``.  This wrapper only enriches its broker input
-with historical Broker Summary context (Current/3D/5D/7D/Since Entry), archives
-the latest summary into the shared Swing DB, and persists an audit snapshot.
-
-Discovery, Broker Fusion, Decision Engine, Exit Engine, and Final Watchlist are
-not invoked or modified here.
+``position_management_engine.py``. This wrapper enriches the portfolio-only
+broker context, applies optional manual initial levels only to blank plan fields,
+and builds a compact presentation report. Discovery, Broker Fusion, Decision
+Engine, Exit Engine, and Final Watchlist are not invoked or modified here.
 """
 from __future__ import annotations
 
@@ -31,6 +29,8 @@ from modules.portfolio.broker_history_context import (
     persist_position_broker_context,
     sync_latest_broker_summary,
 )
+from modules.portfolio.manual_position_plan import apply_manual_plan_to_initial_plan
+from modules.portfolio.portfolio_report_interpreter import PortfolioGroqInterpreter
 
 
 def fmt_money(value: Any) -> str:
@@ -61,11 +61,13 @@ def _fallback_context_from_latest(broker_path: Path, symbol: str, analysis_date:
         "current_score": latest.get("score"),
         "current_confidence": None,
         "current_net_flow": latest.get("net_flow"),
-        "effective_state": state,
-        "effective_reason": "historical Broker Summary belum tersedia; memakai latest broker state",
-        "3D": {"context": "UNAVAILABLE", "observation_count": 0},
-        "5D": {"context": "UNAVAILABLE", "observation_count": 0},
-        "7D": {"context": "UNAVAILABLE", "observation_count": 0},
+        # Latest-only broker evidence is warning-only. It must not change the
+        # deterministic management action without historical confirmation.
+        "effective_state": "UNAVAILABLE" if state == "UNAVAILABLE" else "NEUTRAL",
+        "effective_reason": "historical Broker Summary belum cukup; latest broker state hanya warning",
+        "3D": {"context": "INSUFFICIENT_DATA", "observation_count": 0, "required_observations": 3},
+        "5D": {"context": "INSUFFICIENT_DATA", "observation_count": 0, "required_observations": 5},
+        "7D": {"context": "INSUFFICIENT_DATA", "observation_count": 0, "required_observations": 7},
         "since_entry": {
             "context": "UNAVAILABLE",
             "observation_count": 0,
@@ -76,10 +78,15 @@ def _fallback_context_from_latest(broker_path: Path, symbol: str, analysis_date:
             "sell_days": 0,
             "accumulation_days": 0,
             "distribution_days": 0,
-            "persistence_pct": 0.0,
+            "persistence_pct": None,
         },
         "broker_score_trend": "INSUFFICIENT_DATA",
         "flow_trend": "INSUFFICIENT_DATA",
+        "top_accumulation": [],
+        "top_distribution": [],
+        "current_top_accumulation": [],
+        "current_top_distribution": [],
+        "actor_data_status": "UNAVAILABLE",
     }
 
 
@@ -90,9 +97,9 @@ def _broker_reason(context: dict[str, Any]) -> str:
     d7 = context.get("7D") or {}
     parts = [
         f"Broker history: current={context.get('current_state', 'UNAVAILABLE')}",
-        f"3D={d3.get('context', 'UNAVAILABLE')}",
-        f"5D={d5.get('context', 'UNAVAILABLE')}",
-        f"7D={d7.get('context', 'UNAVAILABLE')}",
+        f"3D={d3.get('context', 'UNAVAILABLE')}({d3.get('observation_count', 0)}/{d3.get('required_observations', 3)})",
+        f"5D={d5.get('context', 'UNAVAILABLE')}({d5.get('observation_count', 0)}/{d5.get('required_observations', 5)})",
+        f"7D={d7.get('context', 'UNAVAILABLE')}({d7.get('observation_count', 0)}/{d7.get('required_observations', 7)})",
         f"since-entry={since.get('context', 'UNAVAILABLE')}",
         f"flow-trend={context.get('flow_trend', 'INSUFFICIENT_DATA')}",
         f"effective={context.get('effective_state', 'UNAVAILABLE')}",
@@ -114,6 +121,9 @@ def analyze_position(
 ) -> dict[str, Any]:
     symbol = base.normalize_symbol(position["symbol"])
     plan = base.get_or_create_initial_plan(conn, position)
+    manual_applied = apply_manual_plan_to_initial_plan(conn, str(position["position_id"]))
+    if manual_applied:
+        plan = manual_applied
     previous = base.previous_state(conn, position["position_id"])
     tech = base.technical_snapshot(historical_dir, symbol, plan["buy_date"])
 
@@ -127,12 +137,9 @@ def analyze_position(
     except Exception as exc:
         broker_context = _fallback_context_from_latest(broker_path, symbol, analysis_date)
         broker_context["effective_reason"] = (
-            f"broker history query gagal ({type(exc).__name__}); memakai latest broker state"
+            f"broker history query gagal ({type(exc).__name__}); latest broker state hanya warning"
         )
 
-    # A standalone Position Management run can precede the normal DB archiver.
-    # If no historical observation is available, the current CSV remains a
-    # safe non-mutating fallback for the management layer only.
     if not int(broker_context.get("observation_count") or 0):
         fallback = _fallback_context_from_latest(broker_path, symbol, analysis_date)
         fallback["buy_date"] = plan["buy_date"]
@@ -160,9 +167,21 @@ def analyze_position(
     current = base.as_float(tech.get("current_price"))
     buy_price = base.as_float(plan.get("buy_price"))
     pnl_pct = ((current / buy_price - 1.0) * 100.0) if current is not None and buy_price else None
+
+    # PROTECT_PROFIT is semantically reserved for an already profitable
+    # pre-target position. The stop logic from the stable engine is preserved;
+    # only the portfolio-facing action label is clarified when P/L <= 0.
+    if (
+        decision.get("action") == "PROTECT_PROFIT"
+        and decision.get("milestone") == "PRE_TARGET"
+        and pnl_pct is not None
+        and pnl_pct <= 0
+    ):
+        decision["action"] = "TIGHTEN_RISK"
+        decision["reason"] = "Risiko meningkat sebelum posisi menghasilkan profit; batas risiko diperketat. " + decision["reason"]
+
     data_date = base.norm_text(tech.get("data_date"))
     data_quality = decision["data_quality_status"]
-
     if data_date and analysis_date and data_date != analysis_date:
         data_quality = "STALE_PRICE_DATA"
         decision["action"] = "REVIEW_DATA"
@@ -179,11 +198,12 @@ def analyze_position(
         and data_quality not in {"STALE_PRICE_DATA", "INVALID_TECHNICAL_DATA"}
     ):
         data_quality = "VALID_WITH_BROKER_WARNING"
-        decision["reason"] += (
-            f" Broker Summary terakhir {broker_data_date}, bukan {analysis_date}."
-        )
+        decision["reason"] += f" Broker Summary terakhir {broker_data_date}, bukan {analysis_date}."
 
     since = broker_context.get("since_entry") or {}
+    d3 = broker_context.get("3D") or {}
+    d5 = broker_context.get("5D") or {}
+    d7 = broker_context.get("7D") or {}
     result = {
         "position_id": position["position_id"],
         "symbol": symbol,
@@ -200,28 +220,35 @@ def analyze_position(
         "linked_signal_id": base.norm_text(plan.get("linked_signal_id")),
         "milestone": decision["milestone"],
         "technical_state": base.norm_text(tech.get("technical_regime"), "UNAVAILABLE"),
-        # broker_state is the effective state consumed by the stable management
-        # rules.  Current and all historical contexts are also exposed below.
         "broker_state": str(broker_context.get("effective_state") or "UNAVAILABLE"),
         "broker_score": broker_context.get("current_score"),
         "broker_current_state": broker_context.get("current_state"),
         "broker_effective_state": broker_context.get("effective_state"),
         "broker_data_date": broker_data_date,
         "broker_observation_count": int(broker_context.get("observation_count") or 0),
-        "broker_context_3d": (broker_context.get("3D") or {}).get("context"),
-        "broker_context_5d": (broker_context.get("5D") or {}).get("context"),
-        "broker_context_7d": (broker_context.get("7D") or {}).get("context"),
+        "broker_context_3d": d3.get("context"),
+        "broker_context_3d_observations": int(d3.get("observation_count") or 0),
+        "broker_context_5d": d5.get("context"),
+        "broker_context_5d_observations": int(d5.get("observation_count") or 0),
+        "broker_context_7d": d7.get("context"),
+        "broker_context_7d_observations": int(d7.get("observation_count") or 0),
         "broker_context_since_entry": since.get("context"),
+        "broker_history_status": since.get("coverage_status"),
         "broker_net_flow_since_entry": since.get("net_flow"),
         "broker_avg_daily_net_flow": since.get("avg_net_flow"),
         "broker_buy_days": int(since.get("buy_days") or 0),
         "broker_sell_days": int(since.get("sell_days") or 0),
         "broker_accumulation_days": int(since.get("accumulation_days") or 0),
         "broker_distribution_days": int(since.get("distribution_days") or 0),
-        "broker_persistence_pct": float(since.get("persistence_pct") or 0.0),
+        "broker_persistence_pct": since.get("persistence_pct"),
         "broker_score_avg": since.get("score_avg"),
         "broker_score_trend": broker_context.get("broker_score_trend"),
         "broker_flow_trend": broker_context.get("flow_trend"),
+        "broker_top_accumulation": broker_context.get("top_accumulation") or [],
+        "broker_top_distribution": broker_context.get("top_distribution") or [],
+        "broker_current_top_accumulation": broker_context.get("current_top_accumulation") or [],
+        "broker_current_top_distribution": broker_context.get("current_top_distribution") or [],
+        "broker_actor_data_status": broker_context.get("actor_data_status"),
         "sector_state": sector_bucket,
         "sector_name": sector_name,
         "market_state": market,
@@ -232,8 +259,6 @@ def analyze_position(
         "data_quality_status": data_quality,
     }
 
-    # Stable management persistence is preserved.  The additional broker
-    # context is stored in its own append-by-date table for auditability.
     base.persist_result(conn, result, previous)
     try:
         persist_position_broker_context(
@@ -247,6 +272,152 @@ def analyze_position(
     return result
 
 
+def _formatted_actors(items: list[dict[str, Any]], limit: int = 2) -> list[dict[str, str]]:
+    output: list[dict[str, str]] = []
+    for item in (items or [])[:limit]:
+        broker = str(item.get("broker") or "").strip().upper()
+        value = base.as_float(item.get("net_value"))
+        if broker and value is not None:
+            output.append({"broker": broker, "value": fmt_money(value)})
+    return output
+
+
+def _actors_sentence(row: dict[str, Any]) -> str:
+    accum = _formatted_actors(row.get("broker_top_accumulation") or [])
+    dist = _formatted_actors(row.get("broker_top_distribution") or [])
+    parts: list[str] = []
+    if accum:
+        parts.append("akumulasi utama " + " dan ".join(f"{x['broker']} {x['value']}" for x in accum))
+    if dist:
+        parts.append("distribusi utama " + " dan ".join(f"{x['broker']} {x['value']}" for x in dist))
+    return "; ".join(parts)
+
+
+def _deterministic_interpretation(row: dict[str, Any]) -> dict[str, str]:
+    observations = int(row.get("broker_observation_count") or 0)
+    current_broker = str(row.get("broker_current_state") or "UNAVAILABLE")
+    actor_text = _actors_sentence(row)
+    if actor_text:
+        broker_sentence = f"Broker sejak entry: {actor_text}."
+    else:
+        broker_sentence = f"Broker hari ini {current_broker}; nominal broker individual belum tersedia di histori."
+
+    if observations < 3:
+        history_sentence = f"Histori broker baru {observations} sesi, jadi sinyal hari ini masih warning dan belum dianggap tren terkonfirmasi."
+    else:
+        history_sentence = (
+            f"Konteks broker efektif {row.get('broker_effective_state') or 'NEUTRAL'}, "
+            f"sementara teknikal {row.get('technical_state') or 'UNAVAILABLE'}, sector {row.get('sector_state') or 'UNAVAILABLE'}, "
+            f"dan market {row.get('market_state') or 'UNAVAILABLE'}."
+        )
+    main_reason = broker_sentence + " " + history_sentence
+
+    plan_missing = not all(row.get(key) is not None for key in ("initial_stop_loss", "initial_tp1", "initial_tp2"))
+    if row.get("data_quality_status") not in {"VALID", "VALID_WITH_BROKER_WARNING"}:
+        main_risk = f"Kualitas data {row.get('data_quality_status')}; jangan mengambil keputusan baru dari data yang belum valid."
+    elif plan_missing:
+        main_risk = "Initial TP/SL belum lengkap; batas risiko/target awal perlu dilengkapi jika posisi berasal dari luar rekomendasi mesin."
+    elif current_broker == "DISTRIBUTION" and observations < 3:
+        main_risk = "Distribusi hari ini belum terkonfirmasi oleh histori 3D, tetapi tetap perlu dipantau."
+    else:
+        main_risk = "Pantau perubahan teknikal, broker terkonfirmasi, dan active stop sebagai batas risiko."
+
+    action = str(row.get("management_action") or "HOLD").upper()
+    notes = {
+        "HOLD_STRONG": "Pertahankan posisi sesuai plan; tidak perlu menambah posisi hanya karena report ini.",
+        "HOLD": "Pertahankan posisi dan pantau konfirmasi berikutnya.",
+        "TIGHTEN_RISK": "Pertahankan posisi dengan batas risiko lebih ketat.",
+        "PROTECT_PROFIT": "Pertahankan posisi sambil mengunci profit dengan active stop.",
+        "HOLD_AFTER_TP1": "Pertahankan sisa posisi setelah TP1 dengan proteksi yang sudah dinaikkan.",
+        "HOLD_AFTER_TP2": "Pertahankan sisa posisi hanya selama continuation tetap valid.",
+        "EXIT": "Prioritaskan keluar dari posisi sesuai aturan management.",
+        "REVIEW_DATA": "Tunggu data valid sebelum mengubah posisi berdasarkan report ini.",
+    }
+    return {
+        "main_reason": main_reason,
+        "main_risk": main_risk,
+        "execution_note": notes.get(action, "Ikuti action Position Management dan batas risiko yang tersedia."),
+    }
+
+
+def _ai_facts(row: dict[str, Any]) -> dict[str, Any]:
+    observations = int(row.get("broker_observation_count") or 0)
+    plan_complete = all(row.get(key) is not None for key in ("initial_stop_loss", "initial_tp1", "initial_tp2"))
+    return {
+        "position_id": str(row.get("position_id") or ""),
+        "analysis_date": str(row.get("analysis_date") or ""),
+        "symbol": str(row.get("symbol") or ""),
+        "buy_price": base.fmt_price(row.get("buy_price")),
+        "current_price": base.fmt_price(row.get("current_price")),
+        "pnl_pct": base.fmt_pct(row.get("pnl_pct")),
+        "management_action": str(row.get("management_action") or ""),
+        "milestone": str(row.get("milestone") or ""),
+        "initial_tp1": base.fmt_price(row.get("initial_tp1")),
+        "initial_tp2": base.fmt_price(row.get("initial_tp2")),
+        "active_stop_loss": base.fmt_price(row.get("active_stop_loss") or row.get("initial_stop_loss")),
+        "extended_target": base.fmt_price(row.get("extended_target")),
+        "technical_state": str(row.get("technical_state") or ""),
+        "sector_state": str(row.get("sector_state") or ""),
+        "market_state": str(row.get("market_state") or ""),
+        "broker_current_state": str(row.get("broker_current_state") or ""),
+        "broker_effective_state": str(row.get("broker_effective_state") or ""),
+        "broker_observation_count": observations,
+        "broker_context_3d": str(row.get("broker_context_3d") or ""),
+        "broker_context_5d": str(row.get("broker_context_5d") or ""),
+        "broker_context_7d": str(row.get("broker_context_7d") or ""),
+        "broker_context_since_entry": str(row.get("broker_context_since_entry") or ""),
+        "broker_net_flow_since_entry": fmt_money(row.get("broker_net_flow_since_entry")),
+        "broker_flow_trend": str(row.get("broker_flow_trend") or ""),
+        "top_accumulation": _formatted_actors(row.get("broker_top_accumulation") or []),
+        "top_distribution": _formatted_actors(row.get("broker_top_distribution") or []),
+        "current_top_accumulation": _formatted_actors(row.get("broker_current_top_accumulation") or []),
+        "current_top_distribution": _formatted_actors(row.get("broker_current_top_distribution") or []),
+        "data_quality_status": str(row.get("data_quality_status") or ""),
+        "initial_plan_status": "COMPLETE" if plan_complete else "INCOMPLETE",
+        "broker_history_note": (
+            f"3D history insufficient {observations}/3; current broker is warning-only"
+            if observations < 3 else "3D history available for confirmation"
+        ),
+    }
+
+
+def apply_report_interpretation(
+    results: list[dict[str, Any]],
+    interpreter: PortfolioGroqInterpreter | None = None,
+) -> list[dict[str, Any]]:
+    for row in results:
+        fallback = _deterministic_interpretation(row)
+        if interpreter is None:
+            row["interpretation_main_reason"] = fallback["main_reason"]
+            row["interpretation_main_risk"] = fallback["main_risk"]
+            row["interpretation_execution_note"] = fallback["execution_note"]
+            row["interpretation_source"] = "DETERMINISTIC"
+            row["interpretation_status"] = "FALLBACK"
+            row["interpretation_warning"] = ""
+            continue
+        interpreted = interpreter.interpret(_ai_facts(row), fallback)
+        row["interpretation_main_reason"] = interpreted.main_reason
+        row["interpretation_main_risk"] = interpreted.main_risk
+        row["interpretation_execution_note"] = interpreted.execution_note
+        row["interpretation_source"] = interpreted.source
+        row["interpretation_status"] = interpreted.status
+        row["interpretation_warning"] = interpreted.warning
+    return results
+
+
+def _action_emoji(action: str) -> str:
+    return {
+        "HOLD_STRONG": "🟢",
+        "HOLD": "🟢",
+        "HOLD_AFTER_TP1": "🟢",
+        "HOLD_AFTER_TP2": "🟢",
+        "TIGHTEN_RISK": "🟡",
+        "PROTECT_PROFIT": "🟠",
+        "EXIT": "🔴",
+        "REVIEW_DATA": "⚪",
+    }.get(str(action or "").upper(), "⚪")
+
+
 def telegram_text(results: list[dict[str, Any]], analysis_date: str) -> str:
     lines = [
         "📊 <b>SDE SWING — ACTIVE PORTFOLIO</b>",
@@ -258,41 +429,29 @@ def telegram_text(results: list[dict[str, Any]], analysis_date: str) -> str:
             lines.extend(["", "━━━━━━━━━━━━━━━━━━━"])
         tp1_mark = " ✅" if base.MILESTONE_RANK.get(row["milestone"], 0) >= 1 and row.get("initial_tp1") else ""
         tp2_mark = " ✅" if base.MILESTONE_RANK.get(row["milestone"], 0) >= 2 and row.get("initial_tp2") else ""
+        action = str(row.get("management_action") or "-").upper()
+        action_label = action.replace("_", " ")
+        active_sl = row.get("active_stop_loss") if row.get("active_stop_loss") is not None else row.get("initial_stop_loss")
         lines.extend([
-            f"📌 <b>{html.escape(row['symbol'])}</b>",
-            f"Buy / Current : {base.fmt_price(row.get('buy_price'))} / {base.fmt_price(row.get('current_price'))}",
-            f"P/L           : {base.fmt_pct(row.get('pnl_pct'))}",
+            f"📌 <b>{html.escape(row['symbol'])}</b> | {base.fmt_price(row.get('current_price'))} | {base.fmt_pct(row.get('pnl_pct'))}",
+            f"{_action_emoji(action)} <b>{html.escape(action_label)}</b>",
             "",
-            "🎯 <b>INITIAL PLAN</b>",
-            f"TP1 : {base.fmt_price(row.get('initial_tp1'))}{tp1_mark}",
-            f"TP2 : {base.fmt_price(row.get('initial_tp2'))}{tp2_mark}",
-            f"SL  : {base.fmt_price(row.get('initial_stop_loss'))}",
-            "",
-            "🏦 <b>BROKER POSITION CONTEXT</b>",
-            f"Today       : {html.escape(str(row.get('broker_current_state') or '-'))}",
-            f"3D          : {html.escape(str(row.get('broker_context_3d') or '-'))}",
-            f"5D          : {html.escape(str(row.get('broker_context_5d') or '-'))}",
-            f"7D          : {html.escape(str(row.get('broker_context_7d') or '-'))}",
-            f"Since Entry : {html.escape(str(row.get('broker_context_since_entry') or '-'))}",
-            f"Effective   : <b>{html.escape(str(row.get('broker_effective_state') or '-'))}</b>",
-            f"Net Since   : {fmt_money(row.get('broker_net_flow_since_entry'))}",
-            f"Buy/Sell Day: {row.get('broker_buy_days', 0)} / {row.get('broker_sell_days', 0)}",
-            f"Persistence : {float(row.get('broker_persistence_pct') or 0.0):.0f}%",
-            f"Flow Trend  : {html.escape(str(row.get('broker_flow_trend') or '-'))}",
-            "",
-            "📈 <b>CURRENT</b>",
-            f"Technical : {html.escape(str(row.get('technical_state') or '-'))}",
-            f"Sector    : {html.escape(str(row.get('sector_state') or '-'))}",
-            f"Market    : {html.escape(str(row.get('market_state') or '-'))}",
-            "",
-            "🛡️ <b>MANAGEMENT</b>",
-            f"Action          : <b>{html.escape(str(row.get('management_action') or '-'))}</b>",
-            f"Active SL       : {base.fmt_price(row.get('active_stop_loss'))}",
-            f"Extended Target : {base.fmt_price(row.get('extended_target'))}",
-            f"Data            : {html.escape(str(row.get('data_quality_status') or '-'))}",
-            "",
-            "🧠 " + html.escape(str(row.get("reason") or "-")),
+            f"🎯 TP1 : {base.fmt_price(row.get('initial_tp1'))}{tp1_mark}",
+            f"🚀 TP2 : {base.fmt_price(row.get('initial_tp2'))}{tp2_mark}",
+            f"🛡️ SL  : {base.fmt_price(active_sl)}",
         ])
+        if row.get("extended_target") is not None:
+            lines.append(f"🎯 Extended : {base.fmt_price(row.get('extended_target'))}")
+        lines.extend([
+            "",
+            "🏦 " + html.escape(str(row.get("interpretation_main_reason") or "-")),
+        ])
+        risk = str(row.get("interpretation_main_risk") or "").strip()
+        if risk:
+            lines.append("⚠️ " + html.escape(risk))
+        note = str(row.get("interpretation_execution_note") or "").strip()
+        if note:
+            lines.append("➡️ " + html.escape(note))
     return "\n".join(lines)
 
 
@@ -351,8 +510,6 @@ def main() -> int:
             else:
                 print("BROKER HISTORY: latest summary unavailable; using existing archive/fallback")
         except Exception as exc:
-            # This is deliberately non-blocking.  The stable management engine
-            # can still use the latest local CSV and the main SDE stays isolated.
             print(
                 f"[WARNING] Broker Summary archive gagal: {type(exc).__name__}: {exc}",
                 file=sys.stderr,
@@ -383,15 +540,23 @@ def main() -> int:
     finally:
         conn.close()
 
+    ai_cfg = ctx.scheduler_config.get("enhanced_reporting", {}).get("ai_interpretation", {})
+    ai_enabled = bool(ai_cfg.get("enabled", True)) and str(ai_cfg.get("provider", "GROQ")).upper() == "GROQ"
+    interpreter = PortfolioGroqInterpreter(
+        enabled=ai_enabled,
+        model=str(ai_cfg.get("model") or "llama-3.3-70b-versatile"),
+        max_portfolio_calls=min(max(len(results), 1), 20),
+    )
+    apply_report_interpretation(results, interpreter)
+
     message = telegram_text(results, analysis_date)
     outputs = base.write_outputs(output_root, analysis_date, results, message)
     print(f"POSITION MANAGEMENT: {len(results)} OPEN position(s) analyzed")
     for row in results:
         print(
-            f"  {row['symbol']}: {row['management_action']} | "
-            f"P/L={base.fmt_pct(row['pnl_pct'])} | broker={row['broker_effective_state']} | "
-            f"3D={row['broker_context_3d']} | 5D={row['broker_context_5d']} | "
-            f"since={row['broker_context_since_entry']}"
+            f"  {row['symbol']}: {row['management_action']} | P/L={base.fmt_pct(row['pnl_pct'])} | "
+            f"broker={row['broker_effective_state']} | obs={row['broker_observation_count']} | "
+            f"AI={row.get('interpretation_source', 'DETERMINISTIC')}"
         )
     print(f"Output: {outputs['json']}")
 
@@ -400,7 +565,7 @@ def main() -> int:
             report_type="POSITION_MANAGEMENT",
             filename="active_portfolio_management.txt",
             text=message,
-            topic="position_management",
+            topic="report",
             signal_status="ACTIVE_PORTFOLIO",
             signal_version=analysis_date,
             input_paths=(str(db_path), str(historical_dir), str(broker_path)),
@@ -409,6 +574,7 @@ def main() -> int:
                 "shared_technical_features",
                 "broker_summary_latest",
                 "broker_summary_history",
+                "position_broker_context_history",
             ),
             row_count=len(results),
         )
@@ -417,7 +583,7 @@ def main() -> int:
         if failed:
             print(f"Telegram delivery failed: {failed}", file=sys.stderr)
             return 50
-        print("Telegram: processed")
+        print("Telegram: processed -> topic report")
     return 0
 
 
