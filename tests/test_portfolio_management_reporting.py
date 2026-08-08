@@ -154,8 +154,8 @@ def test_manual_position_management_forces_resend_but_auto_full_daily_keeps_dedu
     assert 'set "FORCE_ARG=--force"' in source
     assert 'if "%NON_BLOCKING%"=="1" set "FORCE_ARG="' in source
     assert '--telegram !FORCE_ARG!' in source
-    assert 'MANUAL FORCE RESEND ke topic report' in source
-    assert 'AUTO DEDUPE ke topic report' in source
+    assert 'MANUAL FORCE RESEND ke topic Report' in source
+    assert 'AUTO DEDUPE ke topic Report' in source
 
 
 def test_main_engines_are_not_imported_by_portfolio_report_runtime():
