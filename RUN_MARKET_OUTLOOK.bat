@@ -39,8 +39,8 @@ for /f "delims=" %%D in ('%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py 2^>
 if not defined RESEND_DATE goto RESEND_DATE_FAILED
 
 echo.
-echo Mengirim ulang Market Outlook trade date !RESEND_DATE! tanpa menjalankan engine...
-%SDE_PYTHON_CMD% -u tools\resend_daily_report.py --job market_outlook --trade-date !RESEND_DATE!
+echo Mengirim ulang Market Outlook trade date %RESEND_DATE% tanpa menjalankan engine...
+%SDE_PYTHON_CMD% -u tools\resend_daily_report.py --job market_outlook --trade-date %RESEND_DATE%
 set "RC=!ERRORLEVEL!"
 goto STATUS
 
