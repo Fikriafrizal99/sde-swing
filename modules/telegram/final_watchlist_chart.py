@@ -18,6 +18,7 @@ from modules.broker_bridge.broker_raw import broker_raw_trade_date, read_normali
 _REQUIRED_OHLCV = ("Date", "Open", "High", "Low", "Close", "Volume")
 IDX_SEPARATOR = "━━━━━━━━━━━━━━━━━━━━"  # exactly 20 characters, no indentation
 _ENGINE_MISSING = {"", "nan", "none", "null", "engine_data_not_available", "data_not_available"}
+_FINAL_WATCHLIST_CAPTION_LIMIT = 1024
 
 
 def _number(value: Any) -> float | None:
@@ -87,6 +88,59 @@ def _price_label(value: Any) -> str:
     if rounded is None:
         return "ENGINE_DATA_NOT_AVAILABLE"
     return f"{rounded:,.0f}".replace(",", ".")
+
+
+def compact_final_watchlist_caption(text: Any, limit: int = _FINAL_WATCHLIST_CAPTION_LIMIT) -> str:
+    """Keep a chart + FINAL WATCHLIST card inside one Telegram photo message.
+
+    Telegram photo captions are capped at 1024 characters.  The formatter first
+    removes presentation-only whitespace and abbreviates verbose labels while
+    preserving all engine facts.  Only if a pathological Reason still exceeds
+    the limit is the Reason tail shortened.  No second Telegram message is
+    created for FINAL WATCHLIST details.
+    """
+    compact = str(text or "").strip()
+    if len(compact) <= limit:
+        return compact
+
+    while "\n\n" in compact:
+        compact = compact.replace("\n\n", "\n")
+
+    replacements = (
+        ("ENGINE DATA NOT AVAILABLE", "N/A"),
+        ("ENGINE_DATA_NOT_AVAILABLE", "N/A"),
+        ("INSUFFICIENT DATA", "INSUFFICIENT"),
+        ("Confidence", "Conf."),
+        ("Concentration", "Conc."),
+        ("Persistence", "Persist."),
+        ("Fibonacci", "Fib"),
+        ("<b>Reason:</b>\n", "<b>Reason:</b> "),
+        ("Reason:\n", "Reason: "),
+    )
+    for old, new in replacements:
+        compact = compact.replace(old, new)
+    if len(compact) <= limit:
+        return compact
+
+    # Bold tags are cosmetic. Removing them is preferable to splitting one
+    # stock card into two separate Telegram messages.
+    compact = compact.replace("<b>", "").replace("</b>", "")
+    if len(compact) <= limit:
+        return compact
+
+    marker = "Reason:"
+    marker_pos = compact.rfind(marker)
+    if marker_pos >= 0:
+        head = compact[: marker_pos + len(marker)].rstrip()
+        reason = compact[marker_pos + len(marker):].strip()
+        room = limit - len(head) - 2
+        if room > 1:
+            shortened = reason[:room].rstrip(" ;,.")
+            if len(shortened) < len(reason):
+                shortened = shortened.rstrip() + "…"
+            return f"{head} {shortened}"[:limit]
+
+    return compact[: limit - 1].rstrip() + "…"
 
 
 def _parse_participant_items(value: Any) -> list[dict[str, Any]]:
@@ -306,7 +360,8 @@ def _install_telegram_idx_price_formatter() -> None:
         def _telegram_final_watchlist_formatter(row: Mapping[str, Any]) -> str:
             enriched = _enrich_final_watchlist_broker_row(row)
             text = original_formatter(enriched)
-            return text.replace(" | Vs Cost ", " | Jarak Buy Avg ")
+            text = text.replace(" | Vs Cost ", " | Jarak Buy Avg ")
+            return compact_final_watchlist_caption(text)
 
         daily_ui._fw_price = _telegram_idx_price
         daily_ui._fw_participants = _telegram_broker_participants
