@@ -24,7 +24,14 @@ class TelegramRoute:
 
 
 class TelegramRouter:
-    SIGNAL_TYPES = {"final_watchlist", "final_decision", "signal", "signal_detail"}
+    SIGNAL_TYPES = {
+        "final_watchlist",
+        "final_watchlist_detail",
+        "final_watchlist_csv",
+        "final_decision",
+        "signal",
+        "signal_detail",
+    }
     SYSTEM_TYPES = {"system", "data_warning", "startup", "source_health", "config_error", "dependency_failure"}
 
     def __init__(self, config: Mapping[str, Any] | None = None, environ: Mapping[str, str] | None = None) -> None:
