@@ -12,6 +12,7 @@ from modules.job_runner.reports import ReportPayload
 from modules.telegram.daily_report_ui import format_watchlist_detail
 from modules.telegram.final_watchlist_chart import (
     IDX_SEPARATOR,
+    _enrich_final_watchlist_broker_row,
     generate_final_watchlist_chart,
     idx_tick_size,
     round_idx_price,
@@ -120,6 +121,47 @@ def test_idx_tick_rounding_for_final_watchlist_display():
     assert "💰 Buy Cost 3.800" in text
     assert "Jarak Buy Avg +0.74%" in text
     assert "🟢 Support 3.370 | 🔴 Resistance 3.980" in text
+
+
+def test_historical_row_restores_broker_value_type_and_distance_from_engine_artifacts(tmp_path: Path, monkeypatch):
+    broker_input = tmp_path / "data" / "input" / "broker"
+    broker_input.mkdir(parents=True)
+    broker_multiday = tmp_path / "data" / "output" / "broker_multiday"
+    broker_multiday.mkdir(parents=True)
+
+    pd.DataFrame([
+        {
+            "SYMBOL": "TINS", "FROM_DATE": "2026-08-07", "TO_DATE": "2026-08-07",
+            "SIDE": "BUY", "RANK": 1, "BROKER_CODE": "AK", "BROKER_TYPE": "ASING",
+            "NET_VALUE": 20_440_000_000, "AVG_PRICE": 3877.20,
+        },
+        {
+            "SYMBOL": "TINS", "FROM_DATE": "2026-08-07", "TO_DATE": "2026-08-07",
+            "SIDE": "SELL", "RANK": 1, "BROKER_CODE": "LG", "BROKER_TYPE": "PEMERINTAH",
+            "NET_VALUE": -16_140_000_000, "AVG_PRICE": 3866.12,
+        },
+    ]).to_csv(broker_input / "BROKER_RAW_LATEST.csv", index=False)
+    pd.DataFrame([{
+        "Symbol": "TINS",
+        "Trade_Date": "2026-08-07",
+        "distance_to_buy_cost_pct": -0.55,
+    }]).to_csv(broker_multiday / "BROKER_WINDOW_COMPARISON.csv", index=False)
+
+    monkeypatch.chdir(tmp_path)
+    row = {
+        "symbol": "TINS",
+        "trade_date": "2026-08-07",
+        "top_buyers": [{"broker": "AK", "avg_price": 3877.20}],
+        "top_sellers": [{"broker": "LG", "avg_price": 3866.12}],
+        "distance_to_buy_cost": "ENGINE_DATA_NOT_AVAILABLE",
+    }
+    enriched = _enrich_final_watchlist_broker_row(row)
+
+    assert enriched["top_buyers"][0]["value"] == 20_440_000_000
+    assert enriched["top_buyers"][0]["classification"] == "ASING"
+    assert enriched["top_sellers"][0]["value"] == -16_140_000_000
+    assert enriched["top_sellers"][0]["classification"] == "PEMERINTAH"
+    assert float(enriched["distance_to_buy_cost"]) == -0.55
 
 
 def test_final_watchlist_separator_is_exactly_twenty_chars_without_indent():
