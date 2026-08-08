@@ -26,12 +26,9 @@ if not defined TRADE_DATE (
   exit /b 1
 )
 
-set "TELEGRAM_ARG=--telegram"
 %SDE_PYTHON_CMD% -u tools\check_telegram_report_route.py
 set "ROUTE_RC=!ERRORLEVEL!"
 if not "!ROUTE_RC!"=="0" (
-  set "TELEGRAM_ARG=--no-telegram"
-  set "FORCE_ARG="
   echo [WARNING] Portfolio Management tetap dianalisis, tetapi Telegram dilewati agar tidak masuk topic yang salah.
 )
 
@@ -60,7 +57,11 @@ if not "!REFRESH_RC!"=="0" (
 
 echo.
 echo [2/2] Jalankan Position Management...
-%SDE_PYTHON_CMD% -u modules\portfolio\position_management_runtime.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date "!TRADE_DATE!" !TELEGRAM_ARG! !FORCE_ARG!
+if "!ROUTE_RC!"=="0" (
+  %SDE_PYTHON_CMD% -u modules\portfolio\position_management_runtime.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date "!TRADE_DATE!" --telegram !FORCE_ARG!
+) else (
+  %SDE_PYTHON_CMD% -u modules\portfolio\position_management_runtime.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date "!TRADE_DATE!" --no-telegram
+)
 set "RC=!ERRORLEVEL!"
 if "!ROUTE_RC!"=="0" %SDE_PYTHON_CMD% -u modules\portfolio\portfolio_delivery_status.py
 
