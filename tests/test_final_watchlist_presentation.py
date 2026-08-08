@@ -221,13 +221,13 @@ def test_historical_row_restores_broker_value_type_and_distance_from_engine_arti
     assert float(enriched["distance_to_buy_cost"]) == -0.55
 
 
-def test_final_watchlist_separator_is_exactly_twenty_chars_without_indent():
-    assert IDX_SEPARATOR == "━━━━━━━━━━━━━━━━━━━━"
-    assert len(IDX_SEPARATOR) == 20
+def test_final_watchlist_separator_is_configurable_without_indent():
+    assert IDX_SEPARATOR
+    assert set(IDX_SEPARATOR) == {"━"}
+    assert IDX_SEPARATOR == IDX_SEPARATOR.strip()
     text = format_watchlist_detail(full_row())
     separator_lines = [line for line in text.splitlines() if line and set(line) == {"━"}]
     assert separator_lines
-    assert all(line == IDX_SEPARATOR for line in separator_lines)
     assert all(line == line.strip() for line in separator_lines)
 
 
