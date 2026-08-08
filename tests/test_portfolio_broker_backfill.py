@@ -27,11 +27,17 @@ def _summary_row(symbol: str, day: str) -> dict:
         "TOTAL_SELL": 50.0,
         "NET_FLOW": 100.0,
         "TOP_BUYER_1": "YP",
+        "TOP_BUYER_1_VALUE": 80.0,
         "TOP_BUYER_2": "CC",
+        "TOP_BUYER_2_VALUE": 40.0,
         "TOP_BUYER_3": "XL",
+        "TOP_BUYER_3_VALUE": 30.0,
         "TOP_SELLER_1": "AK",
+        "TOP_SELLER_1_VALUE": -25.0,
         "TOP_SELLER_2": "PD",
+        "TOP_SELLER_2_VALUE": -15.0,
         "TOP_SELLER_3": "NI",
+        "TOP_SELLER_3_VALUE": -10.0,
         "BUYER_CONCENTRATION": 0.70,
         "SELLER_CONCENTRATION": 0.30,
         "BROKER_ACCDIST": "BIG ACC",
@@ -70,7 +76,7 @@ def test_prepare_open_position_creates_one_task_per_trading_day_and_skips_weeken
         tasks, meta = build_tasks(
             conn,
             symbol="TINS",
-            to_date="2026-08-08",  # Saturday: should not become a task.
+            to_date="2026-08-08",
             calendar_path=ROOT / "config/trading_calendar.json",
         )
     finally:
@@ -133,6 +139,31 @@ def test_prepare_skips_dates_already_present_in_shared_broker_database(tmp_path)
     assert meta["skipped_existing"] == 1
 
 
+def test_force_prepare_can_refresh_existing_dates_for_actor_nominals(tmp_path):
+    db = tmp_path / "history.db"
+    archive_root = tmp_path / "archive"
+    conn = connect(db)
+    try:
+        _insert_open_position(conn, "TINS", "2026-08-03")
+        archive_backfill(
+            conn,
+            pd.DataFrame([_summary_row("TINS", "2026-08-03")]),
+            source_path=tmp_path / "seed.csv",
+            archive_root=archive_root,
+        )
+        tasks, meta = build_tasks(
+            conn,
+            symbol="TINS",
+            to_date="2026-08-03",
+            calendar_path=ROOT / "config/trading_calendar.json",
+            force=True,
+        )
+    finally:
+        conn.close()
+    assert [row["TO_DATE"] for row in tasks] == ["2026-08-03"]
+    assert meta["force"] is True
+
+
 def test_import_rejects_cumulative_range_instead_of_faking_daily_history():
     row = _summary_row("TINS", "2026-08-07")
     row["FROM_DATE"] = "2026-08-03"
@@ -140,7 +171,7 @@ def test_import_rejects_cumulative_range_instead_of_faking_daily_history():
         validate_backfill_dataframe(pd.DataFrame([row]))
 
 
-def test_import_groups_multi_date_export_into_separate_canonical_snapshots(tmp_path):
+def test_import_groups_multi_date_export_into_separate_canonical_snapshots_and_keeps_actor_values(tmp_path):
     db = tmp_path / "history.db"
     archive_root = tmp_path / "archive"
     source = tmp_path / "BROKER_PORTFOLIO_BACKFILL_SUMMARY_2026-08-07.csv"
@@ -166,7 +197,7 @@ def test_import_groups_multi_date_export_into_separate_canonical_snapshots(tmp_p
         ).fetchall()
         summary_rows = conn.execute(
             """
-            SELECT s.broker_date, b.symbol
+            SELECT s.broker_date, b.symbol, b.row_json
             FROM broker_summary b
             JOIN broker_snapshots s ON s.broker_snapshot_id=b.broker_snapshot_id
             ORDER BY s.broker_date, b.symbol
@@ -180,11 +211,13 @@ def test_import_groups_multi_date_export_into_separate_canonical_snapshots(tmp_p
         ("2026-08-06", "VALID_BACKFILL_DAILY"),
         ("2026-08-07", "VALID_BACKFILL_DAILY"),
     ]
-    assert summary_rows == [
+    assert [(row[0], row[1]) for row in summary_rows] == [
         ("2026-08-06", "ABCD"),
         ("2026-08-06", "TINS"),
         ("2026-08-07", "TINS"),
     ]
+    assert '"TOP_BUYER_1_VALUE": 80.0' in summary_rows[0][2]
+    assert '"TOP_SELLER_1_VALUE": -25.0' in summary_rows[0][2]
 
 
 def test_normal_final_watchlist_broker_scanner_ignores_backfill_exports(tmp_path):
@@ -198,13 +231,14 @@ def test_normal_final_watchlist_broker_scanner_ignores_backfill_exports(tmp_path
     assert backfill not in scanned
 
 
-def test_backfill_tampermonkey_uses_dedicated_namespace_and_output_prefix():
-    source = (ROOT / "tampermonkey/Stockbit_Broker_Portfolio_Backfill_v1.user.js").read_text(
+def test_backfill_tampermonkey_v2_uses_dedicated_namespace_and_exports_actor_values():
+    source = (ROOT / "tampermonkey/Stockbit_Broker_Portfolio_Backfill_v2.user.js").read_text(
         encoding="utf-8"
     )
-    assert "sde_broker_portfolio_backfill_v1_db" in source
+    assert "sde_broker_portfolio_backfill_v2_db" in source
     assert "BROKER_PORTFOLIO_BACKFILL_SUMMARY_" in source
-    assert "FROM_DATE harus sama dengan TO_DATE" in source
+    assert "TOP_BUYER_1_VALUE" in source
+    assert "TOP_SELLER_1_VALUE" in source
     assert "BROKER_SUMMARY_COMBINED_" not in source
 
 
