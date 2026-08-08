@@ -3,9 +3,14 @@ from __future__ import annotations
 """Broker-history context for actual OPEN portfolio positions.
 
 This module is intentionally read/append-only from the perspective of the
-trading engines.  It reuses the canonical Broker Summary archive in
+trading engines. It reuses the canonical Broker Summary archive in
 ``sde_swing_history.db`` and never changes Candidate, Broker Fusion, Decision,
 or Final Watchlist outputs.
+
+Portfolio history uses one latest observation per broker date. Fixed windows
+(3D/5D/7D) are only considered valid when the required number of observations
+exists. A current broker signal with fewer than three observations is therefore
+kept as a warning and cannot by itself drive Position Management.
 """
 
 import json
@@ -79,6 +84,16 @@ def _as_float(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _payload_get(payload: dict[str, Any], key: str) -> Any:
+    if key in payload:
+        return payload.get(key)
+    wanted = _norm(key)
+    for current, value in payload.items():
+        if _norm(current) == wanted:
+            return value
+    return None
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     """Ensure both canonical Swing DB tables and portfolio broker context exist."""
     init_schema(conn)
@@ -90,7 +105,7 @@ def sync_latest_broker_summary(conn: sqlite3.Connection, broker_path: Path) -> s
     """Archive the current Broker Summary into the shared Swing history DB.
 
     This is idempotent because ``archive_broker`` keys a snapshot by broker date
-    and file hash.  A later normal pipeline archive of the same file therefore
+    and file hash. A later normal pipeline archive of the same file therefore
     upserts the same snapshot instead of duplicating it.
     """
     if not broker_path.exists() or broker_path.stat().st_size == 0:
@@ -204,8 +219,7 @@ def _trend(values: list[float | None], *, relative: bool = False) -> str:
     return "STABLE"
 
 
-def summarize_window(records: list[dict[str, Any]], size: int | None = None) -> dict[str, Any]:
-    subset = records[-size:] if size else list(records)
+def _summary_metrics(subset: list[dict[str, Any]]) -> dict[str, Any]:
     if not subset:
         return {
             "context": "UNAVAILABLE",
@@ -220,7 +234,7 @@ def summarize_window(records: list[dict[str, Any]], size: int | None = None) -> 
             "accumulation_days": 0,
             "distribution_days": 0,
             "neutral_days": 0,
-            "persistence_pct": 0.0,
+            "persistence_pct": None,
         }
 
     direction_avg = _mean([item.get("direction_score") for item in subset]) or 0.0
@@ -229,7 +243,10 @@ def summarize_window(records: list[dict[str, Any]], size: int | None = None) -> 
     accumulation_days = states.count("ACCUMULATION")
     distribution_days = states.count("DISTRIBUTION")
     neutral_days = len(states) - accumulation_days - distribution_days
-    persistence = max(accumulation_days, distribution_days) / len(subset) * 100.0
+    persistence = (
+        max(accumulation_days, distribution_days) / len(subset) * 100.0
+        if len(subset) >= 3 else None
+    )
     return {
         "context": _context_from_direction_score(direction_avg),
         "observation_count": len(subset),
@@ -249,40 +266,98 @@ def summarize_window(records: list[dict[str, Any]], size: int | None = None) -> 
     }
 
 
-def _effective_state(current: str, d3: dict[str, Any], d5: dict[str, Any], since: dict[str, Any]) -> tuple[str, str]:
-    """Convert current + history into one state consumed by Position Management.
+def summarize_window(records: list[dict[str, Any]], size: int | None = None) -> dict[str, Any]:
+    subset = records[-size:] if size else list(records)
+    summary = _summary_metrics(subset)
+    if size is not None:
+        summary["required_observations"] = size
+        if len(subset) < size:
+            summary["context"] = "INSUFFICIENT_DATA"
+            summary["coverage_status"] = "INSUFFICIENT_DATA"
+            return summary
+        summary["coverage_status"] = "COMPLETE"
+    else:
+        summary["coverage_status"] = "PARTIAL_HISTORY" if len(subset) < 3 else "AVAILABLE"
+    return summary
 
-    Current broker direction remains the timing signal.  History only prevents
-    one contradictory day from being treated as a full regime reversal, or
-    promotes a neutral day when both short/medium history agree strongly.
+
+def _actor_totals(records: list[dict[str, Any]], limit: int = 3) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Aggregate top-broker nominal values exported by portfolio backfill.
+
+    Older Broker Summary snapshots do not contain ``TOP_*_VALUE`` fields. They
+    are simply ignored; no amount is estimated or fabricated.
+    """
+    totals: dict[str, float] = {}
+    for record in records:
+        payload = dict(record.get("payload") or {})
+        for rank in range(1, 4):
+            buy_code = str(_payload_get(payload, f"TOP_BUYER_{rank}") or "").strip().upper()
+            buy_value = _as_float(_payload_get(payload, f"TOP_BUYER_{rank}_VALUE"))
+            if buy_code and buy_value is not None:
+                totals[buy_code] = totals.get(buy_code, 0.0) + abs(buy_value)
+
+            sell_code = str(_payload_get(payload, f"TOP_SELLER_{rank}") or "").strip().upper()
+            sell_value = _as_float(_payload_get(payload, f"TOP_SELLER_{rank}_VALUE"))
+            if sell_code and sell_value is not None:
+                totals[sell_code] = totals.get(sell_code, 0.0) - abs(sell_value)
+
+    accumulation = [
+        {"broker": broker, "net_value": value}
+        for broker, value in sorted(totals.items(), key=lambda item: item[1], reverse=True)
+        if value > 0
+    ][:limit]
+    distribution = [
+        {"broker": broker, "net_value": value}
+        for broker, value in sorted(totals.items(), key=lambda item: item[1])
+        if value < 0
+    ][:limit]
+    return accumulation, distribution
+
+
+def _effective_state(
+    current: str,
+    d3: dict[str, Any],
+    d5: dict[str, Any],
+    since: dict[str, Any],
+) -> tuple[str, str]:
+    """Return the broker state consumed by Position Management.
+
+    A current single-session direction is evidence, not confirmation. Until a
+    complete 3D window exists it remains warning-only and effective state is
+    neutral. This prevents one backfilled/current observation from immediately
+    changing HOLD/EXIT management.
     """
     current = str(current or "UNAVAILABLE").upper()
     c3 = str(d3.get("context") or "UNAVAILABLE").upper()
     c5 = str(d5.get("context") or "UNAVAILABLE").upper()
     cs = str(since.get("context") or "UNAVAILABLE").upper()
     n3 = int(d3.get("observation_count") or 0)
-    n5 = int(d5.get("observation_count") or 0)
     ns = int(since.get("observation_count") or 0)
 
+    if current == "UNAVAILABLE":
+        return "UNAVAILABLE", "current broker data unavailable"
+    if n3 < 3:
+        return "NEUTRAL", f"current {current.lower()} is warning-only; 3D history insufficient ({n3}/3)"
+
     if current == "DISTRIBUTION":
-        if n3 >= 2 and c3 == "DISTRIBUTION":
-            return "DISTRIBUTION", "current distribution confirmed by recent broker history"
-        if n5 >= 3 and c5 == "DISTRIBUTION" and cs != "ACCUMULATION":
-            return "DISTRIBUTION", "distribution confirmed by 5D broker history"
-        if ns >= 3 and (c5 == "ACCUMULATION" or cs == "ACCUMULATION"):
-            return "NEUTRAL", "single-day distribution conflicts with accumulated broker history"
-        return "DISTRIBUTION", "current distribution has insufficient history to de-escalate"
+        if c3 == "DISTRIBUTION":
+            return "DISTRIBUTION", "current distribution confirmed by complete 3D broker history"
+        if ns >= 5 and (c5 == "ACCUMULATION" or cs == "ACCUMULATION"):
+            return "NEUTRAL", "current distribution conflicts with accumulated broker history"
+        return "NEUTRAL", "current distribution is not confirmed by 3D broker history"
 
     if current == "ACCUMULATION":
-        if n3 >= 2 and n5 >= 3 and c3 == c5 == "DISTRIBUTION":
-            return "NEUTRAL", "current accumulation conflicts with persistent recent distribution"
-        return "ACCUMULATION", "current accumulation is not contradicted by broker history"
+        if c3 == "ACCUMULATION":
+            return "ACCUMULATION", "current accumulation confirmed by complete 3D broker history"
+        if ns >= 5 and (c5 == "DISTRIBUTION" or cs == "DISTRIBUTION"):
+            return "NEUTRAL", "current accumulation conflicts with persistent broker history"
+        return "NEUTRAL", "current accumulation is not confirmed by 3D broker history"
 
-    if n3 >= 2 and n5 >= 3 and c3 == c5 == "ACCUMULATION":
-        return "ACCUMULATION", "neutral current day supported by 3D/5D accumulation"
-    if n3 >= 2 and n5 >= 3 and c3 == c5 == "DISTRIBUTION":
-        return "DISTRIBUTION", "neutral current day supported by 3D/5D distribution"
-    return "NEUTRAL", "broker history is mixed or insufficient"
+    if c3 == "ACCUMULATION" and (c5 in {"ACCUMULATION", "INSUFFICIENT_DATA"}):
+        return "ACCUMULATION", "neutral current day supported by complete 3D accumulation"
+    if c3 == "DISTRIBUTION" and (c5 in {"DISTRIBUTION", "INSUFFICIENT_DATA"}):
+        return "DISTRIBUTION", "neutral current day supported by complete 3D distribution"
+    return "NEUTRAL", "broker history is mixed"
 
 
 def build_position_broker_context(
@@ -300,8 +375,10 @@ def build_position_broker_context(
     current_record = records[-1] if records else {}
     current_state = str(current_record.get("state") or "UNAVAILABLE").upper()
     effective_state, effective_reason = _effective_state(current_state, d3, d5, since)
+    top_accumulation, top_distribution = _actor_totals(records)
+    current_accumulation, current_distribution = _actor_totals(records[-1:])
 
-    context = {
+    return {
         "symbol": symbol,
         "buy_date": buy_date,
         "analysis_date": analysis_date,
@@ -319,8 +396,12 @@ def build_position_broker_context(
         "since_entry": since,
         "broker_score_trend": _trend([item.get("score") for item in records]),
         "flow_trend": _trend([item.get("net_flow") for item in records], relative=True),
+        "top_accumulation": top_accumulation,
+        "top_distribution": top_distribution,
+        "current_top_accumulation": current_accumulation,
+        "current_top_distribution": current_distribution,
+        "actor_data_status": "AVAILABLE" if (top_accumulation or top_distribution) else "UNAVAILABLE",
     }
-    return context
 
 
 def persist_position_broker_context(
@@ -333,6 +414,7 @@ def persist_position_broker_context(
     timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
     since = context.get("since_entry") or {}
     context_id = f"{position_id}:{context.get('analysis_date', '')}"
+    persistence = since.get("persistence_pct")
     values = (
         context_id,
         position_id,
@@ -352,7 +434,7 @@ def persist_position_broker_context(
         int(since.get("sell_days") or 0),
         int(since.get("accumulation_days") or 0),
         int(since.get("distribution_days") or 0),
-        float(since.get("persistence_pct") or 0.0),
+        float(persistence) if persistence is not None else None,
         since.get("score_avg"),
         context.get("broker_score_trend"),
         context.get("flow_trend"),
