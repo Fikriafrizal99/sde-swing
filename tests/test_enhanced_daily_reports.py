@@ -181,23 +181,42 @@ def test_market_outlook_matches_restored_sections(tmp_path: Path) -> None:
         "global_sentiment": {
             "sentiment_state": "RISK_ON",
             "positive_instruments": ["sp500"],
-            "negative_instruments": [],
+            "negative_instruments": ["dow"],
             "neutral_instruments": [],
             "missing_instruments": [],
         },
-        "global_instruments": [{
-            "display_name": "S&P 500",
-            "close": 7437.63,
-            "change_pct": 1.66,
-            "freshness_status": "VALID",
-        }],
+        "global_instruments": [
+            {
+                "display_name": "S&P 500",
+                "close": 7437.63,
+                "change_pct": 1.66,
+                "freshness_status": "VALID",
+            },
+            {
+                "display_name": "Dow Jones",
+                "close": 53885.10,
+                "change_pct": -0.85,
+                "freshness_status": "VALID",
+            },
+        ],
     })
-    assert "🌅 SDE SWING — MARKET OUTLOOK" in artifact.text
-    assert "🌍 GLOBAL MARKET" in artifact.text
-    assert "🔄 ROTASI SEKTOR" in artifact.text
-    assert "🧭 RENCANA BESOK" in artifact.text
-    assert "⚠️ RISIKO UTAMA" in artifact.text
-    assert "Sentimen global digunakan sebagai konteks" in artifact.text
+    text = artifact.text
+    assert "<b>🌅 SDE SWING — MARKET OUTLOOK</b>" in text
+    assert "<b>📊 MARKET CONDITION</b>" in text
+    assert "<b>🌍 GLOBAL MARKET</b>" in text
+    assert "<b>🔄 SECTOR ROTATION</b>" in text
+    assert "<b>🎯 TRADING PLAN</b>" in text
+    assert "<b>📌 SDE BIAS BESOK</b>" in text
+    assert "<b>Prioritas:</b>" in text
+    assert "<b>⚠️ Hindari:</b>" in text
+    assert "<pre>" in text and "</pre>" in text
+    assert "Regime    : BULLISH MODERATE" in text
+    assert "Execution : SELECTIVE" in text
+    assert "🟢 +1,66%" in text
+    assert "🔴 -0,85%" in text
+    assert "Rp7.438" not in text
+    assert "ZAPI ENRICHMENT" not in text
+    assert "Sentimen global adalah konteks Market Outlook" in text
 
 
 def test_post_market_matches_agreed_sections_and_counts(tmp_path: Path) -> None:
