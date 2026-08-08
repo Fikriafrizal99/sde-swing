@@ -12,7 +12,7 @@ echo ================================================================
 echo.
 echo [1] Normal - broker break jika data hari ini belum tersedia
 echo [2] Preview - tidak kirim Telegram
-echo [3] Kirim ulang - pakai artifact hari trading terakhir + force resend
+echo [3] Kirim ulang - delivery-only hasil hari trading terakhir
 echo [4] Cek status Final Watchlist
 echo [0] Kembali
 echo.
@@ -31,6 +31,7 @@ if "%MODE%"=="4" (
   goto MENU
 )
 set "ARGS="
+set "RESEND_ONLY=0"
 if "%MODE%"=="1" set "ARGS=--job final_watchlist --interactive-broker"
 if "%MODE%"=="2" set "ARGS=--job final_watchlist --dry-run --force"
 if "%MODE%"=="3" (
@@ -42,11 +43,15 @@ if "%MODE%"=="3" (
     goto MENU
   )
   echo.
-  echo Mengirim ulang Final Watchlist dari artifact trade date !RESEND_DATE!...
-  set "ARGS=--job final_watchlist --preview-existing --force --trade-date !RESEND_DATE!"
+  echo Mengirim ulang hasil Final Watchlist trade date !RESEND_DATE! tanpa menjalankan engine...
+  set "RESEND_ONLY=1"
 )
-if not defined ARGS goto MENU
-%SDE_PYTHON_CMD% run_sde_job.py %ARGS%
+if "%RESEND_ONLY%"=="1" (
+  %SDE_PYTHON_CMD% tools\resend_final_watchlist.py --trade-date !RESEND_DATE!
+) else (
+  if not defined ARGS goto MENU
+  %SDE_PYTHON_CMD% run_sde_job.py %ARGS%
+)
 set "RC=%ERRORLEVEL%"
 echo.
 %SDE_PYTHON_CMD% tools\print_job_status.py --job final_watchlist
