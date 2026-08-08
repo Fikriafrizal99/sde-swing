@@ -5,6 +5,7 @@ from pathlib import Path
 
 from modules.portfolio import refresh_open_positions as refresh
 from modules.telegram.router import TelegramRouter
+from tools import check_telegram_report_route as route_checker
 from tools.check_telegram_report_route import effective_thread
 
 
@@ -59,6 +60,61 @@ def test_report_checker_exposes_conflict_after_symbolic_ui_falls_back_to_schedul
     assert market_thread == "9"
     assert post_thread == "9"
     assert report_thread in {market_thread, post_thread}
+
+
+def test_live_topic_validation_accepts_only_telegram_confirmed_thread(monkeypatch) -> None:
+    class Response:
+        ok = True
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict:
+            return {"ok": True, "result": True}
+
+    captured: dict = {}
+
+    def fake_post(url, data, timeout):
+        captured.update({"url": url, "data": data, "timeout": timeout})
+        return Response()
+
+    monkeypatch.setattr(route_checker.requests, "post", fake_post)
+    ok, detail = route_checker.validate_live_topic("secret-token", "-100123", "107")
+
+    assert ok is True
+    assert detail == "VALID"
+    assert captured["data"]["chat_id"] == "-100123"
+    assert captured["data"]["message_thread_id"] == "107"
+    assert captured["data"]["action"] == "typing"
+    assert "secret-token" in captured["url"]
+
+
+def test_live_topic_validation_rejects_message_thread_not_found(monkeypatch) -> None:
+    class Response:
+        ok = False
+        status_code = 400
+
+        @staticmethod
+        def json() -> dict:
+            return {
+                "ok": False,
+                "error_code": 400,
+                "description": "Bad Request: message thread not found",
+            }
+
+    monkeypatch.setattr(route_checker.requests, "post", lambda *args, **kwargs: Response())
+    ok, detail = route_checker.validate_live_topic("secret-token", "-100123", "107")
+
+    assert ok is False
+    assert detail == "Bad Request: message thread not found"
+
+
+def test_topic_configuration_validates_before_setx() -> None:
+    source = (ROOT / "maintenance/CONFIGURE_TELEGRAM_TOPICS.bat").read_text(encoding="utf-8-sig")
+    validate_pos = source.index("tools\\check_telegram_report_route.py")
+    save_pos = source.index("setx TELEGRAM_THREAD_REPORT_ID")
+
+    assert validate_pos < save_pos
+    assert "TIDAK disimpan karena tidak lolos live validation" in source
 
 
 def test_yahoo_runtime_probe_times_out_instead_of_hanging(monkeypatch) -> None:
