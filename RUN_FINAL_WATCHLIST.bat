@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul
 cd /d "%~dp0"
 title SDE Swing - Final Watchlist
@@ -12,7 +12,7 @@ echo ================================================================
 echo.
 echo [1] Normal - broker break jika data hari ini belum tersedia
 echo [2] Preview - tidak kirim Telegram
-echo [3] Kirim ulang - broker break bila perlu + force resend
+echo [3] Kirim ulang - pakai hari trading terakhir + force resend
 echo [4] Cek status Final Watchlist
 echo [0] Kembali
 echo.
@@ -33,7 +33,18 @@ if "%MODE%"=="4" (
 set "ARGS="
 if "%MODE%"=="1" set "ARGS=--job final_watchlist --interactive-broker"
 if "%MODE%"=="2" set "ARGS=--job final_watchlist --dry-run --force"
-if "%MODE%"=="3" set "ARGS=--job final_watchlist --interactive-broker --force"
+if "%MODE%"=="3" (
+  set "RESEND_DATE="
+  for /f "usebackq delims=" %%D in (`%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py`) do set "RESEND_DATE=%%D"
+  if not defined RESEND_DATE (
+    echo Gagal menentukan hari trading terakhir.
+    pause
+    goto MENU
+  )
+  echo.
+  echo Mengirim ulang Final Watchlist untuk trade date !RESEND_DATE!...
+  set "ARGS=--job final_watchlist --interactive-broker --force --trade-date !RESEND_DATE!"
+)
 if not defined ARGS goto MENU
 %SDE_PYTHON_CMD% run_sde_job.py %ARGS%
 set "RC=%ERRORLEVEL%"
