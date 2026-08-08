@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Export Candidate Selector symbols into a Tampermonkey-compatible CSV bridge."""
+"""Export Candidate Selector symbols into a Tampermonkey-compatible CSV bridge.
+
+OPEN actual portfolio symbols are appended to the broker bridge so Position
+Management can receive broker context even when a held stock is no longer in
+the current Top Candidate list.  Candidate source files are never modified.
+"""
 from __future__ import annotations
 
 import argparse
@@ -7,6 +12,7 @@ import csv
 import json
 import os
 import re
+import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +32,7 @@ PRIORITY_FILENAMES = (
     "WATCHLIST.csv",
     "FINAL_DECISION_RANKING.csv",
 )
+DEFAULT_PORTFOLIO_DB = PROJECT_ROOT / "data/database/sde_swing_history.db"
 
 
 def normalize_header(value: object) -> str:
@@ -63,6 +70,53 @@ def read_symbols(path: Path) -> list[str]:
         return symbols
 
 
+def read_open_portfolio_symbols(path: Path) -> list[str]:
+    """Read actual OPEN positions without creating or mutating the database."""
+    if not path.exists() or path.stat().st_size == 0:
+        return []
+    uri = f"file:{path.resolve().as_posix()}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True, timeout=5)
+    except sqlite3.Error:
+        return []
+    try:
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='portfolio_positions'"
+        ).fetchone()
+        if not table:
+            return []
+        rows = conn.execute(
+            "SELECT symbol FROM portfolio_positions WHERE UPPER(current_status)='OPEN' ORDER BY buy_date, symbol"
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        symbol = normalize_symbol(row[0] if row else "")
+        if not symbol or symbol in EXCLUDED or symbol in seen:
+            continue
+        seen.add(symbol)
+        symbols.append(symbol)
+    return symbols
+
+
+def merge_symbols(candidate_symbols: list[str], portfolio_symbols: list[str]) -> list[str]:
+    """Preserve candidate priority and append only missing OPEN positions."""
+    merged: list[str] = []
+    seen: set[str] = set()
+    for symbol in [*candidate_symbols, *portfolio_symbols]:
+        normalized = normalize_symbol(symbol)
+        if not normalized or normalized in EXCLUDED or normalized in seen:
+            continue
+        seen.add(normalized)
+        merged.append(normalized)
+    return merged
+
+
 def candidate_files(folder: Path, output: Path) -> list[Path]:
     files = [p for p in folder.glob("*.csv") if p.resolve() != output.resolve() and p.stat().st_size > 0]
     priority = {name.lower(): index for index, name in enumerate(PRIORITY_FILENAMES)}
@@ -91,8 +145,6 @@ def choose_source(source: Path, output: Path) -> tuple[Path, list[str]]:
 
     detail = ", ".join(inspected) if inspected else "tidak ada CSV"
     raise ValueError(f"Tidak menemukan CSV kandidat berisi simbol di {source} ({detail}).")
-
-
 
 
 def write_symbol_csv(path: Path, symbols: list[str]) -> None:
@@ -130,20 +182,37 @@ def main() -> None:
     parser.add_argument("--sort", action="store_true", help="Urutkan simbol secara alfabetis")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--manifest-dir", default=None)
+    parser.add_argument(
+        "--portfolio-db",
+        type=Path,
+        default=DEFAULT_PORTFOLIO_DB,
+        help="SQLite actual portfolio; OPEN symbols are appended to the broker bridge",
+    )
+    parser.add_argument(
+        "--exclude-portfolio",
+        action="store_true",
+        help="Compatibility/debug option: export candidate symbols only",
+    )
     args = parser.parse_args()
     args.run_id = args.run_id or make_run_id()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    source_file, symbols = choose_source(args.source, args.output)
+    source_file, candidate_symbols = choose_source(args.source, args.output)
+    portfolio_symbols = [] if args.exclude_portfolio else read_open_portfolio_symbols(args.portfolio_db)
+    symbols = merge_symbols(candidate_symbols, portfolio_symbols)
     if args.sort:
         symbols = sorted(symbols)
 
     actual_output, write_warning = export_symbols(args.output, symbols, args.run_id)
 
     print(f"OK: {len(symbols)} simbol -> {actual_output}")
+    print(f"SOURCE CANDIDATE: {source_file}")
+    print(
+        f"PORTFOLIO OPEN: {len(portfolio_symbols)} simbol "
+        f"({len(symbols) - len(candidate_symbols)} tambahan unik)"
+    )
     if write_warning:
         print(f"WARNING: {write_warning}")
-    print(f"SOURCE: {source_file}")
     manifest = {
         "Run_ID": args.run_id,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -152,6 +221,10 @@ def main() -> None:
         "requested_output": str(args.output.resolve()),
         "output": str(actual_output.resolve()),
         "output_hash": file_sha256(actual_output),
+        "candidate_symbol_count": len(candidate_symbols),
+        "portfolio_open_symbol_count": len(portfolio_symbols),
+        "portfolio_open_symbols": portfolio_symbols,
+        "portfolio_db": str(args.portfolio_db.resolve()) if args.portfolio_db else "",
         "symbol_count": len(symbols),
         "unique_symbol_count": len(set(symbols)),
         "symbols": symbols,
