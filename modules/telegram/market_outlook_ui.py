@@ -277,23 +277,23 @@ def format_market_outlook(data: dict[str, Any]) -> str:
         condition_rows.append(_metric_line("📊", "Breadth", breadth))
 
     if condition_rows:
-        lines += [SEPARATOR, "", "<b>📊 MARKET CONDITION</b>"]
+        lines += ["", SEPARATOR, "<b>📊 MARKET CONDITION</b>"]
         for row in condition_rows:
-            lines += ["", row]
+            lines.append(row)
         reason = _human_reason(data.get("ihsg_reason") or data.get("reason"))
         if reason:
-            lines += ["", escape(reason)]
+            lines.append(escape(reason))
 
     global_rows = _global_rows(instruments)
     if global_rows:
-        lines += ["", SEPARATOR, "", "<b>🌍 GLOBAL MARKET</b>"]
+        lines += ["", SEPARATOR, "<b>🌍 GLOBAL MARKET</b>"]
         for row in global_rows:
-            lines += ["", row]
+            lines.append(row)
         interpretation = str(data.get("global_interpretation") or "").strip()
         if not interpretation:
             interpretation = _global_interpretation(tone or "NEUTRAL", regime)
         if interpretation:
-            lines += ["", "<b>📌 INTERPRETASI</b>", "", escape(interpretation)]
+            lines += ["<b>📌 INTERPRETASI</b>", escape(interpretation)]
 
     sector_groups = [
         ("🔥 LEADING", data.get("leading", [])),
@@ -304,19 +304,19 @@ def format_market_outlook(data: dict[str, Any]) -> str:
     available_groups = [(title, _clean_items(values, 4)) for title, values in sector_groups]
     available_groups = [(title, values) for title, values in available_groups if values]
     if available_groups:
-        lines += ["", SEPARATOR, "", "<b>🔄 ROTASI SEKTOR</b>"]
+        lines += ["", SEPARATOR, "<b>🔄 ROTASI SEKTOR</b>"]
         for title, values in available_groups:
-            lines += ["", f"<b>{escape(title)}</b>", ""]
+            lines += [f"<b>{escape(title)}</b>"]
             lines.extend(f"• {escape(item)}" for item in values)
 
     lines += [
         "",
         SEPARATOR,
-        "",
+        # compact output
         "<b>🎯 TRADING PLAN</b>",
-        "",
+        # compact output
         "<b>Prioritas:</b>",
-        "",
+        # compact output
         "• Cari setup dari sektor <b>LEADING / ROTATING IN</b>.",
         "• Technical Quality dan Entry Readiness harus kuat.",
         "• Utamakan broker accumulation / confirmation.",
@@ -324,7 +324,7 @@ def format_market_outlook(data: dict[str, Any]) -> str:
         "• Entry hanya di area yang sudah ditentukan.",
         "",
         "<b>⚠️ Hindari:</b>",
-        "",
+        # compact output
         "• Chase harga.",
         "• Setup dengan RR buruk.",
         "• Broker distribution kuat.",
@@ -332,9 +332,9 @@ def format_market_outlook(data: dict[str, Any]) -> str:
     ]
 
     if regime or execution:
-        lines += ["", SEPARATOR, "", "<b>📌 SDE BIAS BESOK</b>", ""]
+        lines += ["", SEPARATOR, "<b>📌 SDE BIAS BESOK</b>"]
         bias_head, bias_line_1, bias_line_2 = _bias_lines(regime, execution)
-        lines += [f"<b>{escape(bias_head)}</b>", "", escape(bias_line_1), escape(bias_line_2)]
+        lines += [f"<b>{escape(bias_head)}</b>", escape(bias_line_1), escape(bias_line_2)]
 
     data_status = _upper(data.get("global_market_status"))
     coverage_text = _smart_pct(coverage, ratio_aware=True)
@@ -349,7 +349,7 @@ def format_market_outlook(data: dict[str, Any]) -> str:
     if status_rows:
         lines += ["", "<b>📡 DATA STATUS</b>"]
         for row in status_rows:
-            lines += ["", row]
+            lines.append(row)
 
     lines += [
         "",

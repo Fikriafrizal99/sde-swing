@@ -186,6 +186,15 @@ def _post_status_rows(data: Mapping[str, Any]) -> list[str]:
     return rows
 
 
+def _join_compact(lines: list[str]) -> str:
+    result: list[str] = []
+    for line in lines:
+        if line == "" and (not result or result[-1] == ""):
+            continue
+        result.append(line)
+    return "\n".join(result).strip()
+
+
 def format_post_market(data: dict[str, Any]) -> str:
     status = _upper(data.get("process_status"))
     lines = ["<b>🌆 SDE SWING — POST MARKET</b>"]
@@ -199,20 +208,20 @@ def format_post_market(data: dict[str, Any]) -> str:
         lines.append(f"🕒 Proses selesai: {escape(finished_time)} WIB")
 
     if status:
-        lines += ["", SEPARATOR, "", "<b>✅ PROCESS STATUS</b>", ""]
+        lines += ["", SEPARATOR, "<b>✅ PROCESS STATUS</b>"]
         lines.append(_metric_line(_status_icon(status), "Status", status))
 
         issue_total, issue_notes = _issue_counts(data)
         if issue_total > 0:
-            lines += ["", _metric_line("⚠️", "Warning", f"{issue_total} data bermasalah")]
-            lines += ["", escape(" dan ".join(issue_notes) + ".")]
+            lines.append(_metric_line("⚠️", "Warning", f"{issue_total} data bermasalah"))
+            lines.append(escape(" dan ".join(issue_notes) + "."))
 
         impact = _upper(data.get("data_impact"))
         if impact:
             if issue_total > 0:
                 lines.append(f"Dampaknya terhadap hasil keseluruhan <b>{escape(impact)}</b>.")
             else:
-                lines += ["", f"Impact proses: <b>{escape(impact)}</b>."]
+                lines.append(f"Impact proses: <b>{escape(impact)}</b>.")
 
     quality_rows: list[str] = []
     if _present(data.get("symbols_requested")):
@@ -237,43 +246,40 @@ def format_post_market(data: dict[str, Any]) -> str:
         quality_rows.append(_metric_line("🎯", "Impact", impact))
 
     if quality_rows:
-        lines += ["", SEPARATOR, "", "<b>📦 DATA QUALITY</b>"]
+        lines += ["", SEPARATOR, "<b>📦 DATA QUALITY</b>"]
         for row in quality_rows:
-            lines += ["", row]
+            lines.append(row)
         if coverage and impact == "TIDAK MATERIAL":
-            lines += ["", "Coverage tetap memadai sehingga data teknikal masih layak digunakan untuk proses berikutnya."]
+            lines.append("Coverage tetap memadai sehingga data teknikal masih layak digunakan untuk proses berikutnya.")
 
     pipeline_rows = _pipeline_rows(data)
     if pipeline_rows:
-        lines += ["", SEPARATOR, "", "<b>🔎 PIPELINE READINESS</b>"]
+        lines += ["", SEPARATOR, "<b>🔎 PIPELINE READINESS</b>"]
         for row in pipeline_rows:
-            lines += ["", row]
+            lines.append(row)
 
     screening_rows = _screening_rows(data)
-    lines += ["", SEPARATOR, "", "<b>📊 SCREENING RESULT</b>"]
+    lines += ["", SEPARATOR, "<b>📊 SCREENING RESULT</b>"]
     if screening_rows:
         for row in screening_rows:
-            lines += ["", row]
+            lines.append(row)
     else:
-        lines += ["", "Belum tersedia dari artifact keputusan.", "", "Klasifikasi final akan ditentukan oleh <b>Final Watchlist</b>."]
+        lines += ["Belum tersedia dari artifact keputusan.", "Klasifikasi final akan ditentukan oleh <b>Final Watchlist</b>."]
 
     source_rows = _source_rows(data)
     if source_rows:
-        lines += ["", SEPARATOR, "", "<b>📡 SOURCE STATUS</b>"]
+        lines += ["", SEPARATOR, "<b>📡 SOURCE STATUS</b>"]
         for row in source_rows:
-            lines += ["", row]
+            lines.append(row)
         source_note = data.get("degraded_reason") or data.get("zapi_note")
         if _present(source_note):
-            lines += ["", escape(str(source_note).strip())]
+            lines.append(escape(str(source_note).strip()))
 
     lines += [
         "",
         SEPARATOR,
-        "",
         "<b>🎯 NEXT PROCESS</b>",
-        "",
         "Final Watchlist akan menentukan:",
-        "",
         "• saham prioritas;",
         "• status keputusan dan kesiapan eksekusi;",
         "• area entry dan trigger;",
@@ -284,19 +290,19 @@ def format_post_market(data: dict[str, Any]) -> str:
 
     status_rows = _post_status_rows(data)
     if status_rows:
-        lines += ["", SEPARATOR, "", "<b>📌 POST MARKET STATUS</b>"]
+        lines += ["", SEPARATOR, "<b>📌 POST MARKET STATUS</b>"]
         for row in status_rows:
-            lines += ["", row]
+            lines.append(row)
 
         final_status = _upper(data.get("final_watchlist_status"))
         candidate_status = _upper(data.get("candidate_status"))
         broker_status = _upper(data.get("broker_status") or data.get("stockbit_status"))
         if final_status and "READY" in final_status and "NOT READY" not in final_status:
-            lines += ["", "➡️ <b>Final Watchlist siap dilanjutkan.</b>"]
+            lines.append("➡️ <b>Final Watchlist siap dilanjutkan.</b>")
         elif any(token in f"{candidate_status} {broker_status} {final_status}" for token in ("WAITING", "EMPTY", "NOT READY")):
-            lines += ["", "➡️ Sistem menunggu dependency yang dibutuhkan sebelum Final Watchlist."]
+            lines.append("➡️ Sistem menunggu dependency yang dibutuhkan sebelum Final Watchlist.")
 
     if _present(data.get("run_id")):
         lines += ["", f"<b>Run ID:</b> <code>{escape(str(data['run_id']))}</code>"]
 
-    return "\n".join(line for line in lines if line is not None).strip()
+    return _join_compact(lines)
