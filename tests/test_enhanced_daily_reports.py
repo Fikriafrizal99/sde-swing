@@ -141,7 +141,8 @@ def test_final_watchlist_uses_agreed_format_and_exports_active_rows(tmp_path: Pa
     assert "S1 | BREAKOUT RETEST" in text
     assert "💰 Current 103 | Entry 100–105" in text
     assert "🛑 SL 95 | 🎯 TP1 115 | 🚀 TP2 120" in text
-    assert "AK @ 103" in text
+    assert "1. AK — Rp1,00 miliar | Avg Rp103 | Lokal" in text
+    assert "Jarak Buy Avg +0.98%" in text
     assert "Yahoo: VALID" not in text
     assert "ZAPI IDX:" not in text
 
