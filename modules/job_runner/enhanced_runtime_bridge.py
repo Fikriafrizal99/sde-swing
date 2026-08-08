@@ -457,6 +457,85 @@ def _entry_plan_map(ctx: RunnerContext) -> tuple[dict[str, dict[str, Any]], pd.D
     return result, frame, path
 
 
+def _final_watchlist_multiday_map(ctx: RunnerContext) -> dict[str, dict[str, Any]]:
+    """Read the primary broker window for presentation without changing decisions.
+
+    Final Decision remains the sole decision owner.  This map only makes the
+    Telegram broker card internally consistent: classification, flow, session
+    counts, concentration and cost all come from the same primary window.
+    Missing historical multi-day artifacts simply return an empty map so a
+    delivery-only resend can still use its stored decision/entry artifacts.
+    """
+    output_dir = ctx.path("broker_multiday_output_dir", "data/output/broker_multiday")
+    window_path = output_dir / "BROKER_WINDOW_COMPARISON.csv"
+    summary_path = output_dir / "BROKER_MULTIDAY_SUMMARY.csv"
+    detail_path = output_dir / "BROKER_MULTIDAY_DETAIL.csv"
+    if not window_path.exists() or not summary_path.exists():
+        return {}
+    try:
+        windows = pd.read_csv(window_path, low_memory=False)
+        summaries = pd.read_csv(summary_path, low_memory=False)
+        details = pd.read_csv(detail_path, low_memory=False) if detail_path.exists() else pd.DataFrame()
+    except Exception:
+        return {}
+
+    summary_map = {
+        _symbol(_value(row, "Symbol", "EMITEN", "Ticker")): row
+        for row in summaries.to_dict(orient="records")
+        if _symbol(_value(row, "Symbol", "EMITEN", "Ticker"))
+    }
+    detail_map = {
+        _symbol(_value(row, "Symbol", "EMITEN", "Ticker")): row
+        for row in details.to_dict(orient="records")
+        if _symbol(_value(row, "Symbol", "EMITEN", "Ticker"))
+    }
+    result: dict[str, dict[str, Any]] = {}
+    placeholders = {"", "UNKNOWN", "NO_DATA", "NO DATA", "INSUFFICIENT_DATA", "INSUFFICIENT DATA"}
+    for row in windows.to_dict(orient="records"):
+        symbol = _symbol(_value(row, "Symbol", "EMITEN", "Ticker"))
+        if not symbol:
+            continue
+        primary = str(_value(row, "Primary_Window", default="5D") or "5D").upper()
+        window = str(_value(row, "Window", default="")).upper()
+        if window != primary:
+            continue
+        summary = summary_map.get(symbol, {})
+        detail = detail_map.get(symbol, {})
+        classification = str(_value(row, "Classification", default=_value(summary, "Context", default="INSUFFICIENT_DATA"))).upper()
+        available = int(round(_float(_value(row, "available_sessions", "Available_Sessions", default=0), 0.0)))
+        positive_ratio = _float(_value(row, "positive_day_ratio", "Positive_Day_Ratio", default=0), 0.0)
+        negative_ratio = _float(_value(row, "negative_day_ratio", "Negative_Day_Ratio", default=0), 0.0)
+        net_flow = _float(_value(row, "cumulative_net_value", "Cumulative_Net_Value", default=0), 0.0)
+        pattern = str(_value(detail, "Divergence_Label", default="")).upper()
+        if pattern in placeholders:
+            pattern = classification
+        if classification in placeholders:
+            persistence = "INSUFFICIENT_DATA"
+        else:
+            persistence_alias = "Buyer_Rotation_Status" if net_flow >= 0 else "Seller_Rotation_Status"
+            persistence = str(_value(detail, persistence_alias, default="")).upper()
+            if persistence in placeholders:
+                persistence = classification
+        result[symbol] = {
+            "primary_window": primary,
+            "broker_status": classification,
+            # The summary Confidence is 0-100; the signed classification Score
+            # is intentionally not displayed as a /100 score.
+            "broker_score": _value(summary, "Confidence", "Broker_MultiDay_Confidence", default=""),
+            "broker_net_flow": _value(row, "cumulative_net_value", "Cumulative_Net_Value", default=""),
+            "buy_days": int(round(positive_ratio * available)),
+            "sell_days": int(round(negative_ratio * available)),
+            "buyer_concentration": _value(row, "buyer_concentration", "Buyer_Concentration", default=""),
+            "seller_concentration": _value(row, "seller_concentration", "Seller_Concentration", default=""),
+            "broker_pattern": pattern,
+            "bandar_buy_cost": _value(row, "weighted_broker_buy_cost", "Weighted_Broker_Buy_Cost", default=""),
+            "distance_to_buy_cost": _value(row, "distance_to_buy_cost_pct", "Distance_To_Buy_Cost_Pct", default=""),
+            "multi_day_flow": classification,
+            "flow_persistence": persistence,
+        }
+    return result
+
+
 def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None = None) -> list[ReportPayload]:
     decisions_path = ctx.path("decision_output_dir", "data/output/decision") / "FINAL_DECISION_V3.csv"
     decisions = read_required_csv(decisions_path, "final_watchlist_decision")
@@ -484,6 +563,7 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
     if coverage is not None and 0 <= coverage <= 1:
         coverage *= 100
     zapi_summary, zapi_rows, zapi_inputs = _zapi_lineage(ctx)
+    multiday_map = _final_watchlist_multiday_map(ctx)
     rows: list[dict[str, Any]] = []
     for index, raw in enumerate(decisions.to_dict(orient="records"), start=1):
         symbol = _symbol(_value(raw, "Symbol", "EMITEN", "Ticker"))
@@ -499,6 +579,19 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             # watchlist item.
             continue
         plan = plans.get(symbol, {})
+        multiday = multiday_map.get(symbol, {})
+        technical_state = _value(
+            raw,
+            "Technical_Confirmation",
+            "Technical_Regime",
+            default=_value(
+                plan,
+                "Plan_Status",
+                "Execution_Status",
+                default=_value(raw, "Technical_State", "Technical_Grade", default=""),
+            ),
+        )
+        broker_fallback = _value(raw, "Broker_Confirmation", "Broker_Direction_Final", default="")
         rows.append({
             "trade_date": ctx.trade_date.isoformat(),
             "rank": _value(raw, "Rank_V3", "Rank", default=index),
@@ -507,7 +600,9 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             "risk_flags": _value(raw, "Risk_Flags", default=",".join(zapi.get("risk_flags") or [])),
             "exchange_status": exchange_status,
             "exchange_veto": exchange_veto,
-            "confidence": _value(raw, "Confidence", "Final_Score_V3", "Final_Score", default=""),
+            # Final_Score_V3 is the canonical decision-engine confidence.  The
+            # generic Confidence column is retained only as legacy lineage.
+            "confidence": _value(raw, "Final_Score_V3", "Final_Score", "Confidence", default=""),
             "setup": _value(raw, "Setup_Type", "Setup_Label", default=""),
             "entry_low": _value(plan, "Entry_Zone_Low", "Entry_Low", "Entry_Min", default=""),
             "entry_high": _value(plan, "Entry_Zone_High", "Entry_High", "Entry_Max", default=""),
@@ -527,9 +622,20 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
                 default="",
             ),
             "technical_score": _value(raw, "Technical_Score_Final", "Technical_Score", default=""),
-            "technical_state": _value(raw, "Technical_State", "Technical_Confirmation", "Technical_Grade", "Technical_Regime", default=""),
-            "broker_score": _value(raw, "Broker_Score", "Broker_Confidence_Final", default=""),
-            "broker_state": _value(raw, "Broker_Confirmation", "Broker_Direction_Final", default=""),
+            "technical_state": technical_state,
+            "broker_score": multiday.get("broker_score") or _value(raw, "Broker_Score", "Broker_Confidence_Final", default=""),
+            "broker_state": multiday.get("broker_status") or broker_fallback,
+            "broker_status": multiday.get("broker_status") or broker_fallback or "MISSING",
+            "broker_net_flow": multiday.get("broker_net_flow", ""),
+            "buy_days": multiday.get("buy_days", ""),
+            "sell_days": multiday.get("sell_days", ""),
+            "buyer_concentration": multiday.get("buyer_concentration", ""),
+            "seller_concentration": multiday.get("seller_concentration", ""),
+            "broker_pattern": multiday.get("broker_pattern", ""),
+            "bandar_buy_cost": multiday.get("bandar_buy_cost", ""),
+            "distance_to_buy_cost": multiday.get("distance_to_buy_cost", ""),
+            "multi_day_flow": multiday.get("multi_day_flow", ""),
+            "flow_persistence": multiday.get("flow_persistence", ""),
             "sector_state": _value(raw, "Sector_State", "Sector_Rotation_State", default=""),
             "market_regime": _value(raw, "Market_Regime", default=""),
             "main_reason": _value(raw, "Main_Reason", "Decision_Reason", "Decision_Reasons", "Reason", default=""),
@@ -543,7 +649,6 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             "zapi_status": zapi.get("status") or zapi_summary.get("status") or "ZAPI_LINEAGE_MISSING",
             "reconciliation_status": zapi.get("status") or zapi_summary.get("status") or "ZAPI_LINEAGE_MISSING",
             "zapi_freshness_days": zapi.get("freshness_days"),
-            "broker_status": "AVAILABLE" if _value(raw, "Broker_Confirmation", "Broker_Direction_Final", default="") else "MISSING",
         })
     data = {
         "trade_date": ctx.trade_date.isoformat(),
@@ -564,10 +669,19 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
         "zapi_degraded": zapi_summary.get("degraded", False),
     }
     artifacts = _builder(ctx).build_final_watchlist(data)
+    lineage_inputs = [decisions_path, entry_path, decision_manifest_path, *zapi_inputs]
+    multiday_dir = ctx.path("broker_multiday_output_dir", "data/output/broker_multiday")
+    for candidate in (
+        multiday_dir / "BROKER_WINDOW_COMPARISON.csv",
+        multiday_dir / "BROKER_MULTIDAY_SUMMARY.csv",
+        multiday_dir / "BROKER_MULTIDAY_DETAIL.csv",
+    ):
+        if candidate.exists():
+            lineage_inputs.append(candidate)
     return [_artifact_payload(_artifact_with_lineage(
         artifact,
-        input_paths=[decisions_path, entry_path, decision_manifest_path, *zapi_inputs],
-        source_of_truth=[decisions_path, entry_path, decision_manifest_path, *zapi_inputs],
+        input_paths=lineage_inputs,
+        source_of_truth=lineage_inputs,
         row_count=len(rows),
         validation_details=validation,
     )) for artifact in artifacts]
