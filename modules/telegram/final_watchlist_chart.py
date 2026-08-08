@@ -16,7 +16,7 @@ from modules.broker_bridge.broker_raw import broker_raw_trade_date, read_normali
 
 
 _REQUIRED_OHLCV = ("Date", "Open", "High", "Low", "Close", "Volume")
-IDX_SEPARATOR = "━━━━━━━━━━━━━━━━━━━━"  # exactly 20 characters, no indentation
+IDX_SEPARATOR = "━━━━━━━━━━━━━━━━━━━"
 _ENGINE_MISSING = {"", "nan", "none", "null", "engine_data_not_available", "data_not_available"}
 _FINAL_WATCHLIST_CAPTION_LIMIT = 1024
 
