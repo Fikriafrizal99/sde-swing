@@ -28,6 +28,12 @@ def _payload(symbol: str, direction: str) -> dict:
             "BROKER_ACCDIST": "BIG ACC",
             "AVG_ACCDIST": "BIG ACC",
             "TOP3_ACCDIST": "BIG ACC",
+            "TOP_BUYER_1": "YP",
+            "TOP_BUYER_1_VALUE": 70.0,
+            "TOP_BUYER_2": "CC",
+            "TOP_BUYER_2_VALUE": 30.0,
+            "TOP_SELLER_1": "LG",
+            "TOP_SELLER_1_VALUE": -20.0,
         }
     if direction == "DISTRIBUTION":
         return {
@@ -42,6 +48,12 @@ def _payload(symbol: str, direction: str) -> dict:
             "BROKER_ACCDIST": "BIG DIST",
             "AVG_ACCDIST": "BIG DIST",
             "TOP3_ACCDIST": "BIG DIST",
+            "TOP_BUYER_1": "CC",
+            "TOP_BUYER_1_VALUE": 20.0,
+            "TOP_SELLER_1": "LG",
+            "TOP_SELLER_1_VALUE": -80.0,
+            "TOP_SELLER_2": "AK",
+            "TOP_SELLER_2_VALUE": -40.0,
         }
     return {
         "EMITEN": symbol,
@@ -55,6 +67,10 @@ def _payload(symbol: str, direction: str) -> dict:
         "BROKER_ACCDIST": "NEUTRAL",
         "AVG_ACCDIST": "NEUTRAL",
         "TOP3_ACCDIST": "NEUTRAL",
+        "TOP_BUYER_1": "YP",
+        "TOP_BUYER_1_VALUE": 20.0,
+        "TOP_SELLER_1": "LG",
+        "TOP_SELLER_1_VALUE": -20.0,
     }
 
 
@@ -86,7 +102,7 @@ def _insert_snapshot(conn: sqlite3.Connection, broker_date: str, symbol: str, pa
     )
 
 
-def test_position_broker_history_uses_current_3d_5d_7d_and_since_entry(tmp_path):
+def test_position_broker_history_requires_complete_fixed_windows(tmp_path):
     db = tmp_path / "history.db"
     conn = sqlite3.connect(db)
     try:
@@ -112,19 +128,70 @@ def test_position_broker_history_uses_current_3d_5d_7d_and_since_entry(tmp_path)
         assert context["observation_count"] == 5
         assert context["current_state"] == "DISTRIBUTION"
         assert context["3D"]["context"] == "NEUTRAL"
+        assert context["3D"]["coverage_status"] == "COMPLETE"
         assert context["5D"]["context"] == "ACCUMULATION"
-        assert context["7D"]["context"] == "ACCUMULATION"
+        assert context["7D"]["context"] == "INSUFFICIENT_DATA"
+        assert context["7D"]["observation_count"] == 5
+        assert context["7D"]["required_observations"] == 7
         assert context["since_entry"]["context"] == "ACCUMULATION"
         assert context["since_entry"]["net_flow"] > 0
         assert context["effective_state"] == "NEUTRAL"
         assert "conflicts" in context["effective_reason"]
+        assert context["top_accumulation"][0]["broker"] == "YP"
+        assert context["top_distribution"][0]["broker"] == "LG"
 
         persist_position_broker_context(conn, position_id="pos-tins", context=context)
         stored = conn.execute(
-            "SELECT current_state, effective_state, context_5d, context_since_entry "
+            "SELECT current_state, effective_state, context_5d, context_7d, context_since_entry "
             "FROM position_broker_context_history WHERE position_id='pos-tins'"
         ).fetchone()
-        assert stored == ("DISTRIBUTION", "NEUTRAL", "ACCUMULATION", "ACCUMULATION")
+        assert stored == (
+            "DISTRIBUTION",
+            "NEUTRAL",
+            "ACCUMULATION",
+            "INSUFFICIENT_DATA",
+            "ACCUMULATION",
+        )
+    finally:
+        conn.close()
+
+
+def test_one_observation_is_warning_only_and_not_fake_3d_5d_7d(tmp_path):
+    conn = sqlite3.connect(tmp_path / "history.db")
+    try:
+        ensure_schema(conn)
+        _insert_snapshot(conn, "2026-08-07", "CDIA", _payload("CDIA", "DISTRIBUTION"))
+        conn.commit()
+        context = build_position_broker_context(
+            conn, symbol="CDIA", buy_date="2026-08-07", analysis_date="2026-08-07"
+        )
+        assert context["current_state"] == "DISTRIBUTION"
+        assert context["effective_state"] == "NEUTRAL"
+        assert context["3D"]["context"] == "INSUFFICIENT_DATA"
+        assert context["3D"]["observation_count"] == 1
+        assert context["5D"]["context"] == "INSUFFICIENT_DATA"
+        assert context["7D"]["context"] == "INSUFFICIENT_DATA"
+        assert context["since_entry"]["persistence_pct"] is None
+        assert "warning-only" in context["effective_reason"]
+    finally:
+        conn.close()
+
+
+def test_exactly_three_observations_activate_3d_only(tmp_path):
+    conn = sqlite3.connect(tmp_path / "history.db")
+    try:
+        ensure_schema(conn)
+        for day in ("2026-08-05", "2026-08-06", "2026-08-07"):
+            _insert_snapshot(conn, day, "ENRG", _payload("ENRG", "DISTRIBUTION"))
+        conn.commit()
+        context = build_position_broker_context(
+            conn, symbol="ENRG", buy_date="2026-08-05", analysis_date="2026-08-07"
+        )
+        assert context["3D"]["context"] == "DISTRIBUTION"
+        assert context["5D"]["context"] == "INSUFFICIENT_DATA"
+        assert context["7D"]["context"] == "INSUFFICIENT_DATA"
+        assert context["effective_state"] == "DISTRIBUTION"
+        assert context["since_entry"]["persistence_pct"] == 100.0
     finally:
         conn.close()
 
@@ -188,9 +255,6 @@ def test_extra_portfolio_broker_row_cannot_expand_final_watchlist_candidate_univ
         expected_broker_date="2026-08-07",
     )
 
-    # TINS represents an OPEN portfolio symbol appended to the Tampermonkey
-    # broker CSV.  Broker Fusion must still be candidate-left and cannot make
-    # TINS a Final Watchlist candidate by itself.
     assert set(result["Symbol"]) == {"BBCA", "ANTM"}
     assert len(result) == 2
     assert "TINS" not in set(pd.read_csv(output_csv)["Symbol"])
