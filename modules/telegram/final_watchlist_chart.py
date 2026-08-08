@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import math
+import sys
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -73,12 +75,12 @@ def _price_label(value: Any) -> str:
 
 
 def _install_telegram_idx_price_formatter() -> None:
-    """Keep Telegram FINAL WATCHLIST prices aligned with the chart display.
+    """Install FINAL WATCHLIST-only display helpers.
 
-    ``daily_report_ui`` owns the card text while this module owns the chart.
-    The enhanced report builder imports this module at its presentation hook,
-    so installing the formatter here keeps one IDX display rule without
-    touching engine artifacts or recomputing the trade plan.
+    The engine artifacts stay untouched.  Telegram/card/chart prices are shown
+    on executable IDX ticks, participant rows expose the value/average/type
+    already carried by the broker engine, and the historical ``Vs Cost`` label
+    is renamed to the clearer ``Jarak Buy Avg``.
     """
     try:
         from modules.telegram import daily_report_ui as daily_ui
@@ -89,10 +91,82 @@ def _install_telegram_idx_price_formatter() -> None:
                 return daily_ui._fw_text(value)
             return f"{rounded:,.0f}".replace(",", ".")
 
+        def _telegram_broker_type(value: Any) -> str:
+            text = str(value or "").strip()
+            if not text or text.lower() in {"nan", "none", "null", "engine_data_not_available"}:
+                return ""
+            normalized = text.replace("_", " ").strip().upper()
+            aliases = {
+                "FOREIGN": "Asing",
+                "ASING": "Asing",
+                "GOVERNMENT": "Pemerintah",
+                "PEMERINTAH": "Pemerintah",
+                "LOCAL": "Lokal",
+                "LOKAL": "Lokal",
+                "DOMESTIC": "Domestik",
+                "DOMESTIK": "Domestik",
+            }
+            return aliases.get(normalized, text.replace("_", " ").title())
+
+        def _telegram_broker_participants(value: Any) -> list[str]:
+            if isinstance(value, str):
+                raw = value.strip()
+                if raw.startswith("["):
+                    try:
+                        value = json.loads(raw)
+                    except Exception:
+                        value = []
+                else:
+                    value = []
+            items = list(value or []) if isinstance(value, (list, tuple)) else []
+            lines: list[str] = []
+            for index, item in enumerate(items[:3], start=1):
+                if not isinstance(item, Mapping):
+                    continue
+                broker = str(item.get("broker") or item.get("code") or item.get("name") or "").strip().upper()
+                if not broker:
+                    continue
+                details: list[str] = []
+                transaction_value = item.get("value") or item.get("net_value") or item.get("amount")
+                if transaction_value not in (None, ""):
+                    money = daily_ui._fw_money(transaction_value)
+                    if money and money != "ENGINE_DATA_NOT_AVAILABLE":
+                        details.append(money[1:] if money.startswith("+") else money)
+                average = item.get("avg_price") or item.get("average_price") or item.get("avg")
+                if average not in (None, ""):
+                    rendered_avg = _telegram_idx_price(average)
+                    if rendered_avg and rendered_avg != "ENGINE_DATA_NOT_AVAILABLE":
+                        details.append(f"Avg Rp{rendered_avg}")
+                broker_type = _telegram_broker_type(
+                    item.get("classification")
+                    or item.get("broker_type")
+                    or item.get("type")
+                    or item.get("origin")
+                    or item.get("foreign_local")
+                )
+                if broker_type:
+                    details.append(broker_type)
+                suffix = f" — {' | '.join(details)}" if details else ""
+                lines.append(f"{index}. {broker}{suffix}")
+            return lines or ["• Data broker belum tersedia"]
+
+        original_formatter = daily_ui.format_watchlist_detail
+
+        def _telegram_final_watchlist_formatter(row: Mapping[str, Any]) -> str:
+            text = original_formatter(row)
+            return text.replace(" | Vs Cost ", " | Jarak Buy Avg ")
+
         daily_ui._fw_price = _telegram_idx_price
-        # Legacy formatters use the shared constant; canonical FINAL WATCHLIST
-        # already contains the same literal separator. Keep both at 20 chars.
+        daily_ui._fw_participants = _telegram_broker_participants
         daily_ui.SEPARATOR = IDX_SEPARATOR
+        daily_ui.format_watchlist_detail = _telegram_final_watchlist_formatter
+
+        # enhanced_daily_reports imports the formatter by name before this
+        # module is loaded. Replace that bound reference too, but only for the
+        # FINAL WATCHLIST builder path.
+        report_module = sys.modules.get("modules.job_runner.enhanced_daily_reports")
+        if report_module is not None:
+            report_module.format_watchlist_detail = _telegram_final_watchlist_formatter
     except Exception:
         # Chart generation must remain import-safe even in isolated tooling.
         pass
