@@ -40,14 +40,14 @@ def full_row():
         "buyer_concentration": 72,
         "seller_concentration": 51,
         "top_buyers": [
-            {"broker": "XL", "avg_price": 3365},
-            {"broker": "CC", "avg_price": 3352},
-            {"broker": "YP", "avg_price": 3380},
+            {"broker": "XL", "value": 20_440_000_000, "avg_price": 3365, "classification": "PEMERINTAH"},
+            {"broker": "CC", "value": 3_700_000_000, "avg_price": 3352, "classification": "PEMERINTAH"},
+            {"broker": "YP", "value": 3_990_000_000, "avg_price": 3380, "classification": "ASING"},
         ],
         "top_sellers": [
-            {"broker": "AK", "avg_price": 3425},
-            {"broker": "LG", "avg_price": 3410},
-            {"broker": "PD", "avg_price": 3398},
+            {"broker": "AK", "value": 16_140_000_000, "avg_price": 3425, "classification": "ASING"},
+            {"broker": "LG", "value": 5_740_000_000, "avg_price": 3410, "classification": "PEMERINTAH"},
+            {"broker": "PD", "value": 1_050_000_000, "avg_price": 3398, "classification": "ASING"},
         ],
         "broker_pattern": "CONFIRMED_ACCUMULATION",
         "bandar_buy_cost": 3365,
@@ -69,11 +69,16 @@ def test_final_watchlist_format_is_exact_and_bold():
     assert "<b>🎯 TRADE SETUP</b>" in text
     assert "<b>🏦 BROKER SUMMARY</b>" in text
     assert "<b>🟢 Top Buy</b>" in text
-    assert "XL @ 3.370" in text and "CC @ 3.350" in text and "YP @ 3.380" in text
+    assert "1. XL — Rp20,44 miliar | Avg Rp3.370 | Pemerintah" in text
+    assert "2. CC — Rp3,70 miliar | Avg Rp3.350 | Pemerintah" in text
+    assert "3. YP — Rp3,99 miliar | Avg Rp3.380 | Asing" in text
     assert "<b>🔴 Top Sell</b>" in text
-    assert "AK @ 3.430" in text and "LG @ 3.410" in text and "PD @ 3.400" in text
+    assert "1. AK — Rp16,14 miliar | Avg Rp3.430 | Asing" in text
+    assert "2. LG — Rp5,74 miliar | Avg Rp3.410 | Pemerintah" in text
+    assert "3. PD — Rp1,05 miliar | Avg Rp3.400 | Asing" in text
     assert "📅 Buy/Sell 4/1" in text
     assert "🎯 Concentration B 72.00% | S 51.00%" in text
+    assert "💰 Buy Cost 3.370 | Jarak Buy Avg +0.74%" in text
     assert "<b>📌 SETUP CONTEXT</b>" in text
     assert "<b>Reason:</b>" in text
     assert "ENGINE_DATA_NOT_AVAILABLE" not in text
@@ -110,9 +115,10 @@ def test_idx_tick_rounding_for_final_watchlist_display():
     text = format_watchlist_detail(row)
     assert "💰 Current 3.860 | Entry 3.820–3.900" in text
     assert "🛑 SL 3.640 | 🎯 TP1 4.070 | 🚀 TP2 4.190" in text
-    assert "AK @ 3.880" in text
-    assert "LG @ 3.870" in text
+    assert "1. AK — Avg Rp3.880" in text
+    assert "1. LG — Avg Rp3.870" in text
     assert "💰 Buy Cost 3.800" in text
+    assert "Jarak Buy Avg +0.74%" in text
     assert "🟢 Support 3.370 | 🔴 Resistance 3.980" in text
 
 
