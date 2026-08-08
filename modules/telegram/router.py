@@ -7,6 +7,23 @@ import os
 from typing import Any, Mapping
 
 
+def _topic_id(value: Any) -> str:
+    """Return a valid positive Telegram message_thread_id or an empty string.
+
+    Legacy/local telegram.json files may still contain symbolic labels such as
+    ``REPORT`` or ``SIGNAL``.  Those labels are routing categories, not Telegram
+    message_thread_id values, and must never be sent to the Bot API as if they
+    were numeric topic IDs.
+    """
+    text = str(value or "").strip()
+    if not text.isdigit():
+        return ""
+    try:
+        return text if int(text) > 0 else ""
+    except ValueError:
+        return ""
+
+
 @dataclass(frozen=True)
 class TelegramRoute:
     category: str
@@ -57,18 +74,24 @@ class TelegramRouter:
         ui = self.config.get("telegram_ui", {}) if isinstance(self.config, dict) else {}
         ui_routing = ui.get("topic_routing", {}) if isinstance(ui, dict) else {}
 
-        # Per-report/per-topic configuration is always safe and specific.
-        specific_config = (
-            ui_routing.get(report)
-            or ui_routing.get(report_lower)
-            or ui_routing.get(label)
-            or ui_routing.get(label_lower)
-            or ""
-        )
+        # Per-report/per-topic configuration is safe only when it is an actual
+        # numeric Telegram topic ID.  Ignore legacy symbolic labels (REPORT,
+        # SIGNAL, SYSTEM) so delivery.py can fall back to scheduler mappings.
+        specific_config = ""
+        for candidate in (
+            ui_routing.get(report),
+            ui_routing.get(report_lower),
+            ui_routing.get(label),
+            ui_routing.get(label_lower),
+        ):
+            normalized = _topic_id(candidate)
+            if normalized:
+                specific_config = normalized
+                break
 
         env_name = f"TELEGRAM_THREAD_{category}_ID"
-        env_thread = str(self.environ.get(env_name, "") or "").strip()
-        category_config = str(ui_routing.get(category) or ui_routing.get(category.lower()) or "").strip()
+        env_thread = _topic_id(self.environ.get(env_name, ""))
+        category_config = _topic_id(ui_routing.get(category) or ui_routing.get(category.lower()) or "")
 
         if category == "REPORT" and label_lower not in {"report", "reports"}:
             # Market Outlook, Post Market, broker reports, evaluation, etc. are
@@ -76,12 +99,12 @@ class TelegramRouter:
             # scheduler/config. A generic TELEGRAM_THREAD_REPORT_ID must not
             # hijack those routes. Return fallback when no specific UI mapping
             # exists so delivery.py can apply its per-report scheduler mapping.
-            thread = str(specific_config).strip()
+            thread = specific_config
         else:
             # Explicit topic="report" is the dedicated general Report topic.
             # Environment remains first so local deployment can configure the
             # real Telegram message_thread_id without committing it to Git.
-            thread = env_thread or str(specific_config).strip() or category_config
+            thread = env_thread or specific_config or category_config
 
         return TelegramRoute(
             category=category,
