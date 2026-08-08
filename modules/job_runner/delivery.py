@@ -342,3 +342,204 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
             append_jsonl(log_path, event)
             results.append(event)
     return results
+
+# FINAL_WATCHLIST_PHOTO_DELIVERY_V2
+_PHOTO_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+_fw_legacy_idempotency_key = _idempotency_key
+
+
+def _is_photo_attachment(path: Path | None) -> bool:
+    return path is not None and path.suffix.lower() in _PHOTO_SUFFIXES
+
+
+def _idempotency_key(ctx: RunnerContext, payload: ReportPayload) -> str:
+    attachment = _attachment_path(payload)
+    report = payload.report_type.upper()
+    if _is_photo_attachment(attachment) and report == "FINAL_WATCHLIST_DETAIL":
+        symbol = (payload.symbol or "UNKNOWN").upper()
+        material = payload.material_signature or payload.signal_version or payload.signature[:24]
+        return f"{ctx.trade_date.isoformat()}:{report}:{symbol}:{material}"
+    if attachment is None and report == "FINAL_WATCHLIST_DETAIL" and (payload.material_signature or payload.signal_version):
+        symbol = (payload.symbol or "UNKNOWN").upper()
+        material = payload.material_signature or payload.signal_version
+        return f"{ctx.trade_date.isoformat()}:{report}:{symbol}:{material}"
+    return _fw_legacy_idempotency_key(ctx, payload)
+
+
+def _send_photo(ctx: RunnerContext, payload: ReportPayload, caption: str) -> dict[str, Any]:
+    if requests is None:
+        raise RuntimeError("Dependency requests belum terpasang. Jalankan maintenance\\INSTALL_REQUIREMENTS.bat.")
+    path = _attachment_path(payload)
+    if path is None or not path.exists() or not path.is_file():
+        raise RuntimeError(f"Photo attachment tidak ditemukan: {path}")
+    token, chat_id = _credentials(ctx)
+    data: dict[str, Any] = {"chat_id": chat_id}
+    if caption:
+        data["caption"] = caption[:1024]
+        data["parse_mode"] = "HTML"
+    topic_id = _topic_id(ctx, payload)
+    if topic_id:
+        data["message_thread_id"] = topic_id
+    with path.open("rb") as handle:
+        response = requests.post(
+            f"https://api.telegram.org/bot{token}/sendPhoto",
+            data=data,
+            files={"photo": (path.name, handle, "image/png")},
+            timeout=60,
+        )
+    return _response_json(response)
+
+
+def _photo_parts(payload: ReportPayload, max_len: int) -> tuple[str, list[str]]:
+    full = normalize_telegram_text(payload.text)
+    if len(full) <= 1024:
+        return full, []
+    caption = normalize_telegram_text(_attachment_caption(payload))
+    if not caption:
+        caption = full[:900]
+    caption = caption[:1024]
+    if full.startswith(caption):
+        remainder = full[len(caption):].strip()
+    else:
+        remainder = full
+    return caption, split_telegram_text(remainder, max_len=max_len) if remainder else []
+
+
+def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str, Any]]:
+    index_path, log_path = _state_paths(ctx)
+    index = read_json(index_path)
+    results: list[dict[str, Any]] = []
+    failed_root = resolve(ctx.scheduler_config.get("delivery", {}).get("failed_root", "data/output/failed_delivery"))
+    delivery_total = len(payloads)
+    credentials_ready = telegram_configured(ctx)
+    provenance = getattr(ctx, "config_provenance", {}) or {}
+    official_runtime = str(provenance.get("config_version", "")) == "1.7.0-multisource"
+
+    for delivery_sequence, payload in enumerate(payloads, start=1):
+        allowed, reason = should_send(ctx, payload)
+        key = _idempotency_key(ctx, payload)
+        attachment = _attachment_path(payload)
+        is_photo = _is_photo_attachment(attachment)
+        max_len = int(ctx.scheduler_config.get("telegram", {}).get("maximum_message_length", 4000))
+        normalized_text = normalize_telegram_text(payload.text)
+        photo_caption, photo_followups = _photo_parts(payload, max_len) if is_photo else ("", [])
+        parts = [] if attachment is not None else split_telegram_text(normalized_text, max_len=max_len)
+        expected_parts = (1 + len(photo_followups)) if is_photo else (1 if attachment is not None else len(parts))
+        base = {
+            "time": now_wib().isoformat(timespec="seconds"),
+            "run_id": ctx.run_id,
+            "job": ctx.job,
+            "trade_date": ctx.trade_date.isoformat(),
+            "report_type": payload.report_type,
+            "signature": payload.signature,
+            "idempotency_key": key,
+            "part_count": expected_parts,
+            "delivery_sequence": delivery_sequence,
+            "delivery_total": delivery_total,
+            "force_resend": bool(ctx.force),
+            "attachment_path": str(attachment) if attachment else "",
+            **telegram_route(ctx, payload),
+            "telegram_message_id": "",
+        }
+        if not allowed:
+            event = {**base, "status": reason}
+            append_jsonl(log_path, event)
+            results.append(event)
+            continue
+        if not credentials_ready and official_runtime:
+            event = {**base, "status": "SKIPPED_NOT_CONFIGURED", "reason": "TELEGRAM_CREDENTIALS_EMPTY"}
+            append_jsonl(log_path, event)
+            results.append(event)
+            continue
+
+        message_ids: list[Any] = []
+        part_events: list[dict[str, Any]] = []
+        try:
+            if is_photo:
+                try:
+                    response = _send_photo(ctx, payload, photo_caption)
+                except Exception as photo_exc:
+                    fallback_parts = split_telegram_text(normalized_text, max_len=max_len)
+                    for idx, part in enumerate(fallback_parts, start=1):
+                        response = _send_telegram(ctx, payload, text=part, part_index=idx, part_count=len(fallback_parts))
+                        message_id = response.get("result", {}).get("message_id", "")
+                        message_ids.append(message_id)
+                        part_event = {**base, "status": "SENT_FALLBACK_PART", "part_index": idx, "telegram_message_id": message_id}
+                        append_jsonl(log_path, part_event)
+                        part_events.append(part_event)
+                    event = {
+                        **base,
+                        "status": "SENT_WITH_TEXT_FALLBACK",
+                        "photo_error": str(photo_exc),
+                        "telegram_message_ids": message_ids,
+                        "parts": part_events,
+                    }
+                    index[key] = event
+                    write_json(index_path, index)
+                    append_jsonl(log_path, event)
+                    results.append(event)
+                    continue
+
+                message_id = response.get("result", {}).get("message_id", "")
+                message_ids.append(message_id)
+                photo_event = {**base, "status": "SENT_PHOTO", "part_index": 1, "telegram_message_id": message_id}
+                append_jsonl(log_path, photo_event)
+                part_events.append(photo_event)
+                for idx, part in enumerate(photo_followups, start=2):
+                    response = _send_telegram(ctx, payload, text=part, part_index=idx, part_count=expected_parts)
+                    message_id = response.get("result", {}).get("message_id", "")
+                    message_ids.append(message_id)
+                    part_event = {**base, "status": "SENT_PART", "part_index": idx, "telegram_message_id": message_id}
+                    append_jsonl(log_path, part_event)
+                    part_events.append(part_event)
+            elif attachment is not None:
+                response = _send_document(ctx, payload)
+                message_id = response.get("result", {}).get("message_id", "")
+                message_ids.append(message_id)
+                part_event = {**base, "status": "SENT_PART", "part_index": 1, "telegram_message_id": message_id}
+                append_jsonl(log_path, part_event)
+                part_events.append(part_event)
+            else:
+                for idx, part in enumerate(parts, start=1):
+                    response = _send_telegram(ctx, payload, text=part, part_index=idx, part_count=len(parts))
+                    message_id = response.get("result", {}).get("message_id", "")
+                    message_ids.append(message_id)
+                    part_event = {**base, "status": "SENT_PART", "part_index": idx, "telegram_message_id": message_id}
+                    append_jsonl(log_path, part_event)
+                    part_events.append(part_event)
+
+            event = {**base, "status": "SENT", "telegram_message_ids": message_ids, "parts": part_events}
+            lifecycle_ack_failed = False
+            lifecycle_ids = tuple(getattr(payload, "lifecycle_event_ids", ()) or ())
+            if lifecycle_ids:
+                try:
+                    _mark_lifecycle_events_notified(ctx, lifecycle_ids)
+                except Exception as exc:
+                    lifecycle_ack_failed = True
+                    append_jsonl(log_path, {**base, "status": "LIFECYCLE_ACK_FAILED", "error": str(exc)})
+            if not lifecycle_ack_failed:
+                index[key] = event
+                write_json(index_path, index)
+            append_jsonl(log_path, event)
+            results.append(event)
+        except Exception as exc:
+            folder = failed_root / ctx.trade_date.isoformat()
+            folder.mkdir(parents=True, exist_ok=True)
+            suffix = attachment.suffix if attachment is not None else ".txt"
+            payload_path = folder / f"{ctx.run_id}_{payload.report_type}{suffix}"
+            if attachment is not None and attachment.exists():
+                payload_path.write_bytes(attachment.read_bytes())
+            else:
+                payload_path.write_text(normalized_text, encoding="utf-8")
+            event = {
+                **base,
+                "status": "FAILED",
+                "error": str(exc),
+                "failed_payload": str(payload_path),
+                "failed_payload_sha256": file_sha256(payload_path),
+                "telegram_message_ids": message_ids,
+                "sent_parts_before_failure": len(message_ids),
+            }
+            append_jsonl(log_path, event)
+            results.append(event)
+    return results

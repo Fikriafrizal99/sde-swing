@@ -1199,3 +1199,189 @@ def format_watchlist_detail(data: dict[str, Any]) -> str:
             f"Stockbit: {_source_status(data.get('broker_status') or 'WAITING')}",
         ]
     return "\n".join(lines).strip()
+
+# FINAL_WATCHLIST_PRESENTATION_V2
+# Presentation-only override. All values are read from engine/report artifacts.
+import json as _fw_json
+from html import escape as _fw_escape
+
+
+def _fw_pick(row, *keys, default="ENGINE_DATA_NOT_AVAILABLE"):
+    lookup = {str(k).strip().lower(): v for k, v in dict(row or {}).items()}
+    for key in keys:
+        value = lookup.get(str(key).strip().lower())
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text and text.lower() not in {"nan", "none", "null"}:
+            return value
+    return default
+
+
+def _fw_text(value):
+    text = str(value if value is not None else "").strip()
+    if not text or text.lower() in {"nan", "none", "null"}:
+        return "ENGINE_DATA_NOT_AVAILABLE"
+    return _fw_escape(text.replace("_", " "))
+
+
+def _fw_num(value):
+    try:
+        text = str(value).strip()
+        if ":" in text:
+            text = text.rsplit(":", 1)[-1].strip()
+        return float(text.replace(",", ""))
+    except Exception:
+        return None
+
+
+def _fw_price(value):
+    number = _fw_num(value)
+    if number is None:
+        return _fw_text(value)
+    if abs(number - round(number)) < 1e-8:
+        return f"{number:,.0f}".replace(",", ".")
+    return f"{number:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _fw_score(value):
+    number = _fw_num(value)
+    return f"{number:.0f}" if number is not None else _fw_text(value)
+
+
+def _fw_confidence(value):
+    number = _fw_num(value)
+    if number is None:
+        return _fw_text(value)
+    if 0 <= number <= 1:
+        number *= 100
+    return f"{number:.0f}%"
+
+
+def _fw_pct(value, concentration=False):
+    number = _fw_num(value)
+    if number is None:
+        text = str(value or "").strip()
+        return _fw_text(text)
+    if concentration and abs(number) <= 1:
+        number *= 100
+    return f"{number:+.2f}%" if not concentration else f"{number:.2f}%"
+
+
+def _fw_money(value):
+    number = _fw_num(value)
+    if number is None:
+        return _fw_text(value)
+    sign = "+" if number > 0 else "-" if number < 0 else ""
+    amount = abs(number)
+    if amount >= 1_000_000_000:
+        label = f"Rp{amount / 1_000_000_000:.2f} miliar"
+    elif amount >= 1_000_000:
+        label = f"Rp{amount / 1_000_000:.2f} juta"
+    elif amount >= 1_000:
+        label = f"Rp{amount / 1_000:.2f} ribu"
+    else:
+        label = f"Rp{amount:,.0f}"
+    return sign + label.replace(".", ",")
+
+
+def _fw_rr(value):
+    number = _fw_num(value)
+    return f"{number:.2f}" if number is not None else _fw_text(value)
+
+
+def _fw_participants(value):
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw.startswith("["):
+            try:
+                value = _fw_json.loads(raw)
+            except Exception:
+                value = []
+        else:
+            value = []
+    items = list(value or []) if isinstance(value, (list, tuple)) else []
+    lines = []
+    for index in range(3):
+        item = items[index] if index < len(items) and isinstance(items[index], dict) else {}
+        broker = _fw_text(item.get("broker"))
+        avg = _fw_price(item.get("avg_price"))
+        lines.append(f"{broker} @ {avg}")
+    return lines
+
+
+def format_watchlist_detail(row):
+    """Canonical compact FINAL WATCHLIST card requested for Telegram."""
+    symbol = _fw_text(_fw_pick(row, "symbol", "Symbol"))
+    setup = _fw_text(_fw_pick(row, "setup", "Setup_Type"))
+    analysis_date = _fw_text(_fw_pick(row, "analysis_date", "trade_date", "Trade_Date"))
+    current = _fw_price(_fw_pick(row, "last_price", "current_price", "Reference_Close"))
+    entry_low = _fw_price(_fw_pick(row, "entry_low", "Entry_Zone_Low"))
+    entry_high = _fw_price(_fw_pick(row, "entry_high", "Entry_Zone_High"))
+    stop = _fw_price(_fw_pick(row, "active_stop_loss", "stop_loss", "Initial_Stop"))
+    tp1 = _fw_price(_fw_pick(row, "target_1", "Target_1"))
+    tp2 = _fw_price(_fw_pick(row, "target_2", "Target_2"))
+    rr = _fw_rr(_fw_pick(row, "risk_reward", "Target_2_RR", "Target_1_RR"))
+    technical_status = _fw_text(_fw_pick(row, "technical_status", "technical_state", "Plan_Status"))
+    confidence = _fw_confidence(_fw_pick(row, "confidence", "Final_Score", "Final_Score_V3"))
+
+    broker_signal = _fw_text(_fw_pick(row, "broker_status", "broker_signal", "Broker_Confirmation", "broker_direction"))
+    broker_score = _fw_score(_fw_pick(row, "broker_score", "Broker_Score"))
+    net_flow = _fw_money(_fw_pick(row, "broker_net_flow", "net_flow", "cumulative_net_value"))
+    buy_days = _fw_text(_fw_pick(row, "buy_days"))
+    sell_days = _fw_text(_fw_pick(row, "sell_days"))
+    buyer_concentration = _fw_pct(_fw_pick(row, "buyer_concentration"), concentration=True)
+    seller_concentration = _fw_pct(_fw_pick(row, "seller_concentration"), concentration=True)
+    top_buy = _fw_participants(_fw_pick(row, "top_buyers", default=[]))
+    top_sell = _fw_participants(_fw_pick(row, "top_sellers", default=[]))
+    broker_pattern = _fw_text(_fw_pick(row, "broker_pattern", "Broker_MultiDay_Context"))
+    buy_cost = _fw_price(_fw_pick(row, "bandar_buy_cost", "avg_buyer_price", "weighted_broker_buy_cost"))
+    vs_cost = _fw_pct(_fw_pick(row, "distance_to_buy_cost", "distance_to_buyer_avg_pct", "distance_to_buy_cost_pct"))
+    flow = _fw_text(_fw_pick(row, "multi_day_flow", "Broker_MultiDay_Context"))
+    persistence = _fw_text(_fw_pick(row, "flow_persistence", "Broker_Context_Alignment"))
+
+    trend = _fw_text(_fw_pick(row, "trend", "Technical_Regime"))
+    phase = _fw_text(_fw_pick(row, "phase", "execution_state", "Execution_Status"))
+    support = _fw_price(_fw_pick(row, "support", "Support_Level"))
+    resistance = _fw_price(_fw_pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance"))
+    fib_status = _fw_text(_fw_pick(row, "fib_status", "Fibonacci_Status", "Fib_Status"))
+    reason = _fw_text(_fw_pick(row, "engine_final_reason", "main_reason", "Final_Reason"))
+
+    lines = [
+        "<b>📈 SDE SWING — FINAL WATCHLIST</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"📌 <b>{symbol} | {setup}</b>",
+        f"🕒 {analysis_date}",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "<b>🎯 TRADE SETUP</b>",
+        f"💰 Current {current} | Entry {entry_low}–{entry_high}",
+        f"🛑 SL {stop} | 🎯 TP1 {tp1} | 🚀 TP2 {tp2}",
+        f"⚖️ RR 1:{rr}",
+        f"📊 {technical_status} | 🧠 Confidence {confidence}",
+        "",
+        "<b>🏦 BROKER SUMMARY</b>",
+        f"📌 {broker_signal} | Score {broker_score}/100",
+        f"💵 Net Flow {net_flow} | 📅 Buy/Sell {buy_days}/{sell_days}",
+        f"🎯 Concentration B {buyer_concentration} | S {seller_concentration}",
+        "",
+        "<b>🟢 Top Buy</b>",
+        *top_buy,
+        "",
+        "<b>🔴 Top Sell</b>",
+        *top_sell,
+        "",
+        f"📊 Pattern {broker_pattern}",
+        f"💰 Buy Cost {buy_cost} | Vs Cost {vs_cost}",
+        f"🌊 Flow {flow} | Persistence {persistence}",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "<b>📌 SETUP CONTEXT</b>",
+        f"📈 {trend} | {phase}",
+        f"🟢 Support {support} | 🔴 Resistance {resistance}",
+        f"📐 Fibonacci {fib_status}",
+        "",
+        "<b>Reason:</b>",
+        reason,
+    ]
+    return "\n".join(lines).strip()

@@ -644,3 +644,54 @@ def complete_daily_payloads(
         payloads.extend(final_watchlist_payloads(ctx))
         payloads.extend(lifecycle_payloads(ctx))
     return payloads
+
+# FINAL_WATCHLIST_RUNTIME_BRIDGE_V2
+_fw_original_builder = _builder
+
+
+def _builder(ctx: RunnerContext) -> EnhancedDailyReportBuilder:
+    builder = _fw_original_builder(ctx)
+    cfg = ctx.scheduler_config.get("enhanced_reporting", {})
+    builder.historical_dir = ctx.path("historical_dir", "data/output/historical/by_symbol")
+    builder.chart_output_root = resolve(cfg.get("final_watchlist_chart_output_root", "output/final_watchlist"))
+    return builder
+
+
+_fw_original_artifact_payload = _artifact_payload
+
+
+def _artifact_payload(artifact: DailyReportArtifact) -> ReportPayload:
+    payload = _fw_original_artifact_payload(artifact)
+    details = dict(artifact.validation_details or {})
+    material = str(details.get("material_signature") or "").strip()
+    if material:
+        payload.material_signature = material
+        payload.signal_version = material
+    return payload
+
+
+_fw_original_artifact_with_lineage = _artifact_with_lineage
+
+
+def _artifact_with_lineage(
+    artifact: DailyReportArtifact,
+    *,
+    input_paths: Iterable[str | Path],
+    source_of_truth: Iterable[str | Path],
+    row_count: int | None = None,
+    validation_details: dict[str, Any] | None = None,
+) -> DailyReportArtifact:
+    merged = dict(artifact.validation_details or {})
+    merged.update(dict(validation_details or {}))
+    return DailyReportArtifact(
+        report_type=artifact.report_type,
+        text=artifact.text,
+        topic=artifact.topic,
+        symbol=artifact.symbol,
+        attachment_path=artifact.attachment_path,
+        caption=artifact.caption,
+        input_paths=tuple(str(path) for path in input_paths),
+        source_of_truth=tuple(str(path) for path in source_of_truth),
+        row_count=row_count,
+        validation_details=merged,
+    )

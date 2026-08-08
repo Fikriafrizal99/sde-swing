@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -526,6 +526,7 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
         "Entry_Zone_High": entry_high,
         "Price_To_Entry_Zone_Pct": price_to_zone,
         "Price_Position_To_Entry_Zone": price_position_to_zone,
+        "Support_Level": support,
         "Initial_Stop": stop,
         "Stop_Basis": stop_basis,
         "Risk_Per_Share": risk,

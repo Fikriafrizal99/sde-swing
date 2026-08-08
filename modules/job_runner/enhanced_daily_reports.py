@@ -930,3 +930,261 @@ class EnhancedDailyReportBuilder:
         if stop not in (None, ""):
             return f"Setup batal jika harga menembus level stop loss {stop}."
         return "Entry hanya dilakukan setelah trigger valid; hindari mengejar harga di luar zona entry."
+
+# FINAL_WATCHLIST_PRESENTATION_ENRICHMENT_V2
+import hashlib as _fw_hashlib
+import logging as _fw_logging
+
+from modules.broker_bridge.broker_raw import read_normalized_broker_raw as _fw_read_broker_raw
+from modules.telegram.final_watchlist_chart import generate_final_watchlist_chart as _fw_generate_chart
+
+_FW_EXTRA_FINAL_COLUMNS = [
+    "analysis_date", "active_stop_loss", "technical_status",
+    "buy_days", "sell_days", "buyer_concentration", "seller_concentration",
+    "broker_pattern", "bandar_buy_cost", "distance_to_buy_cost",
+    "multi_day_flow", "flow_persistence", "phase", "support", "resistance",
+    "fib_status", "swing_high", "swing_low", "engine_final_reason",
+]
+for _fw_column in _FW_EXTRA_FINAL_COLUMNS:
+    if _fw_column not in FINAL_WATCHLIST_COLUMNS:
+        FINAL_WATCHLIST_COLUMNS.append(_fw_column)
+
+
+def _fw_primary_multiday_map(builder):
+    path = builder.output_root / "broker_multiday" / "BROKER_WINDOW_COMPARISON.csv"
+    result = {}
+    for row in builder._read_csv_optional(path):
+        symbol = builder._symbol(_value(row, "Symbol", "symbol"))
+        if not symbol:
+            continue
+        primary = str(_value(row, "Primary_Window", default="5D") or "5D").upper()
+        window = str(_value(row, "Window", "window", default="")).upper()
+        if window == primary:
+            result[symbol] = row
+    return result
+
+
+def _fw_raw_participant_map(builder):
+    cache = getattr(builder, "_fw_raw_participant_cache", None)
+    if cache is not None:
+        return cache
+    path = builder.output_root.parent / "input" / "broker" / "BROKER_RAW_LATEST.csv"
+    result = {}
+    try:
+        frame = _fw_read_broker_raw(path)
+        if not frame.empty:
+            for symbol, group in frame.groupby("SYMBOL"):
+                symbol_key = builder._symbol(symbol)
+                side_map = {}
+                for side in ("BUY", "SELL"):
+                    subset = group[group["SIDE"].eq(side)].copy()
+                    if subset.empty:
+                        side_map[side] = []
+                        continue
+                    subset = subset.sort_values(["RANK", "NET_VALUE"], ascending=[True, False], na_position="last")
+                    items = []
+                    for _, raw in subset.head(3).iterrows():
+                        broker = str(raw.get("BROKER_CODE") or "").strip().upper()
+                        avg = raw.get("AVG_PRICE")
+                        if broker and avg is not None and str(avg).lower() != "nan":
+                            items.append({"broker": broker, "avg_price": float(avg), "value": raw.get("NET_VALUE")})
+                    side_map[side] = items
+                result[symbol_key] = side_map
+    except Exception as exc:
+        _fw_logging.getLogger(__name__).warning("FINAL WATCHLIST broker raw presentation enrichment failed: %s", exc)
+    builder._fw_raw_participant_cache = result
+    return result
+
+
+def _fw_merge_participants(existing, fallback):
+    items = []
+    if isinstance(existing, list):
+        for item in existing:
+            if isinstance(item, dict) and _present(item.get("broker")):
+                items.append(dict(item))
+    by_broker = {str(item.get("broker", "")).upper(): item for item in items}
+    for item in fallback or []:
+        broker = str(item.get("broker", "")).upper()
+        if not broker:
+            continue
+        if broker in by_broker:
+            if not _present(by_broker[broker].get("avg_price")) and _present(item.get("avg_price")):
+                by_broker[broker]["avg_price"] = item.get("avg_price")
+        else:
+            items.append(dict(item))
+            by_broker[broker] = items[-1]
+    usable = [item for item in items if _present(item.get("broker")) and _present(item.get("avg_price"))]
+    return usable[:3]
+
+
+def _fw_fill(current, sources, target, *aliases):
+    if _present(current.get(target)):
+        return
+    found = EnhancedDailyReportBuilder._artifact_pick(sources, *aliases)
+    if _present(found):
+        current[target] = found
+
+
+_fw_original_enrich_watchlist_rows = EnhancedDailyReportBuilder._enrich_watchlist_rows
+
+
+def _fw_enrich_watchlist_rows(self, rows):
+    enriched = _fw_original_enrich_watchlist_rows(self, rows)
+    decision_map = self._symbol_map(self.output_root / "decision" / "FINAL_DECISION_V3.csv")
+    entry_map = self._symbol_map(self.output_root / "exit" / "ENTRY_PLANS.csv")
+    broker_map = self._symbol_map(self.output_root.parent / "input" / "FINAL_DECISION_V2.csv")
+    multiday_detail = self._symbol_map(self.output_root / "broker_multiday" / "BROKER_MULTIDAY_DETAIL.csv")
+    multiday_primary = _fw_primary_multiday_map(self)
+    raw_participants = _fw_raw_participant_map(self)
+
+    for current in enriched:
+        symbol = self._symbol(current.get("symbol"))
+        if not _present(current.get("engine_final_reason")):
+            current["engine_final_reason"] = current.get("main_reason", "")
+        current["analysis_date"] = current.get("trade_date", "")
+        sources = [
+            current,
+            entry_map.get(symbol, {}),
+            decision_map.get(symbol, {}),
+            broker_map.get(symbol, {}),
+            multiday_detail.get(symbol, {}),
+            multiday_primary.get(symbol, {}),
+        ]
+
+        _fw_fill(current, sources, "active_stop_loss", "Active_Stop_Loss", "activeStopLoss", "Initial_Stop", "Stop_Loss")
+        if not _present(current.get("active_stop_loss")):
+            current["active_stop_loss"] = current.get("stop_loss", "")
+        _fw_fill(current, sources, "technical_status", "Technical_Status", "Plan_Status", "Execution_Status", "Technical_State")
+        if not _present(current.get("technical_status")):
+            current["technical_status"] = current.get("technical_state") or current.get("execution_state")
+
+        _fw_fill(current, sources, "buyer_concentration", "BUYER_CONCENTRATION", "Buyer_Concentration", "buyer_concentration")
+        _fw_fill(current, sources, "seller_concentration", "SELLER_CONCENTRATION", "Seller_Concentration", "seller_concentration")
+        _fw_fill(current, sources, "broker_pattern", "BROKER_PATTERN", "Broker_Pattern", "Divergence_Label", "Broker_MultiDay_Context", "Classification")
+        _fw_fill(current, sources, "bandar_buy_cost", "Bandar_Buy_Cost", "AVG_BUYER_PRICE", "weighted_broker_buy_cost")
+        if not _present(current.get("bandar_buy_cost")):
+            current["bandar_buy_cost"] = current.get("avg_buyer_price", "")
+        _fw_fill(current, sources, "distance_to_buy_cost", "DISTANCE_TO_BUY_COST", "Distance_To_Buy_Cost_Pct", "distance_to_buy_cost_pct")
+        if not _present(current.get("distance_to_buy_cost")):
+            current["distance_to_buy_cost"] = current.get("distance_to_buyer_avg_pct", "")
+        _fw_fill(current, sources, "multi_day_flow", "Broker_MultiDay_Context", "Context", "Classification", "Broker_Context_Primary")
+        _fw_fill(current, sources, "phase", "Phase", "Setup_Phase", "Execution_Status", "Plan_Status")
+        if not _present(current.get("phase")):
+            current["phase"] = current.get("execution_state") or current.get("setup")
+        _fw_fill(current, sources, "support", "Support_Level", "Support", "Technical_Support")
+        _fw_fill(current, sources, "resistance", "Nearest_Resistance", "Minor_Resistance", "Resistance_Level", "Resistance")
+        _fw_fill(current, sources, "fib_status", "Fibonacci_Status", "Fib_Status", "FIB_STATUS", "Target_Fib_Status")
+        if not _present(current.get("fib_status")):
+            # The inspected v1.7 branch has no Fibonacci target artifact. Keep the
+            # card explicit instead of fabricating a level or silently leaving it blank.
+            current["fib_status"] = "ENGINE_NOT_AVAILABLE_V1_7"
+        _fw_fill(current, sources, "swing_high", "Swing_High", "Valid_Swing_High")
+        _fw_fill(current, sources, "swing_low", "Swing_Low", "Valid_Swing_Low")
+        if not _present(current.get("trend")):
+            _fw_fill(current, sources, "trend", "Trend", "Technical_Regime", "Trend_State")
+
+        primary = multiday_primary.get(symbol, {})
+        available = _float(_value(primary, "available_sessions", "Available_Sessions", default=0), 0.0)
+        positive_ratio = _float(_value(primary, "positive_day_ratio", "Positive_Day_Ratio", default=0), 0.0)
+        negative_ratio = _float(_value(primary, "negative_day_ratio", "Negative_Day_Ratio", default=0), 0.0)
+        if available > 0:
+            current["buy_days"] = int(round(positive_ratio * available))
+            current["sell_days"] = int(round(negative_ratio * available))
+
+        net_flow = _float(current.get("broker_net_flow"), 0.0)
+        persistence_source = multiday_detail.get(symbol, {})
+        if net_flow >= 0:
+            persistence = _value(persistence_source, "Buyer_Rotation_Status", default="")
+        else:
+            persistence = _value(persistence_source, "Seller_Rotation_Status", default="")
+        if not _present(persistence):
+            persistence = _value(persistence_source, "Broker_Context_Alignment", "Alignment", default="")
+        current["flow_persistence"] = persistence
+
+        fallback = raw_participants.get(symbol, {})
+        current["top_buyers"] = _fw_merge_participants(current.get("top_buyers"), fallback.get("BUY", []))
+        current["top_sellers"] = _fw_merge_participants(current.get("top_sellers"), fallback.get("SELL", []))
+
+        if not _present(current.get("broker_status")):
+            current["broker_status"] = current.get("broker_direction") or current.get("multi_day_flow")
+        if not _present(current.get("broker_net_flow")):
+            _fw_fill(current, sources, "broker_net_flow", "NET_FLOW", "Net_Flow", "cumulative_net_value")
+
+    return enriched
+
+
+EnhancedDailyReportBuilder._enrich_watchlist_rows = _fw_enrich_watchlist_rows
+
+
+def _fw_material_signature(row):
+    payload = "|".join(str(row.get(key, "")) for key in (
+        "symbol", "trade_date", "setup", "entry_low", "entry_high",
+        "active_stop_loss", "stop_loss", "target_1", "target_2",
+    ))
+    return _fw_hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+_fw_original_build_final_watchlist = EnhancedDailyReportBuilder.build_final_watchlist
+
+
+def _fw_build_final_watchlist(self, data):
+    # User contract: every FINAL WATCHLIST item gets a card/chart; CSV remains last.
+    original_limit = self.max_watchlist_messages
+    self.max_watchlist_messages = 10000
+    try:
+        artifacts = _fw_original_build_final_watchlist(self, data)
+    finally:
+        self.max_watchlist_messages = original_limit
+
+    trade_date = str(data.get("trade_date", ""))
+    csv_path = self.output_root / "final_watchlist" / f"sde-final-watchlist-{trade_date}.csv"
+    rows = self._read_csv_optional(csv_path)
+    row_map = {self._symbol(row.get("symbol")): row for row in rows if self._symbol(row.get("symbol"))}
+    historical_dir = Path(getattr(self, "historical_dir", "data/output/historical/by_symbol"))
+    chart_output_root = Path(getattr(self, "chart_output_root", "output/final_watchlist"))
+
+    patched = []
+    for artifact in artifacts:
+        if artifact.report_type != "final_watchlist_detail" or not artifact.symbol:
+            patched.append(artifact)
+            continue
+        row = row_map.get(self._symbol(artifact.symbol), {})
+        material_signature = _fw_material_signature(row)
+        details = dict(artifact.validation_details or {})
+        details["material_signature"] = material_signature
+        chart = None
+        try:
+            chart = _fw_generate_chart(
+                row,
+                historical_dir=historical_dir,
+                output_dir=chart_output_root,
+                candle_limit=80,
+            )
+            details["chart_status"] = "GENERATED"
+            details["chart_path"] = str(chart)
+        except Exception as exc:
+            details["chart_status"] = "FAILED_TEXT_FALLBACK"
+            details["chart_error"] = str(exc)
+            _fw_logging.getLogger(__name__).warning(
+                "Chart generation failed for %s: %s", artifact.symbol, exc
+            )
+
+        full_text = artifact.text.strip()
+        marker = "<b>🏦 BROKER SUMMARY</b>"
+        caption = full_text.split(marker, 1)[0].strip() if marker in full_text else full_text[:900]
+        patched.append(DailyReportArtifact(
+            report_type=artifact.report_type,
+            text=artifact.text,
+            topic=artifact.topic,
+            symbol=artifact.symbol,
+            attachment_path=chart,
+            caption=caption,
+            input_paths=artifact.input_paths,
+            source_of_truth=artifact.source_of_truth,
+            row_count=artifact.row_count,
+            validation_details=details,
+        ))
+    return patched
+
+
+EnhancedDailyReportBuilder.build_final_watchlist = _fw_build_final_watchlist
