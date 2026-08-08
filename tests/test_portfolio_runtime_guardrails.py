@@ -62,8 +62,18 @@ def test_report_checker_exposes_conflict_after_symbolic_ui_falls_back_to_schedul
     assert report_thread in {market_thread, post_thread}
 
 
-def test_live_topic_validation_accepts_only_telegram_confirmed_thread(monkeypatch) -> None:
-    class Response:
+def test_definitive_topic_validation_requires_real_send_message(monkeypatch) -> None:
+    calls: list[tuple[str, dict]] = []
+
+    class SendResponse:
+        ok = True
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict:
+            return {"ok": True, "result": {"message_id": 555}}
+
+    class DeleteResponse:
         ok = True
         status_code = 200
 
@@ -71,24 +81,24 @@ def test_live_topic_validation_accepts_only_telegram_confirmed_thread(monkeypatc
         def json() -> dict:
             return {"ok": True, "result": True}
 
-    captured: dict = {}
-
     def fake_post(url, data, timeout):
-        captured.update({"url": url, "data": data, "timeout": timeout})
-        return Response()
+        calls.append((url, dict(data)))
+        return DeleteResponse() if url.endswith("/deleteMessage") else SendResponse()
 
     monkeypatch.setattr(route_checker.requests, "post", fake_post)
-    ok, detail = route_checker.validate_live_topic("secret-token", "-100123", "107")
+    ok, detail = route_checker.definitive_validate_topic("secret-token", "-100123", "107")
 
     assert ok is True
     assert detail == "VALID"
-    assert captured["data"]["chat_id"] == "-100123"
-    assert captured["data"]["message_thread_id"] == "107"
-    assert captured["data"]["action"] == "typing"
-    assert "secret-token" in captured["url"]
+    assert calls[0][0].endswith("/sendMessage")
+    assert calls[0][1]["chat_id"] == "-100123"
+    assert calls[0][1]["message_thread_id"] == "107"
+    assert calls[0][1]["disable_notification"] == "true"
+    assert calls[1][0].endswith("/deleteMessage")
+    assert calls[1][1]["message_id"] == "555"
 
 
-def test_live_topic_validation_rejects_message_thread_not_found(monkeypatch) -> None:
+def test_definitive_topic_validation_rejects_message_thread_not_found(monkeypatch) -> None:
     class Response:
         ok = False
         status_code = 400
@@ -102,19 +112,22 @@ def test_live_topic_validation_rejects_message_thread_not_found(monkeypatch) -> 
             }
 
     monkeypatch.setattr(route_checker.requests, "post", lambda *args, **kwargs: Response())
-    ok, detail = route_checker.validate_live_topic("secret-token", "-100123", "107")
+    ok, detail = route_checker.definitive_validate_topic("secret-token", "-100123", "107")
 
     assert ok is False
     assert detail == "Bad Request: message thread not found"
 
 
-def test_topic_configuration_validates_before_setx() -> None:
+def test_topic_configuration_auto_detects_and_validates_before_setx() -> None:
     source = (ROOT / "maintenance/CONFIGURE_TELEGRAM_TOPICS.bat").read_text(encoding="utf-8-sig")
     validate_pos = source.index("tools\\check_telegram_report_route.py")
     save_pos = source.index("setx TELEGRAM_THREAD_REPORT_ID")
 
     assert validate_pos < save_pos
-    assert "TIDAK disimpan karena tidak lolos live validation" in source
+    assert "Auto-detect REPORT TEST + Validate + Simpan" in source
+    assert "detect_telegram_report_topic.py" in source
+    assert "--definitive" in source
+    assert "TIDAK disimpan karena sendMessage Telegram gagal" in source
 
 
 def test_yahoo_runtime_probe_times_out_instead_of_hanging(monkeypatch) -> None:
