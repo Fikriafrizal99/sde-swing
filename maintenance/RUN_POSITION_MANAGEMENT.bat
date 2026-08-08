@@ -31,6 +31,7 @@ echo ================================================================
 echo Trade date : !TRADE_DATE!
 echo Engine utama tidak dijalankan ulang.
 echo Hanya posisi portfolio aktual dengan status OPEN yang dianalisis.
+echo Broker context: Current + 3D + 5D + 7D + Since Entry.
 echo.
 
 echo [1/2] Refresh data posisi OPEN...
@@ -42,7 +43,7 @@ if not "!REFRESH_RC!"=="0" (
 
 echo.
 echo [2/2] Jalankan Position Management...
-%SDE_PYTHON_CMD% -u modules\portfolio\position_management_engine.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date "!TRADE_DATE!" --telegram
+%SDE_PYTHON_CMD% -u modules\portfolio\position_management_runtime.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date "!TRADE_DATE!" --telegram
 set "RC=!ERRORLEVEL!"
 
 echo.
