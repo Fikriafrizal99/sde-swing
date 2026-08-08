@@ -125,9 +125,19 @@ def check_zapi_not_live_without_credentials() -> int:
     if not zapi.enabled or not zapi.documentation_configured:
         return _fail("ZAPI_IDX documented capabilities must remain enabled in config")
     capabilities = zapi.capabilities
-    for record_type in ("DailyBar", "MarketIndex", "SymbolMetadata", "TradingStatus"):
+
+    # Production ownership deliberately keeps Yahoo/historical as the sole
+    # DailyBar/MarketIndex source. ZAPI endpoints stay documented for legacy
+    # adapter compatibility, but must not be treated as active production data.
+    for record_type in ("DailyBar", "MarketIndex"):
+        status = str((capabilities.get(record_type) or {}).get("status", "")).upper()
+        if status != "DISABLED_IN_PRODUCTION":
+            return _fail(f"ZAPI_IDX production-disabled capability drifted: {record_type}={status}")
+
+    for record_type in ("SymbolMetadata", "TradingStatus"):
         if str((capabilities.get(record_type) or {}).get("status", "")).upper() != "SUPPORTED":
             return _fail(f"ZAPI_IDX capability missing SUPPORTED status: {record_type}")
+
     for record_type in ("IntradayQuote", "OrderBookSnapshot", "BrokerFlow", "CorporateAction"):
         status = str((capabilities.get(record_type) or {}).get("status", "")).upper()
         if status not in {"UNSUPPORTED", "NOT_CONFIGURED"}:
