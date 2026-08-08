@@ -1,7 +1,7 @@
 {
   "config_version": "1.7.0-multisource",
   "paths": {
-    "normalized_watchlist": "modules/historical_downloader/Stockbit_Watchlist_2026-07-19_normalized.csv",
+    "normalized_watchlist": "data/input/IDX_ALL_NON_FCA.csv",
     "ihsg_csv": "data/input/IHSG.csv",
     "historical_downloader": "modules/historical_downloader/historical_downloader.py",
     "historical_dir": "data/output/historical/by_symbol",
