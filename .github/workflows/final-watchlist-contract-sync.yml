@@ -1,0 +1,53 @@
+name: Sync Final Watchlist Contract
+
+on:
+  push:
+    branches: ["agent/sde-swing-v1-7-0-multisource"]
+    paths:
+      - "tools/_sync_final_watchlist_contract.py"
+      - ".github/workflows/final-watchlist-contract-sync.yml"
+
+permissions:
+  contents: write
+
+env:
+  ZAPI_IDX_API_KEY: ""
+  ZAPI_IDX_BASE_URL: ""
+  STOCKBIT_API_KEY: ""
+  TELEGRAM_BOT_TOKEN: ""
+  TELEGRAM_CHAT_ID: ""
+
+jobs:
+  sync-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/sde-swing-v1-7-0-multisource
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Sync new UI contract
+        run: python tools/_sync_final_watchlist_contract.py
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt pytest
+      - name: Compile
+        run: python -m compileall -q .
+      - name: Full test suite
+        run: python -m pytest -q
+      - name: Diff check
+        run: git diff --check
+      - name: Commit contract sync
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "test: align final watchlist contract"
+          git push origin HEAD:agent/sde-swing-v1-7-0-multisource
