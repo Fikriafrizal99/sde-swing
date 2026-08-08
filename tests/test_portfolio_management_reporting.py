@@ -149,6 +149,15 @@ def test_position_management_delivery_is_routed_to_report_topic_only():
     assert 'topic="position_management"' not in source
 
 
+def test_manual_position_management_forces_resend_but_auto_full_daily_keeps_dedupe():
+    source = (ROOT / "maintenance/RUN_POSITION_MANAGEMENT.bat").read_text(encoding="utf-8-sig")
+    assert 'set "FORCE_ARG=--force"' in source
+    assert 'if "%NON_BLOCKING%"=="1" set "FORCE_ARG="' in source
+    assert '--telegram !FORCE_ARG!' in source
+    assert 'MANUAL FORCE RESEND ke topic report' in source
+    assert 'AUTO DEDUPE ke topic report' in source
+
+
 def test_main_engines_are_not_imported_by_portfolio_report_runtime():
     source = (ROOT / "modules/portfolio/position_management_runtime.py").read_text(encoding="utf-8")
     forbidden = (
