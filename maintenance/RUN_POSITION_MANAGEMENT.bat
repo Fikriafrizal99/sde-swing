@@ -17,6 +17,12 @@ if not defined SDE_PYTHON_CMD (
   exit /b 9009
 )
 
+rem Refresh User-level value written by setx so an already-open RUN_SDE launcher
+rem does not keep using an obsolete Report topic ID from its parent process.
+set "PERSISTED_REPORT_ID="
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('TELEGRAM_THREAD_REPORT_ID','User')" 2^>nul`) do set "PERSISTED_REPORT_ID=%%I"
+if defined PERSISTED_REPORT_ID set "TELEGRAM_THREAD_REPORT_ID=!PERSISTED_REPORT_ID!"
+
 set "TRADE_DATE="
 for /f "delims=" %%D in ('%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py 2^>nul') do set "TRADE_DATE=%%D"
 if not defined TRADE_DATE (
