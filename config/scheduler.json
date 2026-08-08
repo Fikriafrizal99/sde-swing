@@ -47,9 +47,11 @@
     "send_final_watchlist_csv": true,
     "ai_interpretation": {
       "enabled": true,
-      "provider": "GEMINI",
+      "provider": "GROQ",
+      "model": "llama-3.3-70b-versatile",
       "fallback_to_deterministic": true,
-      "immutable_engine_fields": true
+      "immutable_engine_fields": true,
+      "max_watchlist_calls": 5
     }
   },
   "market_outlook": {
