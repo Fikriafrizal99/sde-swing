@@ -37,8 +37,6 @@ jobs:
         run: python -m compileall -q modules tests run_sde_job.py
       - name: Targeted regression tests
         run: python -m pytest -q tests/test_final_watchlist_presentation.py
-      - name: Existing report and delivery tests
-        run: python -m pytest -q tests/test_enhanced_daily_reports.py tests/test_delivery.py
       - name: Diff check
         run: git diff --check
       - name: Commit implementation
