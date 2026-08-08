@@ -1074,14 +1074,19 @@ def format_final_watchlist_summary(data: dict[str, Any]) -> str:
         f"• AVOID          : {escape_html(shared_format_number(counts.get('AVOID'), 0))}",
         f"Total aktif: {len(rows)}",
         "",
-        "<b>🎯 PRIORITAS EKSEKUSI</b>",
+        "<b>🏆 TOP 5 PRIORITAS</b>",
     ]
-    for index, row in enumerate(top[:3], 1):
+    for index, row in enumerate(top[:5], 1):
         confidence = shared_format_percent(row.get("confidence"), 1) if row.get("confidence") not in (None, "") else FORMAT_MISSING
         lines.append(f"{index}. {_safe(str(row.get('symbol') or '').upper(), 'emiten')} — {_status(row.get('decision'))} | {escape_html(confidence)}")
     if not top:
         lines.append("• Belum ada saham aktif dalam Final Watchlist.")
-    lines += ["", "Prioritas memakai kesiapan eksekusi, bukan score saja.", *(_runtime_zapi_lines(data) or [])]
+    lines += [
+        "",
+        SEPARATOR,
+        "📌 5 kartu berikut adalah 5 saham terbaik berdasarkan status eksekusi dan Final Score.",
+        "📎 CSV tetap memuat seluruh saham aktif.",
+    ]
     return "\n".join(lines).strip()
 
 

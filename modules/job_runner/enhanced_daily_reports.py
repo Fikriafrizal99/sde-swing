@@ -787,6 +787,15 @@ class EnhancedDailyReportBuilder:
         data = self._merge_missing(data, self._market_context(str(data.get("trade_date", ""))))
         data.setdefault("generated_at", self._now_iso())
         rows = self._enrich_watchlist_rows([dict(row) for row in data.get("rows", [])])
+        # Spend the limited AI budget on the actual best candidates first.
+        # `confidence` is Final_Score_V3 from the decision engine, so this is
+        # presentation ordering only and never recalculates an engine score.
+        ai_priority = {"BUY_READY": 0, "BUY_CANDIDATE": 1, "WATCH": 2}
+        rows.sort(key=lambda row: (
+            ai_priority.get(self._decision_bucket(row.get("decision")), 99),
+            -self._ranking_value(row, "confidence"),
+            int(_float(row.get("rank"), 9999)),
+        ))
         interpreted: list[dict[str, Any]] = []
         for row in rows:
             current = dict(row)
@@ -833,12 +842,14 @@ class EnhancedDailyReportBuilder:
         selected = [row for row in interpreted if self._decision_bucket(row.get("decision")) in allowed_buckets]
         selected.sort(key=lambda row: (
             priority.get(self._decision_bucket(row.get("decision")), 99),
+            # Final_Score_V3 is the canonical cross-factor score produced by
+            # the decision engine. Rank by it before presentation tie-breaks.
+            -self._ranking_value(row, "confidence"),
             -self._ranking_value(row, "entry_readiness"),
             abs(self._ranking_value(row, "entry_distance_pct", 9999.0)),
             -self._ranking_value(row, "broker_confidence", self._ranking_value(row, "broker_score")),
             -self._ranking_value(row, "technical_quality", self._ranking_value(row, "technical_score")),
             -self._ranking_value(row, "risk_reward"),
-            -self._ranking_value(row, "confidence"),
             int(_float(row.get("rank"), 9999)),
         ))
         for index, row in enumerate(selected, start=1):
@@ -861,7 +872,7 @@ class EnhancedDailyReportBuilder:
             **data,
             "rows": selected,
             "decision_counts": counts,
-            "top_priority": selected[:3],
+            "top_priority": selected[:5],
             "csv_filename": csv_path.name,
         }
         artifacts: list[DailyReportArtifact] = [
