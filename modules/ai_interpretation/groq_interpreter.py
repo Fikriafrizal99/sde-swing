@@ -4,15 +4,14 @@ import hashlib
 import json
 import os
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import requests
+
 from .gemini_interpreter import (
     IMMUTABLE_FIELDS,
-    GeminiHTTPError,
     GeminiInterpreter as _LegacyGeminiInterpreter,
     InterpretationResult,
 )
@@ -23,12 +22,10 @@ DEFAULT_MODEL = "llama-3.3-70b-versatile"
 GROQ_CHAT_COMPLETIONS_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
-class GroqHTTPError(GeminiHTTPError):
-    """HTTP error compatible with the legacy interpreter retry contract."""
-
+class GroqHTTPError(RuntimeError):
     def __init__(self, status_code: int, detail: str) -> None:
         self.status_code = int(status_code)
-        RuntimeError.__init__(self, f"Groq HTTP {self.status_code}: {detail}")
+        super().__init__(f"Groq HTTP {self.status_code}: {detail}")
 
 
 class GroqInterpreter(_LegacyGeminiInterpreter):
@@ -209,21 +206,30 @@ class GroqInterpreter(_LegacyGeminiInterpreter):
             "max_completion_tokens": 240,
             "response_format": {"type": "json_object"},
         }
-        request = urllib.request.Request(
-            GROQ_CHAT_COMPLETIONS_URL,
-            data=json.dumps(body).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "SDE-Swing/1.7 Groq-API-Client",
+        }
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:300]
-            raise GroqHTTPError(exc.code, detail) from exc
+            response = requests.post(
+                GROQ_CHAT_COMPLETIONS_URL,
+                json=body,
+                headers=headers,
+                timeout=self.timeout_seconds,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Groq network error: {exc}") from exc
+
+        if response.status_code >= 400:
+            detail = response.text.strip().replace("\r", " ").replace("\n", " ")[:300]
+            raise GroqHTTPError(response.status_code, detail or response.reason)
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError("Groq returned non-JSON response") from exc
 
         choices = payload.get("choices") or []
         if not choices:
