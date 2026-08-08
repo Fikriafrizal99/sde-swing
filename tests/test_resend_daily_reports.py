@@ -73,6 +73,7 @@ def test_market_and_post_market_mode_three_use_delivery_only_resend() -> None:
 
     for text, job in ((market, "market_outlook"), (post, "post_market")):
         assert "tools\\resolve_last_trading_day.py" in text
-        assert f"tools\\resend_daily_report.py --job {job} --trade-date !RESEND_DATE!" in text
-        mode_three_block = text.split('if "%MODE%"=="3" (', 1)[1].split('if "%RESEND_ONLY%"=="1"', 1)[0]
-        assert "run_sde_job.py" not in mode_three_block
+        assert f"tools\\resend_daily_report.py --job {job} --trade-date %RESEND_DATE%" in text
+        assert "!RESEND_DATE!" not in text
+        resend_block = text.split(":RESEND", 1)[1].split(":RESEND_DATE_FAILED", 1)[0]
+        assert "run_sde_job.py" not in resend_block
