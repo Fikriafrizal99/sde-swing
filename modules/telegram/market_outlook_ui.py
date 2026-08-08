@@ -6,7 +6,14 @@ from typing import Any, Iterable, Mapping
 
 
 SEPARATOR = "━━━━━━━━━━━━━━━━━━━"
-_MISSING = "data tidak tersedia"
+
+
+def _present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "nan", "none", "null"}
+    return True
 
 
 def _dt(value: Any) -> datetime | None:
@@ -19,7 +26,7 @@ def _dt(value: Any) -> datetime | None:
 def _date(value: Any, *, long: bool = False) -> str:
     parsed = _dt(value)
     if parsed is None:
-        return "data tidak tersedia"
+        return ""
     months = ["", "Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
     if not long:
         return f"{parsed.day:02d} {months[parsed.month]} {parsed.year}"
@@ -33,35 +40,50 @@ def _time(value: Any) -> str:
     return parsed.strftime("%H:%M") if parsed else ""
 
 
-def _upper(value: Any, fallback: str = _MISSING) -> str:
-    text = str(value or "").strip()
-    return text.replace("_", " ").upper() if text else fallback.upper()
+def _upper(value: Any) -> str:
+    if not _present(value):
+        return ""
+    return str(value).strip().replace("_", " ").upper()
+
+
+def _number(value: Any) -> float | None:
+    try:
+        return float(value)
+    except Exception:
+        return None
 
 
 def _pct(value: Any, decimals: int = 1, *, signed: bool = False, ratio_aware: bool = False) -> str:
-    try:
-        number = float(value)
-    except Exception:
-        return _MISSING
+    number = _number(value)
+    if number is None:
+        return ""
     if ratio_aware and 0 <= abs(number) <= 1:
         number *= 100.0
     prefix = "+" if signed and number > 0 else ""
     return (prefix + f"{number:.{decimals}f}%").replace(".", ",")
 
 
+def _smart_pct(value: Any, *, ratio_aware: bool = False) -> str:
+    number = _number(value)
+    if number is None:
+        return ""
+    if ratio_aware and 0 <= abs(number) <= 1:
+        number *= 100.0
+    decimals = 0 if abs(number - round(number)) < 1e-9 else 1
+    return f"{number:.{decimals}f}%".replace(".", ",")
+
+
 def _global_price(value: Any) -> str:
-    try:
-        number = float(value)
-    except Exception:
-        return _MISSING
-    absolute = abs(number)
-    decimals = 0 if absolute >= 1000 else 2
+    number = _number(value)
+    if number is None:
+        return ""
+    decimals = 0 if abs(number) >= 1000 else 2
     rendered = f"{number:,.{decimals}f}"
     return rendered.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
 def _clean_items(value: Any, limit: int = 4) -> list[str]:
-    if value in (None, ""):
+    if not _present(value):
         return []
     if isinstance(value, str):
         raw = value.replace("\r", "\n").replace(";", "\n").split("\n")
@@ -79,19 +101,10 @@ def _clean_items(value: Any, limit: int = 4) -> list[str]:
     return result
 
 
-def _aligned_block(rows: list[tuple[str, str]]) -> str:
-    clean = [(str(label), str(value)) for label, value in rows if str(value).strip()]
-    if not clean:
-        return ""
-    width = max(len(label) for label, _ in clean)
-    body = "\n".join(f"{label:<{width}} : {value}" for label, value in clean)
-    return f"<pre>{escape(body)}</pre>"
-
-
 def _human_reason(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
-        return "Data IHSG belum tersedia."
+        return ""
     replacements = {
         "ihsg": "IHSG",
         "ma20": "MA20",
@@ -107,52 +120,89 @@ def _human_reason(value: Any) -> str:
     return text[:1].upper() + text[1:]
 
 
-def _short_global_name(value: Any) -> str:
-    name = str(value or "Instrumen").strip()
-    aliases = {
-        "Brent Crude Oil": "Brent Oil",
-        "Dow Jones Industrial Average": "Dow Jones",
-        "US Dollar Index": "Dollar Index",
-        "U.S. Dollar Index": "Dollar Index",
-        "NASDAQ Composite": "Nasdaq",
-        "Nasdaq Composite": "Nasdaq",
-        "Nikkei 225": "Nikkei 225",
-        "Hang Seng Index": "Hang Seng",
-        "KOSPI Composite Index": "KOSPI",
-    }
-    return aliases.get(name, name)
+def _regime_icon(regime: str) -> str:
+    if "BULL" in regime:
+        return "🟢"
+    if "BEAR" in regime:
+        return "🔴"
+    return "🟡"
 
 
-def _global_rows(instruments: list[Mapping[str, Any]]) -> list[tuple[str, str]]:
-    rows: list[tuple[str, str]] = []
-    for item in instruments[:9]:
-        name = _short_global_name(item.get("display_name") or item.get("instrument"))
-        status = str(item.get("freshness_status") or "").upper()
-        if status not in {"VALID", "DELAYED_ACCEPTED"}:
-            rows.append((name, _MISSING))
+def _metric_line(icon: str, label: str, value: str) -> str:
+    return f"{icon} {label:<10}: <b>{escape(value)}</b>"
+
+
+def _normalise(value: Any) -> str:
+    return "".join(ch.lower() for ch in str(value or "") if ch.isalnum())
+
+
+_GLOBAL_SPECS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
+    ("brent", "🛢️", "Brent Oil", ("brentcrude", "brentcrudeoil", "bzf")),
+    ("dow", "🇺🇸", "Dow Jones", ("dowjones", "dowjonesindustrialaverage", "dji")),
+    ("dxy", "🇺🇸", "Dollar Index", ("dxy", "dollarindex", "usddollarindex", "dxynyb")),
+    ("usdidr", "🇺🇸🇮🇩", "USD/IDR", ("usdidr", "idr=x", "idrx")),
+    ("gold", "🥇", "Gold", ("gold", "gcf")),
+    ("hangseng", "🇭🇰", "Hang Seng", ("hangseng", "hangsengindex", "hsi")),
+    ("kospi", "🇰🇷", "KOSPI", ("kospi", "kospicompositeindex", "ks11")),
+    ("nasdaq", "🇺🇸", "Nasdaq", ("nasdaq", "nasdaqcomposite", "ixic")),
+    ("naturalgas", "🔥", "Natural Gas", ("naturalgas", "ngf")),
+    ("nikkei", "🇯🇵", "Nikkei 225", ("nikkei225", "nikkei", "n225")),
+)
+
+
+def _instrument_tokens(item: Mapping[str, Any]) -> set[str]:
+    values = (
+        item.get("key"),
+        item.get("instrument"),
+        item.get("display_name"),
+        item.get("name"),
+        item.get("symbol"),
+    )
+    return {_normalise(value) for value in values if _present(value)}
+
+
+def _find_global(instruments: list[Mapping[str, Any]], aliases: tuple[str, ...]) -> Mapping[str, Any] | None:
+    wanted = {_normalise(alias) for alias in aliases}
+    for item in instruments:
+        tokens = _instrument_tokens(item)
+        if tokens & wanted:
+            return item
+        if any(any(alias in token or token in alias for alias in wanted) for token in tokens):
+            return item
+    return None
+
+
+def _global_rows(instruments: list[Mapping[str, Any]]) -> list[str]:
+    selected: list[tuple[str, str, str, float]] = []
+    for key, icon, display, aliases in _GLOBAL_SPECS:
+        item = _find_global(instruments, aliases)
+        if item is None:
             continue
-        try:
-            change = float(item.get("change_pct") or 0.0)
-        except Exception:
-            change = 0.0
-        marker = "🟢" if change > 0 else "🔴" if change < 0 else "⚪"
-        rows.append((name, f"{_global_price(item.get('close'))}  {marker} {_pct(change, 2, signed=True)}"))
-    return rows
+        status = str(item.get("freshness_status") or "").upper()
+        if status and status not in {"VALID", "DELAYED_ACCEPTED"}:
+            continue
+        close = _global_price(item.get("close"))
+        change_value = _number(item.get("change_pct"))
+        if not close or change_value is None:
+            continue
+        selected.append((key, icon, display, change_value))
 
-
-def _market_condition_rows(data: Mapping[str, Any], tone: str, coverage: Any) -> list[tuple[str, str]]:
-    global_value = tone
-    coverage_text = _pct(coverage, 1, ratio_aware=True)
-    if coverage_text != _MISSING:
-        global_value = f"{tone} | Coverage {coverage_text}"
-    return [
-        ("Regime", _upper(data.get("market_regime"))),
-        ("Execution", _upper(data.get("execution_mode"), "SELECTIVE")),
-        ("Global", global_value),
-        ("IHSG", _upper(data.get("ihsg_trend"))),
-        ("Momentum", _upper(data.get("ihsg_momentum"))),
-        ("Breadth", _upper(data.get("breadth"))),
-    ]
+    width = max((len(display) for _, _, display, _ in selected), default=0)
+    result: list[str] = []
+    for key, icon, display, change_value in selected:
+        item = _find_global(instruments, next(spec[3] for spec in _GLOBAL_SPECS if spec[0] == key))
+        if item is None:
+            continue
+        close = _global_price(item.get("close"))
+        # USD/IDR is the exception agreed for an IHSG-centric report:
+        # a rising pair means rupiah weakness, so the impact marker is red.
+        if key == "usdidr":
+            marker = "🔴" if change_value > 0 else "🟢" if change_value < 0 else "⚪"
+        else:
+            marker = "🟢" if change_value > 0 else "🔴" if change_value < 0 else "⚪"
+        change = _pct(change_value, 2, signed=True)
+        result.append(f"{icon} {display:<{width}} : {close}  {marker} <b>{escape(change)}</b>")
+    return result
 
 
 def _global_interpretation(tone: str, regime: str) -> str:
@@ -171,18 +221,18 @@ def _global_interpretation(tone: str, regime: str) -> str:
 def _bias_lines(regime: str, execution: str) -> tuple[str, str, str]:
     if "BULL" in regime:
         return (
-            f"🟢 Bias: BULLISH — {execution}",
+            f"🟢 Bias        : BULLISH — {execution}" if execution else "🟢 Bias        : BULLISH",
             "Agresif hanya pada setup berkualitas.",
             "Tidak semua saham ikut dibeli hanya karena market sedang bullish.",
         )
     if "BEAR" in regime:
         return (
-            f"🔴 Bias: BEARISH — {execution}",
+            f"🔴 Bias        : BEARISH — {execution}" if execution else "🔴 Bias        : BEARISH",
             "Defensif dan kurangi agresivitas entry.",
             "Prioritaskan proteksi modal dan hindari memaksakan setup.",
         )
     return (
-        f"🟡 Bias: SELECTIVE — {execution}",
+        f"🟡 Bias        : SELECTIVE — {execution}" if execution else "🟡 Bias        : SELECTIVE",
         "Tetap selektif dan tunggu konfirmasi yang lengkap.",
         "Hindari memaksakan entry saat struktur market belum dominan.",
     )
@@ -191,35 +241,59 @@ def _bias_lines(regime: str, execution: str) -> tuple[str, str, str]:
 def format_market_outlook(data: dict[str, Any]) -> str:
     sentiment = data.get("global_sentiment") if isinstance(data.get("global_sentiment"), Mapping) else {}
     instruments = [item for item in data.get("global_instruments", []) or [] if isinstance(item, Mapping)]
-    regime = _upper(data.get("market_regime"), "UNKNOWN")
-    execution = _upper(data.get("execution_mode"), "SELECTIVE")
-    tone = _upper(sentiment.get("sentiment_state") or data.get("global_tone"), "NEUTRAL")
-    coverage = data.get("global_coverage") if data.get("global_coverage") not in (None, "") else data.get("coverage")
+    regime = _upper(data.get("market_regime"))
+    execution = _upper(data.get("execution_mode"))
+    tone = _upper(sentiment.get("sentiment_state") or data.get("global_tone"))
+    coverage = data.get("global_coverage") if _present(data.get("global_coverage")) else data.get("coverage")
     created_at = data.get("snapshot_created_at") or data.get("created_at")
 
-    lines = [
-        "<b>🌅 SDE SWING — MARKET OUTLOOK</b>",
-        f"📅 {escape(_date(data.get('trade_date'), long=True))}",
-    ]
-    if _time(created_at):
-        lines.append(f"🕒 Snapshot diperbarui: {escape(_time(created_at))} WIB")
+    lines = ["<b>🌅 SDE SWING — MARKET OUTLOOK</b>"]
+    trade_date = _date(data.get("trade_date"), long=True)
+    if trade_date:
+        lines.append(f"📅 {escape(trade_date)}")
+    snapshot_time = _time(created_at)
+    if snapshot_time:
+        lines.append(f"🕒 Snapshot diperbarui: {escape(snapshot_time)} WIB")
 
-    lines += [
-        SEPARATOR,
-        "",
-        "<b>📊 MARKET CONDITION</b>",
-        _aligned_block(_market_condition_rows(data, tone, coverage)),
-        escape(_human_reason(data.get("ihsg_reason") or data.get("reason"))),
-    ]
+    condition_rows: list[str] = []
+    if regime:
+        condition_rows.append(_metric_line(_regime_icon(regime), "Regime", regime))
+    if execution:
+        condition_rows.append(_metric_line("🎯", "Execution", execution))
+    if tone:
+        global_value = tone
+        coverage_text = _smart_pct(coverage, ratio_aware=True)
+        if coverage_text:
+            global_value += f" | Coverage {coverage_text}"
+        condition_rows.append(_metric_line("🌍", "Global", global_value))
+    ihsg_trend = _upper(data.get("ihsg_trend"))
+    if ihsg_trend:
+        condition_rows.append(_metric_line("📈", "IHSG", ihsg_trend))
+    momentum = _upper(data.get("ihsg_momentum"))
+    if momentum:
+        condition_rows.append(_metric_line("⚡", "Momentum", momentum))
+    breadth = _upper(data.get("breadth"))
+    if breadth:
+        condition_rows.append(_metric_line("📊", "Breadth", breadth))
 
-    if instruments:
-        lines += [
-            "",
-            SEPARATOR,
-            "<b>🌍 GLOBAL MARKET</b>",
-            _aligned_block(_global_rows(instruments)),
-            escape(_global_interpretation(tone, regime)),
-        ]
+    if condition_rows:
+        lines += [SEPARATOR, "", "<b>📊 MARKET CONDITION</b>"]
+        for row in condition_rows:
+            lines += ["", row]
+        reason = _human_reason(data.get("ihsg_reason") or data.get("reason"))
+        if reason:
+            lines += ["", escape(reason)]
+
+    global_rows = _global_rows(instruments)
+    if global_rows:
+        lines += ["", SEPARATOR, "", "<b>🌍 GLOBAL MARKET</b>"]
+        for row in global_rows:
+            lines += ["", row]
+        interpretation = str(data.get("global_interpretation") or "").strip()
+        if not interpretation:
+            interpretation = _global_interpretation(tone or "NEUTRAL", regime)
+        if interpretation:
+            lines += ["", "<b>📌 INTERPRETASI</b>", "", escape(interpretation)]
 
     sector_groups = [
         ("🔥 LEADING", data.get("leading", [])),
@@ -227,51 +301,58 @@ def format_market_outlook(data: dict[str, Any]) -> str:
         ("🟡 WEAKENING", data.get("weakening", [])),
         ("🔴 ROTATING OUT", data.get("rotating_out") or data.get("lagging", [])),
     ]
-    if any(_clean_items(values, 4) for _, values in sector_groups):
-        lines += ["", SEPARATOR, "<b>🔄 SECTOR ROTATION</b>"]
-        for title, values in sector_groups:
-            items = _clean_items(values, 4)
-            if not items:
-                continue
-            lines.append(f"<b>{escape(title)}</b>")
-            lines.extend(f"• {escape(item)}" for item in items)
-            lines.append("")
-        if lines[-1] == "":
-            lines.pop()
+    available_groups = [(title, _clean_items(values, 4)) for title, values in sector_groups]
+    available_groups = [(title, values) for title, values in available_groups if values]
+    if available_groups:
+        lines += ["", SEPARATOR, "", "<b>🔄 ROTASI SEKTOR</b>"]
+        for title, values in available_groups:
+            lines += ["", f"<b>{escape(title)}</b>", ""]
+            lines.extend(f"• {escape(item)}" for item in values)
 
     lines += [
         "",
         SEPARATOR,
+        "",
         "<b>🎯 TRADING PLAN</b>",
+        "",
         "<b>Prioritas:</b>",
-        "• Cari setup dari sektor LEADING / ROTATING IN.",
+        "",
+        "• Cari setup dari sektor <b>LEADING / ROTATING IN</b>.",
         "• Technical Quality dan Entry Readiness harus kuat.",
         "• Utamakan broker accumulation / confirmation.",
         "• BUY CANDIDATE tetap menunggu trigger.",
         "• Entry hanya di area yang sudah ditentukan.",
         "",
         "<b>⚠️ Hindari:</b>",
+        "",
         "• Chase harga.",
         "• Setup dengan RR buruk.",
         "• Broker distribution kuat.",
-        "• Saham sektor weakening tanpa katalis kuat.",
-        "",
-        SEPARATOR,
-        "<b>📌 SDE BIAS BESOK</b>",
+        "• Saham sektor WEAKENING tanpa katalis kuat.",
     ]
-    bias_head, bias_line_1, bias_line_2 = _bias_lines(regime, execution)
-    lines += [f"<b>{escape(bias_head)}</b>", escape(bias_line_1), escape(bias_line_2)]
 
-    data_status = _upper(data.get("global_market_status"), "VALID")
+    if regime or execution:
+        lines += ["", SEPARATOR, "", "<b>📌 SDE BIAS BESOK</b>", ""]
+        bias_head, bias_line_1, bias_line_2 = _bias_lines(regime, execution)
+        lines += [f"<b>{escape(bias_head)}</b>", "", escape(bias_line_1), escape(bias_line_2)]
+
+    data_status = _upper(data.get("global_market_status"))
+    coverage_text = _smart_pct(coverage, ratio_aware=True)
     ihsg_date = _date(data.get("ihsg_data_date") or data.get("trade_date"))
-    coverage_text = _pct(coverage, 1, ratio_aware=True)
-    data_parts = [f"Global {coverage_text}" if coverage_text != _MISSING else "", f"IHSG {ihsg_date}" if ihsg_date else ""]
-    data_parts = [item for item in data_parts if item]
+    status_rows: list[str] = []
+    if data_status:
+        status_rows.append(_metric_line("✅", "Status", data_status))
+    if coverage_text:
+        status_rows.append(_metric_line("🌍", "Global", f"Coverage {coverage_text}"))
+    if ihsg_date:
+        status_rows.append(_metric_line("📈", "IHSG", ihsg_date))
+    if status_rows:
+        lines += ["", "<b>📡 DATA STATUS</b>"]
+        for row in status_rows:
+            lines += ["", row]
+
     lines += [
         "",
-        f"<b>📡 Data: {escape(data_status)}</b>",
-        escape(" | ".join(data_parts)),
-        "",
-        "⚠️ Sentimen global adalah konteks Market Outlook dan tidak mengubah scoring saham langsung.",
+        "⚠️ Sentimen global adalah konteks Market Outlook dan tidak mengubah scoring saham secara langsung.",
     ]
     return "\n".join(line for line in lines if line is not None).strip()
