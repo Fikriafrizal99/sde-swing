@@ -119,8 +119,8 @@ def test_raw_fixture_to_reconciliation_lineage_and_report(tmp_path: Path):
         "coverage": 100, "historical_status": "VALID", "zapi_status": result["status"],
         "zapi_coverage": result["coverage_ratio"], "stockbit_status": "WAITING",
     })
-    assert "Yahoo: VALID" in message
-    assert "ZAPI IDX: SUCCESS" in message
+    assert "Yahoo Technical" in message and "<b>VALID</b>" in message
+    assert "ZAPI IDX" in message and "<b>SUCCESS</b>" in message
 
 
 def test_reconciliation_tolerance_mismatch_and_stale(tmp_path: Path):
