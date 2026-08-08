@@ -11,6 +11,7 @@ def test_three_topic_routing_uses_env_thread_ids() -> None:
     }
     router = TelegramRouter({}, env)
     assert router.resolve("final_watchlist", "final_watchlist").to_dict()["message_thread_id"] == "11"
+    assert router.resolve("final_watchlist_summary", "report").to_dict()["message_thread_id"] == "11"
     assert router.resolve("final_watchlist_detail", "final_watchlist_detail").to_dict()["message_thread_id"] == "11"
     assert router.resolve("final_watchlist_csv", "final_watchlist_csv").to_dict()["message_thread_id"] == "11"
     assert router.resolve("market_outlook", "market_outlook").to_dict()["message_thread_id"] == "22"
@@ -19,8 +20,13 @@ def test_three_topic_routing_uses_env_thread_ids() -> None:
 
 def test_final_watchlist_variants_are_signal_category() -> None:
     router = TelegramRouter({}, {})
-    for report_type in ("final_watchlist", "final_watchlist_detail", "final_watchlist_csv"):
-        assert router.category_for(report_type, report_type) == "SIGNAL"
+    for report_type in (
+        "final_watchlist",
+        "final_watchlist_summary",
+        "final_watchlist_detail",
+        "final_watchlist_csv",
+    ):
+        assert router.category_for(report_type, "report") == "SIGNAL"
 
 
 def test_empty_thread_falls_back_to_main_chat_without_marking_error() -> None:
