@@ -158,7 +158,7 @@ def test_final_watchlist_uses_agreed_format_and_exports_active_rows(tmp_path: Pa
     assert {row["symbol"] for row in exported} == {"S1", "S2", "S3", "S4", "S5"}
 
 
-def test_market_outlook_matches_restored_sections(tmp_path: Path) -> None:
+def test_market_outlook_matches_final_agreed_layout(tmp_path: Path) -> None:
     builder = EnhancedDailyReportBuilder(
         tmp_path,
         GeminiInterpreter(api_key="", cache_enabled=False),
@@ -178,24 +178,37 @@ def test_market_outlook_matches_restored_sections(tmp_path: Path) -> None:
         "provider": "YAHOO",
         "source_mode": "LIVE",
         "coverage": 96,
+        "global_market_status": "VALID",
         "global_sentiment": {
             "sentiment_state": "RISK_ON",
-            "positive_instruments": ["sp500"],
+            "positive_instruments": ["brent"],
             "negative_instruments": ["dow"],
             "neutral_instruments": [],
             "missing_instruments": [],
         },
         "global_instruments": [
             {
-                "display_name": "S&P 500",
-                "close": 7437.63,
-                "change_pct": 1.66,
+                "key": "brent_crude",
+                "display_name": "Brent Crude Oil",
+                "symbol": "BZ=F",
+                "close": 82.49,
+                "change_pct": 3.83,
                 "freshness_status": "VALID",
             },
             {
+                "key": "dow_jones",
                 "display_name": "Dow Jones",
+                "symbol": "^DJI",
                 "close": 53885.10,
                 "change_pct": -0.85,
+                "freshness_status": "VALID",
+            },
+            {
+                "key": "usd_idr",
+                "display_name": "USD/IDR",
+                "symbol": "IDR=X",
+                "close": 16280,
+                "change_pct": 0.32,
                 "freshness_status": "VALID",
             },
         ],
@@ -203,23 +216,28 @@ def test_market_outlook_matches_restored_sections(tmp_path: Path) -> None:
     text = artifact.text
     assert "<b>🌅 SDE SWING — MARKET OUTLOOK</b>" in text
     assert "<b>📊 MARKET CONDITION</b>" in text
+    assert "🟢 Regime    : <b>BULLISH MODERATE</b>" in text
+    assert "🎯 Execution : <b>SELECTIVE</b>" in text
+    assert "🌍 Global    : <b>RISK ON | Coverage 96%</b>" in text
+    assert "📈 IHSG      : <b>BULLISH</b>" in text
+    assert "⚡ Momentum  : <b>POSITIVE</b>" in text
+    assert "📊 Breadth   : <b>POSITIVE</b>" in text
     assert "<b>🌍 GLOBAL MARKET</b>" in text
-    assert "<b>🔄 SECTOR ROTATION</b>" in text
+    assert "Brent Oil" in text and "🟢 <b>+3,83%</b>" in text
+    assert "Dow Jones" in text and "🔴 <b>-0,85%</b>" in text
+    assert "USD/IDR" in text and "🔴 <b>+0,32%</b>" in text
+    assert "<b>📌 INTERPRETASI</b>" in text
+    assert "<b>🔄 ROTASI SEKTOR</b>" in text
     assert "<b>🎯 TRADING PLAN</b>" in text
     assert "<b>📌 SDE BIAS BESOK</b>" in text
-    assert "<b>Prioritas:</b>" in text
-    assert "<b>⚠️ Hindari:</b>" in text
-    assert "<pre>" in text and "</pre>" in text
-    assert "Regime    : BULLISH MODERATE" in text
-    assert "Execution : SELECTIVE" in text
-    assert "🟢 +1,66%" in text
-    assert "🔴 -0,85%" in text
-    assert "Rp7.438" not in text
+    assert "<b>📡 DATA STATUS</b>" in text
+    assert "Rp" not in text
+    assert "data tidak tersedia" not in text.lower()
     assert "ZAPI ENRICHMENT" not in text
     assert "Sentimen global adalah konteks Market Outlook" in text
 
 
-def test_post_market_matches_agreed_sections_and_counts(tmp_path: Path) -> None:
+def test_post_market_matches_final_agreed_sections_and_counts(tmp_path: Path) -> None:
     builder = EnhancedDailyReportBuilder(
         tmp_path,
         GeminiInterpreter(api_key="", cache_enabled=False),
@@ -228,84 +246,55 @@ def test_post_market_matches_agreed_sections_and_counts(tmp_path: Path) -> None:
         "trade_date": "2026-08-04",
         "finished_at": "2026-08-04T18:37:00+07:00",
         "process_status": "SUCCESS_WITH_WARNING",
-        "market_regime": "STRONG_BULLISH",
-        "execution_mode": "SELECTIVE_AGGRESSIVE",
-        "global_tone": "RISK_ON",
-        "ihsg_trend": "BULLISH",
-        "breadth": "BULLISH",
-        "leading": ["Energy"],
-        "rotating_in": ["Industrials"],
-        "weakening": ["Technology"],
-        "lagging": ["Infrastructure"],
         "symbols_requested": 441,
         "symbols_loaded": 439,
         "symbols_valid": 437,
         "symbols_failed": 2,
         "symbols_skipped": 0,
         "coverage": 99.1,
-        "funnel_universe": 441,
-        "funnel_liquidity": 120,
-        "funnel_technical": 50,
-        "funnel_setup": 20,
-        "funnel_entry_ready": 15,
-        "funnel_broker": 13,
-        "funnel_final": 13,
-        "dominant_filters": [
-            {"label": "Likuiditas tidak memenuhi batas", "count": 321},
-            {"label": "Setup belum matang", "count": 70},
-        ],
         "buy_ready_count": 2,
         "buy_candidate_count": 4,
         "watch_count": 7,
         "wait_count": 6,
         "avoid_count": 1,
-        "final_ready_count": 13,
         "technical_status": "READY",
-        "universe_status": "READY",
         "candidate_status": "READY",
         "broker_status": "READY",
-        "market_outlook_status": "READY",
         "final_watchlist_status": "READY_TO_RUN",
         "historical_status": "VALID",
-        "yahoo_data_date": "2026-08-04",
         "zapi_status": "SUCCESS_WITH_WARNING",
-        "zapi_data_date": "2026-08-03",
-        "zapi_coverage": 100,
         "zapi_note": "Menggunakan completed trading session terakhir.",
         "stockbit_status": "READY",
-        "stockbit_data_date": "2026-08-04",
-        "stockbit_coverage": 100,
-        "global_market_status": "VALID",
-        "global_data_date": "2026-08-03",
-        "global_coverage": 100,
         "run_id": "POST-20260804-183700",
     })
     text = artifact.text
     ordered_sections = [
-        "📊 MARKET SUMMARY",
-        "🔄 SECTOR BIAS",
+        "✅ PROCESS STATUS",
         "📦 DATA QUALITY",
-        "🔎 CANDIDATE FUNNEL",
-        "🚧 FILTER DOMINAN",
+        "🔎 PIPELINE READINESS",
         "📊 SCREENING RESULT",
-        "📌 INTERPRETASI",
-        "📈 PIPELINE STATUS",
         "📡 SOURCE STATUS",
         "🎯 NEXT PROCESS",
+        "📌 POST MARKET STATUS",
     ]
     positions = [text.index(section) for section in ordered_sections]
     assert positions == sorted(positions)
     assert "🕒 Proses selesai: 18:37 WIB" in text
     assert "SUCCESS WITH WARNING" in text
-    assert "• Not Loaded      : 2 saham" in text
-    assert "• Invalid         : 2 saham" in text
-    assert "• Impact          : TIDAK MATERIAL" in text
-    assert "• Lolos likuiditas        : 120" in text
-    assert "• BUY READY     : 2" in text
-    assert "Run ID: POST-20260804-183700" in text
+    assert "⚠️ Warning         : <b>4 data bermasalah</b>" in text
+    assert "❌ Not Loaded      : <b>2 saham</b>" in text
+    assert "⚠️ Invalid         : <b>2 saham</b>" in text
+    assert "🎯 Impact          : <b>TIDAK MATERIAL</b>" in text
+    assert "🟢 BUY READY       : <b>2</b>" in text
+    assert "🟠 BUY CANDIDATE   : <b>4</b>" in text
+    assert "<b>Run ID:</b> <code>POST-20260804-183700</code>" in text
+    assert "MARKET SUMMARY" not in text
+    assert "SECTOR BIAS" not in text
+    assert "ZAPI ENRICHMENT" not in text
+    assert "data tidak tersedia" not in text.lower()
 
 
-def test_post_market_does_not_invent_missing_funnel_counts(tmp_path: Path) -> None:
+def test_post_market_does_not_invent_missing_screening_counts(tmp_path: Path) -> None:
     builder = EnhancedDailyReportBuilder(
         tmp_path,
         GeminiInterpreter(api_key="", cache_enabled=False),
@@ -319,9 +308,13 @@ def test_post_market_does_not_invent_missing_funnel_counts(tmp_path: Path) -> No
         "symbols_skipped": 0,
         "coverage": 100,
     })
-    assert "• Universe awal           : 10" in artifact.text
-    assert "• Tahap rinci belum tersedia dari artifact engine" in artifact.text
-    assert "• Belum tersedia dari artifact engine" in artifact.text
+    text = artifact.text
+    assert "🌐 Universe        : <b>10 saham</b>" in text
+    assert "📊 Coverage        : <b>100%</b>" in text
+    assert "Belum tersedia dari artifact keputusan." in text
+    assert "BUY READY" not in text
+    assert "BUY CANDIDATE" not in text
+    assert "data tidak tersedia" not in text.lower()
 
 
 class CountingInterpreter(GeminiInterpreter):
