@@ -1,0 +1,55 @@
+name: Apply Final Watchlist Upgrade
+
+on:
+  push:
+    branches: ["agent/sde-swing-v1-7-0-multisource"]
+    paths:
+      - "tools/_apply_final_watchlist_upgrade.py"
+      - ".github/workflows/final-watchlist-upgrade.yml"
+
+permissions:
+  contents: write
+
+env:
+  ZAPI_IDX_API_KEY: ""
+  ZAPI_IDX_BASE_URL: ""
+  STOCKBIT_API_KEY: ""
+  TELEGRAM_BOT_TOKEN: ""
+  TELEGRAM_CHAT_ID: ""
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/sde-swing-v1-7-0-multisource
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Apply presentation-only patch
+        run: python tools/_apply_final_watchlist_upgrade.py
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt pytest
+      - name: Compile
+        run: python -m compileall -q modules tests run_sde_job.py
+      - name: Targeted regression tests
+        run: python -m pytest -q tests/test_final_watchlist_presentation.py
+      - name: Existing report and delivery tests
+        run: python -m pytest -q tests/test_enhanced_daily_reports.py tests/test_delivery.py
+      - name: Diff check
+        run: git diff --check
+      - name: Commit implementation
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "feat: add final watchlist candle presentation"
+          git push origin HEAD:agent/sde-swing-v1-7-0-multisource
