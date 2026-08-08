@@ -46,6 +46,7 @@ echo 10. Buka Folder Output
 echo 11. Test Telegram Terpisah
 echo 12. Register Semua BUY Mesin
 echo 13. Maintain Portfolio Aktual
+echo 14. Analisa Portfolio Aktif
 echo  0. Keluar
 echo.
 set "CHOICE="
@@ -64,6 +65,7 @@ if "%CHOICE%"=="10" goto OUTPUT
 if "%CHOICE%"=="11" goto TELEGRAM_TEST
 if "%CHOICE%"=="12" goto REGISTER_BUY
 if "%CHOICE%"=="13" goto PORTFOLIO
+if "%CHOICE%"=="14" goto POSITION_MANAGEMENT
 if "%CHOICE%"=="0" goto END
 
 echo.
@@ -74,6 +76,14 @@ goto MENU
 
 :FULL_DAILY
 call :RUN_JOB "full_manual" "--interactive-broker" "1 Full Manual"
+if "!EXIT_CODE!"=="0" (
+  call :LOG "selected_menu=1 action=POSITION_MANAGEMENT_AUTO status=START"
+  call maintenance\RUN_POSITION_MANAGEMENT.bat --non-blocking
+  call :LOG "selected_menu=1 action=POSITION_MANAGEMENT_AUTO status=DONE"
+) else (
+  echo [SKIPPED] Position Management tidak dijalankan karena Full Daily belum sukses.
+  call :LOG "selected_menu=1 action=POSITION_MANAGEMENT_AUTO status=SKIPPED full_daily_exit_code=!EXIT_CODE!"
+)
 goto MENU
 
 :MARKET_OUTLOOK
@@ -158,6 +168,11 @@ goto MENU
 :PORTFOLIO
 call :LOG "selected_menu=13 action=MAINTAIN_PORTFOLIO"
 call maintenance\RECORD_PORTFOLIO_BUY.bat
+goto MENU
+
+:POSITION_MANAGEMENT
+call :LOG "selected_menu=14 action=RUN_POSITION_MANAGEMENT"
+call maintenance\RUN_POSITION_MANAGEMENT.bat
 goto MENU
 
 :RUN_JOB
