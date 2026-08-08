@@ -242,9 +242,10 @@ def test_backfill_tampermonkey_v2_uses_dedicated_namespace_and_exports_actor_val
     assert "BROKER_SUMMARY_COMBINED_" not in source
 
 
-def test_launcher_exposes_backfill_as_maintenance_not_integrated_final_watchlist_job():
-    launcher = (ROOT / "START_SDE_SWING.bat").read_text(encoding="utf-8-sig")
-    assert "15. Backfill Broker Portfolio" in launcher
-    assert "call maintenance\\BACKFILL_PORTFOLIO_BROKER.bat" in launcher
-    section = launcher.split(":PORTFOLIO_BROKER_BACKFILL", 1)[1].split(":RUN_JOB", 1)[0]
-    assert "run_sde_job_integrated.py" not in section
+def test_launcher_exposes_backfill_as_portfolio_maintenance_not_integrated_final_watchlist_job():
+    control = (ROOT / "RUN_SDE.bat").read_text(encoding="utf-8-sig")
+    portfolio = (ROOT / "maintenance/PORTFOLIO_MENU.bat").read_text(encoding="utf-8-sig")
+    assert "Portfolio Operations" in control
+    assert "Backfill Broker Portfolio" in portfolio
+    assert "call maintenance\\BACKFILL_PORTFOLIO_BROKER.bat" in portfolio
+    assert "run_sde_job_integrated.py" not in portfolio
