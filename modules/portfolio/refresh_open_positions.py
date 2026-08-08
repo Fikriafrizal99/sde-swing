@@ -43,7 +43,8 @@ def evaluation_datetime(trade_date: str, market_close: str) -> str:
     hour, minute = (int(part) for part in market_close.split(":", 1))
     day = datetime.fromisoformat(trade_date).date()
     # One minute after configured close ensures LAST_CLOSED_CANDLE semantics.
-    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=WIB).replace(second=0) .__add__(timedelta(minutes=1)).isoformat(timespec="seconds")
+    closed_at = datetime(day.year, day.month, day.day, hour, minute, tzinfo=WIB)
+    return (closed_at + timedelta(minutes=1)).isoformat(timespec="seconds")
 
 
 def write_symbols(path: Path, symbols: list[str]) -> None:
