@@ -4,9 +4,16 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import requests
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from modules.job_runner.runtime import load_environment_file
 
 
 def _topic_name(message: dict[str, Any]) -> str:
@@ -23,7 +30,9 @@ def _topic_name(message: dict[str, Any]) -> str:
     return ""
 
 
+load_environment_file(ROOT / ".env")
 token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+target_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 if not token:
     print("Set TELEGRAM_BOT_TOKEN terlebih dahulu.", file=sys.stderr)
     raise SystemExit(1)
@@ -36,7 +45,7 @@ if not payload.get("ok"):
 
 results = payload.get("result", [])
 if not results:
-    print("Belum ada update. Kirim satu pesan ke bot/group lalu jalankan lagi.")
+    print("Belum ada update. Kirim 'REPORT TEST' di topic Report lalu jalankan lagi.")
     raise SystemExit(0)
 
 chats: dict[str, dict[str, Any]] = {}
@@ -56,6 +65,7 @@ for update in results:
         "title": chat.get("title"),
         "username": chat.get("username"),
         "first_name": chat.get("first_name"),
+        "is_sde_target_chat": bool(target_chat_id and chat_key == target_chat_id),
     }
     thread_id = message.get("message_thread_id")
     if thread_id is None:
@@ -66,20 +76,32 @@ for update in results:
         "message_thread_id": thread_id,
         "topic_name": _topic_name(message),
         "latest_text": str(message.get("text") or message.get("caption") or "")[:120],
+        "is_sde_target_chat": bool(target_chat_id and chat_key == target_chat_id),
     }
 
-print("=== TELEGRAM CHAT ===")
-for item in chats.values():
-    print(json.dumps(item, ensure_ascii=False, indent=2))
-
-print("\n=== FORUM TOPICS / THREAD IDS ===")
-if not topics:
-    print("Belum ada topic update yang terbaca. Kirim pesan seperti 'REPORT TEST' di topic Report lalu jalankan lagi.")
+print("=== TELEGRAM TARGET CHAT ===")
+if target_chat_id:
+    print(f"TELEGRAM_CHAT_ID={target_chat_id}")
+    target_chat = chats.get(target_chat_id)
+    if target_chat:
+        print(json.dumps(target_chat, ensure_ascii=False, indent=2))
+    else:
+        print("Belum ada update terbaru yang terbaca dari TELEGRAM_CHAT_ID tersebut.")
 else:
-    for item in topics.values():
+    print("TELEGRAM_CHAT_ID belum dikonfigurasi; jangan memilih thread ID sebelum chat target jelas.")
+
+print("\n=== FORUM TOPICS DARI CHAT SDE ===")
+target_topics = [item for (chat_key, _), item in topics.items() if not target_chat_id or chat_key == target_chat_id]
+if not target_topics:
+    print("Belum ada topic update dari chat SDE. Kirim 'REPORT TEST' di topic Report lalu jalankan lagi.")
+else:
+    for item in target_topics:
         print(json.dumps(item, ensure_ascii=False, indent=2))
 
-print("\nUntuk SDE topic Report, gunakan thread ID dari topic Report sebagai:")
+other_count = sum(1 for (chat_key, _) in topics if target_chat_id and chat_key != target_chat_id)
+if other_count:
+    print(f"\n[INFO] {other_count} topic update dari chat lain disembunyikan agar tidak salah pilih thread ID.")
+
+print("\nGunakan message_thread_id dari topic Report pada CHAT SDE di atas sebagai:")
 print("  TELEGRAM_THREAD_REPORT_ID=<message_thread_id>")
-print("Windows persistent example:")
-print("  setx TELEGRAM_THREAD_REPORT_ID <message_thread_id>")
+print("Setelah itu WAJIB jalankan live validation dari menu konfigurasi.")
