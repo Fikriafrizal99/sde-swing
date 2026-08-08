@@ -26,6 +26,7 @@ class TelegramRoute:
 class TelegramRouter:
     SIGNAL_TYPES = {
         "final_watchlist",
+        "final_watchlist_summary",
         "final_watchlist_detail",
         "final_watchlist_csv",
         "final_decision",
