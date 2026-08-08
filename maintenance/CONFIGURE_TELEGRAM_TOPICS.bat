@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions EnableDelayedExpansion
+set EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul
 cd /d "%~dp0\.."
 title SDE - Telegram Topic Configuration
@@ -23,14 +23,16 @@ echo   TELEGRAM_THREAD_REPORT_ID
 
 echo [1] Tampilkan Chat ID + Forum Topic IDs dari Telegram
 echo [2] Set TELEGRAM_THREAD_REPORT_ID
-echo [3] Lihat nilai topic environment saat ini
+echo [3] Cek routing efektif Report vs Market/Post
+echo [4] Lihat nilai topic environment saat ini
 echo [0] Kembali
 echo.
 set "CHOICE="
 set /p "CHOICE=Pilih menu: "
 if "%CHOICE%"=="1" goto SHOW
 if "%CHOICE%"=="2" goto SET_REPORT
-if "%CHOICE%"=="3" goto STATUS
+if "%CHOICE%"=="3" goto CHECK_ROUTE
+if "%CHOICE%"=="4" goto STATUS
 if "%CHOICE%"=="0" exit /b 0
 goto MENU
 
@@ -60,10 +62,19 @@ for /f "delims=0123456789" %%A in ("!REPORT_ID!") do (
 setx TELEGRAM_THREAD_REPORT_ID "!REPORT_ID!" >nul
 if errorlevel 1 (
   echo [FAILED] Gagal menyimpan TELEGRAM_THREAD_REPORT_ID.
-) else (
-  echo [OK] TELEGRAM_THREAD_REPORT_ID=!REPORT_ID! tersimpan di User Environment.
-  echo Tutup dan buka kembali terminal / RUN_SDE.bat agar nilai baru aktif.
+  pause
+  goto MENU
 )
+set "TELEGRAM_THREAD_REPORT_ID=!REPORT_ID!"
+echo [OK] TELEGRAM_THREAD_REPORT_ID=!REPORT_ID! tersimpan dan aktif untuk sesi RUN_SDE ini.
+echo.
+%SDE_PYTHON_CMD% -u tools\check_telegram_report_route.py
+pause
+goto MENU
+
+:CHECK_ROUTE
+cls
+%SDE_PYTHON_CMD% -u tools\check_telegram_report_route.py
 pause
 goto MENU
 
@@ -73,6 +84,6 @@ echo TELEGRAM_THREAD_SIGNAL_ID = %TELEGRAM_THREAD_SIGNAL_ID%
 echo TELEGRAM_THREAD_REPORT_ID = %TELEGRAM_THREAD_REPORT_ID%
 echo TELEGRAM_THREAD_SYSTEM_ID = %TELEGRAM_THREAD_SYSTEM_ID%
 echo.
-echo Jika REPORT masih kosong setelah setx, tutup dan buka kembali launcher.
+echo Nilai setx juga akan aktif otomatis pada terminal/launcher baru.
 pause
 goto MENU
