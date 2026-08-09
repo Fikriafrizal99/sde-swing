@@ -68,6 +68,31 @@ def test_irrelevant_political_story_without_market_path_is_rejected() -> None:
     assert item is None
 
 
+def test_speculative_global_opinion_without_concrete_event_is_rejected() -> None:
+    item = market.strict_normalize_result(
+        _result("Is Trumpflation real? Why Wall Street fears this could be a reason for stock market crash"),
+        scope="GLOBAL",
+        symbols=[],
+    )
+    assert item is None
+
+
+def test_factual_index_event_scores_above_speculative_index_story() -> None:
+    factual = market.strict_normalize_result(
+        _result("MSCI Indonesia officially adds ANTM to Global Standard Index effective August 31"),
+        scope="INDEX",
+        symbols=["ANTM"],
+    )
+    speculative = market.strict_normalize_result(
+        _result("Could ANTM enter MSCI? Analysts say it may be included in the next review"),
+        scope="INDEX",
+        symbols=["ANTM"],
+    )
+    assert factual is not None
+    assert speculative is not None
+    assert factual.score > speculative.score
+
+
 def test_low_quality_macro_sources_are_rejected() -> None:
     for url in (
         "https://cryptobriefing.com/us-payroll-drop-job-market-concerns-fed",
