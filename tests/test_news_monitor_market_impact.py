@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from modules.news import news_monitor as base
 from modules.news import news_monitor_market_impact as market
 
 
-def _result(title: str, description: str = "market impact update") -> dict[str, object]:
+def _result(
+    title: str,
+    description: str = "market impact update",
+    url: str = "https://www.reuters.com/markets/test-story",
+) -> dict[str, object]:
     return {
         "title": title,
-        "url": "https://www.reuters.com/markets/test-story",
+        "url": url,
         "description": description,
         "age": "1h",
     }
@@ -61,6 +68,23 @@ def test_irrelevant_political_story_without_market_path_is_rejected() -> None:
     assert item is None
 
 
+def test_low_quality_macro_sources_are_rejected() -> None:
+    for url in (
+        "https://cryptobriefing.com/us-payroll-drop-job-market-concerns-fed",
+        "https://seekingalpha.com/article/test",
+        "https://home.nzcity.co.nz/news/article.aspx?id=123",
+    ):
+        item = market.strict_normalize_result(
+            _result(
+                "Fed payroll surprise moves Treasury yields dollar and stocks",
+                url=url,
+            ),
+            scope="GLOBAL",
+            symbols=[],
+        )
+        assert item is None
+
+
 def test_query_plan_has_seven_market_coverage_scopes() -> None:
     plans = market.market_query_plan(["ANTM", "BBRI"])
     scopes = {plan["scope"] for plan in plans}
@@ -74,22 +98,84 @@ def test_query_plan_has_seven_market_coverage_scopes() -> None:
         assert required in joined
 
 
-def test_new_limiter_preserves_new_scopes() -> None:
-    items = [
-        base.NewsItem(
-            headline=f"{scope} story",
-            source="Reuters",
-            url=f"https://reuters.com/{scope.lower()}",
-            published_at="",
-            age="1h",
-            scope=scope,
-            category="GLOBAL_CATALYST" if scope == "GLOBAL" else "MACRO_INDONESIA",
-            score=10.0 - index,
+def test_material_scopes_get_longer_search_lookback_without_expanding_output_cap() -> None:
+    current = datetime(2026, 8, 9, 21, 0, tzinfo=ZoneInfo("Asia/Jakarta"))
+    config = {"post_market_freshness": "today"}
+
+    assert market._freshness_for_scope("post_market", "GLOBAL", config, current) == "2026-08-09to2026-08-09"
+    assert market._freshness_for_scope("post_market", "SECTOR", config, current) == "2026-08-09to2026-08-09"
+    assert market._freshness_for_scope("post_market", "INDEX", config, current) == "2026-08-03to2026-08-09"
+    assert market._freshness_for_scope("post_market", "CORPORATE", config, current) == "2026-08-05to2026-08-09"
+    assert market._freshness_for_scope("post_market", "RISK", config, current) == "2026-08-07to2026-08-09"
+    assert market._freshness_for_scope("post_market", "ISSUER", config, current) == "2026-08-07to2026-08-09"
+
+
+def test_semantic_dedupe_collapses_rephrased_same_story() -> None:
+    left = base.NewsItem(
+        headline="Indonesians sound alarm over historic low in currency - ABC News",
+        source="ABC News",
+        url="https://abc.net.au/news/currency",
+        published_at="",
+        age="12h",
+        scope="INDONESIA",
+        category="MACRO_INDONESIA",
+        score=10.0,
+    )
+    right = base.NewsItem(
+        headline="'Total chaos': Indonesians sound alarm over historic low in currency",
+        source="Another Source",
+        url="https://example.com/syndicated-currency",
+        published_at="",
+        age="15h",
+        scope="INDONESIA",
+        category="MACRO_INDONESIA",
+        score=8.0,
+    )
+    deduped = market._dedupe_market_items([left, right])
+    assert len(deduped) == 1
+    assert deduped[0].source == "ABC News"
+
+
+def test_sent_history_suppresses_same_story_across_different_url() -> None:
+    item = base.NewsItem(
+        headline="MSCI adds ANTM to Global Standard Index effective this month",
+        source="Reuters",
+        url="https://reuters.com/new-msci-url",
+        published_at="",
+        age="1d",
+        scope="ISSUER",
+        category="INDEX_REBALANCING",
+        symbol="ANTM",
+        score=12.0,
+    )
+    seen = [{
+        "url": "https://example.com/old-msci-url",
+        "headline": "ANTM added to MSCI Global Standard Index effective this month",
+        "category": "INDEX_REBALANCING",
+        "symbol": "ANTM",
+    }]
+    assert market._already_sent(item, seen) is True
+
+
+def test_new_limiter_preserves_new_scopes_and_hard_caps_ten() -> None:
+    items = []
+    for index in range(20):
+        scope = market.DISPLAY_SCOPES[index % len(market.DISPLAY_SCOPES)]
+        items.append(
+            base.NewsItem(
+                headline=f"{scope} material story {index}",
+                source="Reuters",
+                url=f"https://reuters.com/{scope.lower()}/{index}",
+                published_at="",
+                age="1h",
+                scope=scope,
+                category="GLOBAL_CATALYST" if scope == "GLOBAL" else "MACRO_INDONESIA",
+                score=20.0 - index,
+            )
         )
-        for index, scope in enumerate(market.DISPLAY_SCOPES)
-    ]
-    selected = market._limit_market_items(items, 10)
-    assert {item.scope for item in selected} == set(market.DISPLAY_SCOPES)
+    selected = market._limit_market_items(items, 50)
+    assert len(selected) == 10
+    assert {item.scope for item in selected}.issuperset(set(market.DISPLAY_SCOPES))
 
 
 def test_digest_groups_new_sections_and_keeps_news_informational_only() -> None:
