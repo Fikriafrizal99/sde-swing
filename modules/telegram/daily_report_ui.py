@@ -1358,10 +1358,10 @@ def format_watchlist_detail(row):
 
     lines = [
         "<b>📈 SDE SWING — FINAL WATCHLIST</b>",
-        "━━━━━━━━━━━━━━━━━━━━",
+        "━━━━━━━━━━━━━━━━━━",
         f"📌 <b>{symbol} | {setup}</b>",
         f"🕒 {analysis_date}",
-        "━━━━━━━━━━━━━━━━━━━━",
+        "━━━━━━━━━━━━━━━━━━",
         "",
         "<b>🎯 TRADE SETUP</b>",
         f"💰 Current {current} | Entry {entry_low}–{entry_high}",
@@ -1384,7 +1384,6 @@ def format_watchlist_detail(row):
         f"💰 Buy Cost {buy_cost} | Vs Cost {vs_cost}",
         f"🌊 Flow {flow} | Persistence {persistence}",
         "",
-        "━━━━━━━━━━━━━━━━━━━━",
         "<b>📌 SETUP CONTEXT</b>",
         f"📈 {trend} | {phase}",
         f"🟢 Support {support} | 🔴 Resistance {resistance}",
