@@ -289,6 +289,9 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
     risk = planned_entry - stop
     risk_pct = (risk / planned_entry) * 100 if planned_entry else np.nan
 
+    if not math.isnan(risk_pct):
+        risk_pct = round(risk_pct, 6)
+
     rr1_target = planned_entry + risk * min_rr
     rr2_target = planned_entry + risk * preferred_rr
     # Resistance used for RR must be strictly above the actual planned entry.
@@ -382,7 +385,7 @@ def build_entry_plan(row: pd.Series, px: pd.DataFrame, min_rr: float, preferred_
     volume_confirmed: bool | None = None
     if risk <= 0:
         setup_quality, rejection_reason = "REJECT", "INVALID_STOP"
-    elif risk_pct > max_risk_pct:
+    elif risk_pct > max_risk_pct + 1e-6:
         setup_quality, rejection_reason = "REJECT", "MAXIMUM_RISK_EXCEEDED"
     elif liquidity_class == "VERY_POOR":
         setup_quality, rejection_reason = "REJECT", "LIQUIDITY_VERY_POOR"
