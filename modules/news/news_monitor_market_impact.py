@@ -10,8 +10,14 @@ writes to Technical, Broker, Decision, or Portfolio Management engine state.
 
 import html
 import re
+import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from modules.news import news_monitor as base
 
@@ -117,8 +123,6 @@ def _source_label(result: dict[str, Any]) -> str:
         if domain == known or domain.endswith("." + known):
             return SOURCE_LABELS[known]
 
-    # Brave's profile label is useful unless it is merely a website section
-    # name such as "Market" or "News".
     profile = result.get("profile") if isinstance(result.get("profile"), dict) else {}
     generic = {"market", "news", "business", "finance", "saham", "money"}
     for key in ("long_name", "name"):
@@ -153,12 +157,10 @@ def strict_normalize_result(
     if scope == "GLOBAL":
         if not base._contains_any(combined, base.GLOBAL_KEYWORDS):
             return None
-        # Political/geopolitical stories need an explicit market/economic link.
         if _contains(combined, POLITICAL_TERMS) and impact_hits < 2:
             return None
         if impact_hits < 1:
             return None
-        # Low-priority sources require stronger evidence of actual market impact.
         if source_score <= 1 and (impact_hits + event_hits) < 3:
             return None
 
@@ -208,15 +210,15 @@ def market_query_plan(symbols: list[str]) -> list[dict[str, str]]:
     plans = [
         {
             "scope": "GLOBAL",
-            "query": 'Federal Reserve Wall Street Treasury yields dollar oil gold China economy inflation tariffs stocks markets',
+            "query": "Federal Reserve Wall Street Treasury yields dollar oil gold China economy inflation tariffs stocks markets",
         },
         {
             "scope": "INDONESIA",
-            "query": 'IHSG rupiah Bank Indonesia suku bunga inflasi OJK BEI saham obligasi pasar modal Indonesia',
+            "query": "IHSG rupiah Bank Indonesia suku bunga inflasi OJK BEI saham obligasi pasar modal Indonesia",
         },
         {
             "scope": "SECTOR",
-            "query": 'saham Indonesia energi bank tambang batubara nikel minyak emas teknologi properti infrastruktur komoditas',
+            "query": "saham Indonesia energi bank tambang batubara nikel minyak emas teknologi properti infrastruktur komoditas",
         },
     ]
     if symbols:
@@ -235,7 +237,6 @@ def _esc(value: Any) -> str:
 
 
 def _subtitle(session: str, generated_at: datetime) -> str:
-    # Keep scheduled production labels, but make manual/off-hours tests explicit.
     if session == "morning":
         if generated_at.weekday() >= 5 or generated_at.hour >= 10:
             return "🧪 <b>Manual / Off-Hours News Run</b>"
@@ -314,8 +315,6 @@ def send_market_existing(session: str, *, force: bool = False) -> int:
         print(f"[WARNING] Belum ada output {session} news untuk dikirim.")
         return 2
 
-    # If the companion metadata says there are zero impactful items, avoid a
-    # Telegram message that only says there were no updates.
     json_path = path.with_suffix(".json")
     payload = base.load_json(json_path)
     rows = payload.get("items") if isinstance(payload, dict) else None
