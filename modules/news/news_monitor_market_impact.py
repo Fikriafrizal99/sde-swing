@@ -67,6 +67,7 @@ MARKET_IMPACT_TERMS = {
     "laba", "profit", "revenue", "pendapatan", "dividend", "dividen",
     "tariff", "tariffs", "bea masuk", "trade war", "credit rating",
     "rating downgrade", "rating upgrade", "liquidity", "likuiditas",
+    "msci", "ftse", "rebalancing", "passive flow", "foreign flow",
 }
 
 MOVEMENT_EVENT_TERMS = {
@@ -79,25 +80,171 @@ MOVEMENT_EVENT_TERMS = {
     "holds rates", "announce", "announces", "announced", "rilis", "merilis",
     "lapor", "melaporkan", "approve", "approves", "disetujui", "resmi",
     "unexpected", "surprise", "higher than", "lower than", "above forecast",
-    "below forecast", "katalis", "sentiment", "sentimen",
+    "below forecast", "katalis", "sentiment", "sentimen", "wins", "won",
+    "menang", "ditunjuk", "ditetapkan", "effective", "berlaku",
 }
 
 INDONESIA_MARKET_ANCHORS = {
-    "ihsg", "idx", "bei", "bursa efek indonesia", "pasar saham", "pasar modal",
-    "saham indonesia", "rupiah", "bank indonesia", "bi rate", "suku bunga",
-    "inflasi", "obligasi", "yield", "ojk", "foreign flow", "asing",
+    "indonesia", "ihsg", "idx", "bei", "bursa efek indonesia", "pasar saham",
+    "pasar modal", "saham indonesia", "rupiah", "bank indonesia", "bi rate",
+    "suku bunga", "inflasi", "obligasi", "yield", "ojk", "foreign flow",
+    "asing", "jakarta", "kementerian", "pemerintah indonesia",
 }
 
-ISSUER_IMPACT_TERMS = {
-    "earnings", "financial results", "laporan keuangan", "laba", "rugi",
-    "profit", "revenue", "pendapatan", "dividend", "dividen", "rights issue",
-    "right issue", "buyback", "akuisisi", "acquisition", "merger", "divestasi",
-    "divestment", "kontrak", "contract", "proyek", "project", "tender",
-    "produksi", "production", "penjualan", "sales", "operasional", "operational",
-    "ekspansi", "expansion", "capex", "utang", "debt", "default", "rating",
-    "suspensi", "suspension", "uma", "management change", "direktur", "director",
-    "komisaris", "commissioner", "regulatory", "regulasi", "izin", "license",
-    "ipo", "private placement", "stock split", "reverse stock", "material transaction",
+INDEX_REBALANCING_TERMS = {
+    "msci", "ftse", "ftse russell", "lq45", "idx30", "idx80",
+    "index review", "index rebalance", "index rebalancing", "rebalancing",
+    "rebalance", "inclusion", "exclusion", "index constituent",
+    "constituent change", "constituent changes", "index weight",
+    "weight change", "effective date", "free float", "free-float",
+}
+
+CORPORATE_ACTION_TERMS = {
+    "rights issue", "right issue", "private placement", "buyback",
+    "share buyback", "stock split", "reverse split", "reverse stock",
+    "tender offer", "mandatory tender offer", "special dividend",
+    "dividen khusus", "dividend", "dividen", "bonus shares", "saham bonus",
+}
+
+EARNINGS_GUIDANCE_TERMS = {
+    "earnings", "financial results", "laporan keuangan", "net profit",
+    "laba bersih", "laba", "rugi", "loss", "revenue", "pendapatan",
+    "margin", "ebitda", "guidance", "outlook", "target laba",
+    "target pendapatan", "earnings surprise", "profit warning",
+}
+
+CONTRACT_PROJECT_TERMS = {
+    "contract", "kontrak", "tender", "wins contract", "won contract",
+    "menang tender", "proyek", "project", "order book", "orderbook",
+    "backlog", "ekspansi kapasitas", "capacity expansion",
+    "new plant", "pabrik baru", "smelter", "commercial operation",
+}
+
+MNA_OWNERSHIP_TERMS = {
+    "acquisition", "akuisisi", "merger", "divestment", "divestasi",
+    "strategic investor", "investor strategis", "controlling shareholder",
+    "pemegang saham pengendali", "change of control", "perubahan pengendali",
+    "takeover", "pengambilalihan", "stake sale", "jual saham",
+}
+
+REGULATION_POLICY_TERMS = {
+    "royalty", "royalti", "dmo", "dhe", "pajak", "tax", "tariff", "tarif",
+    "subsidi", "subsidy", "regulation", "regulasi", "aturan ojk", "aturan bei",
+    "bank indonesia", "bi rate", "export ban", "larangan ekspor",
+    "export quota", "kuota ekspor", "import quota", "kuota impor",
+    "minimum free float", "free float rule", "kebijakan pemerintah",
+}
+
+EXCHANGE_EVENT_TERMS = {
+    "suspension", "suspensi", "suspend", "unsuspend", "unsuspension",
+    "dibuka kembali", "uma", "unusual market activity", "forced delisting",
+    "delisting", "relisting", "relist", "free float", "free-float",
+    "trading halt", "penghentian sementara",
+}
+
+COMMODITY_CATALYST_TERMS = {
+    "coal", "batubara", "nickel", "nikel", "gold", "emas", "cpo",
+    "palm oil", "minyak sawit", "crude oil", "oil", "minyak",
+    "copper", "tembaga", "tin", "timah", "lng", "gas alam",
+    "commodity price", "harga komoditas",
+}
+
+FUNDING_DEBT_TERMS = {
+    "bond", "bonds", "obligasi", "sukuk", "refinancing", "refinance",
+    "refinancing debt", "debt refinancing", "gagal bayar", "default",
+    "covenant", "credit rating", "rating upgrade", "rating downgrade",
+    "downgrade rating", "upgrade rating", "maturity", "jatuh tempo utang",
+    "debt restructuring", "restrukturisasi utang",
+}
+
+OPERATIONAL_EVENT_TERMS = {
+    "fire", "kebakaran", "explosion", "ledakan", "mine shutdown",
+    "tambang berhenti", "shutdown", "production halt", "stop production",
+    "gangguan produksi", "force majeure", "operational disruption",
+    "gangguan operasional", "permit revoked", "izin dicabut",
+    "permit extended", "izin diperpanjang", "license revoked",
+    "accident", "kecelakaan", "flood", "banjir",
+}
+
+FOREIGN_PASSIVE_FLOW_TERMS = {
+    "passive fund", "passive flow", "passive inflow", "passive outflow",
+    "foreign flow", "foreign inflow", "foreign outflow", "foreign ownership",
+    "kepemilikan asing", "net foreign buy", "net foreign sell",
+    "block trade", "crossing", "index fund", "etf flow",
+}
+
+MANAGEMENT_DISCLOSURE_TERMS = {
+    "ceo", "chief executive", "president director", "direktur utama",
+    "director", "direktur", "commissioner", "komisaris", "management change",
+    "pergantian manajemen", "resignation", "mengundurkan diri",
+    "material transaction", "transaksi material", "affiliate transaction",
+    "transaksi afiliasi", "related party transaction",
+}
+
+MACRO_INDONESIA_TERMS = {
+    "bi rate", "bank indonesia", "rupiah", "inflasi", "inflation indonesia",
+    "trade balance", "neraca perdagangan", "gdp indonesia", "pdb indonesia",
+    "bond yield indonesia", "yield obligasi", "sbn", "foreign flow ihsg",
+    "foreign flow", "cadangan devisa", "current account", "neraca berjalan",
+    "consumer confidence indonesia", "pmi indonesia",
+}
+
+GLOBAL_CATALYST_TERMS = {
+    "federal reserve", "fed", "us cpi", "cpi", "payroll", "nonfarm payroll",
+    "jobs report", "treasury yield", "treasury yields", "dollar index", "dxy",
+    "china stimulus", "china economy", "beijing stimulus", "tariff",
+    "tariffs", "trade war", "geopolit", "sanction", "sanksi",
+    "oil", "crude", "gold", "commodity", "commodities", "wall street",
+    "nasdaq", "s&p", "dow",
+}
+
+EVENT_TERMS: dict[str, set[str]] = {
+    "INDEX_REBALANCING": INDEX_REBALANCING_TERMS,
+    "CORPORATE_ACTION": CORPORATE_ACTION_TERMS,
+    "EARNINGS_GUIDANCE": EARNINGS_GUIDANCE_TERMS,
+    "CONTRACT_PROJECT": CONTRACT_PROJECT_TERMS,
+    "MNA_OWNERSHIP": MNA_OWNERSHIP_TERMS,
+    "REGULATION_POLICY": REGULATION_POLICY_TERMS,
+    "EXCHANGE_EVENT": EXCHANGE_EVENT_TERMS,
+    "COMMODITY_CATALYST": COMMODITY_CATALYST_TERMS,
+    "FUNDING_DEBT": FUNDING_DEBT_TERMS,
+    "OPERATIONAL_EVENT": OPERATIONAL_EVENT_TERMS,
+    "FOREIGN_PASSIVE_FLOW": FOREIGN_PASSIVE_FLOW_TERMS,
+    "MANAGEMENT_DISCLOSURE": MANAGEMENT_DISCLOSURE_TERMS,
+    "MACRO_INDONESIA": MACRO_INDONESIA_TERMS,
+    "GLOBAL_CATALYST": GLOBAL_CATALYST_TERMS,
+}
+
+CATEGORY_PRIORITY = {
+    "INDEX_REBALANCING": 2.8,
+    "EXCHANGE_EVENT": 2.7,
+    "FUNDING_DEBT": 2.5,
+    "OPERATIONAL_EVENT": 2.5,
+    "CORPORATE_ACTION": 2.4,
+    "EARNINGS_GUIDANCE": 2.4,
+    "CONTRACT_PROJECT": 2.4,
+    "MNA_OWNERSHIP": 2.4,
+    "REGULATION_POLICY": 2.3,
+    "FOREIGN_PASSIVE_FLOW": 2.2,
+    "COMMODITY_CATALYST": 2.0,
+    "MACRO_INDONESIA": 2.0,
+    "MANAGEMENT_DISCLOSURE": 1.8,
+    "GLOBAL_CATALYST": 1.6,
+}
+
+DISPLAY_SCOPES = ("GLOBAL", "INDONESIA", "INDEX", "SECTOR", "CORPORATE", "RISK", "ISSUER")
+
+SCOPE_ALLOWED_CATEGORIES = {
+    "GLOBAL": {"GLOBAL_CATALYST"},
+    "INDONESIA": {"MACRO_INDONESIA", "REGULATION_POLICY"},
+    "INDEX": {"INDEX_REBALANCING", "FOREIGN_PASSIVE_FLOW"},
+    "SECTOR": {"COMMODITY_CATALYST"},
+    "CORPORATE": {
+        "CORPORATE_ACTION", "EARNINGS_GUIDANCE", "CONTRACT_PROJECT",
+        "MNA_OWNERSHIP", "MANAGEMENT_DISCLOSURE",
+    },
+    "RISK": {"EXCHANGE_EVENT", "FUNDING_DEBT", "OPERATIONAL_EVENT"},
+    "ISSUER": set(EVENT_TERMS),
 }
 
 
@@ -137,6 +284,24 @@ def _source_label(result: dict[str, Any]) -> str:
     return "Unknown Source"
 
 
+def _detect_event_category(text: str, *, allowed: set[str] | None = None) -> tuple[str, int]:
+    candidates = allowed if allowed is not None else set(EVENT_TERMS)
+    scored: list[tuple[int, float, str]] = []
+    for category in candidates:
+        hits = _hit_count(text, EVENT_TERMS[category])
+        if hits:
+            scored.append((hits, CATEGORY_PRIORITY.get(category, 0.0), category))
+    if not scored:
+        return "", 0
+    scored.sort(reverse=True)
+    hits, _, category = scored[0]
+    return category, hits
+
+
+def _indonesia_relevant(text: str, symbol: str = "") -> bool:
+    return bool(symbol) or _contains(text, INDONESIA_MARKET_ANCHORS)
+
+
 def strict_normalize_result(
     result: dict[str, Any], *, scope: str, symbols: list[str]
 ) -> base.NewsItem | None:
@@ -148,50 +313,62 @@ def strict_normalize_result(
     if _is_noise(headline, description):
         return None
 
+    scope = str(scope or "").upper()
+    if scope not in DISPLAY_SCOPES:
+        return None
+
     combined = f"{headline} {description}"
-    symbol = base._extract_symbol(combined, symbols) if scope == "ISSUER" else ""
+    symbol = base._extract_symbol(combined, symbols)
     impact_hits = _hit_count(combined, MARKET_IMPACT_TERMS)
-    event_hits = _hit_count(combined, MOVEMENT_EVENT_TERMS)
+    movement_hits = _hit_count(combined, MOVEMENT_EVENT_TERMS)
     source_score = base._source_score(url)
 
+    category, category_hits = _detect_event_category(
+        combined,
+        allowed=SCOPE_ALLOWED_CATEGORIES.get(scope),
+    )
+    if not category:
+        return None
+
     if scope == "GLOBAL":
-        if not base._contains_any(combined, base.GLOBAL_KEYWORDS):
-            return None
-        if _contains(combined, POLITICAL_TERMS) and impact_hits < 2:
-            return None
         if impact_hits < 1:
             return None
-        if source_score <= 1 and (impact_hits + event_hits) < 3:
+        if _contains(combined, POLITICAL_TERMS):
+            pathway_terms = (
+                MARKET_IMPACT_TERMS
+                | COMMODITY_CATALYST_TERMS
+                | {"tariff", "tariffs", "trade war", "yield", "dollar", "stocks", "equities"}
+            )
+            if _hit_count(combined, pathway_terms) < 2:
+                return None
+        if source_score <= 1 and (impact_hits + movement_hits + category_hits) < 3:
             return None
 
-    elif scope == "INDONESIA":
-        if not _contains(combined, INDONESIA_MARKET_ANCHORS):
+    elif scope in {"INDONESIA", "INDEX", "SECTOR", "CORPORATE", "RISK"}:
+        if not _indonesia_relevant(combined, symbol):
             return None
-        if impact_hits < 1 and event_hits < 1:
-            return None
-
-    elif scope == "SECTOR":
-        if not base._contains_any(combined, base.SECTOR_KEYWORDS):
-            return None
-        if impact_hits < 1 or event_hits < 1:
+        if scope == "SECTOR" and movement_hits < 1 and impact_hits < 1 and category_hits < 2:
             return None
 
     elif scope == "ISSUER":
         if symbols and not symbol:
             return None
-        if not _contains(combined, ISSUER_IMPACT_TERMS):
+        if not symbol:
             return None
-    else:
-        return None
+
+    score = float(source_score)
+    score += CATEGORY_PRIORITY.get(category, 0.0)
+    score += min(3.0, float(impact_hits) * 0.30)
+    score += min(2.0, float(movement_hits) * 0.35)
+    score += min(1.5, float(category_hits) * 0.30)
+    score += 1.0 if len(headline) >= 30 else 0.0
+    if symbol:
+        score += 2.0
+    if scope == "INDEX":
+        score += 0.5
 
     age = str(result.get("age", "") or "").strip()
     page_age = str(result.get("page_age", "") or result.get("published_at", "") or "").strip()
-    score = float(source_score)
-    score += min(3.0, float(impact_hits) * 0.35)
-    score += min(2.0, float(event_hits) * 0.40)
-    score += 1.0 if len(headline) >= 30 else 0.0
-    if scope == "ISSUER" and symbol:
-        score += 2.0
 
     return base.NewsItem(
         headline=headline,
@@ -200,7 +377,7 @@ def strict_normalize_result(
         published_at=page_age,
         age=age,
         scope=scope,
-        category=scope,
+        category=category,
         symbol=symbol,
         score=score,
     )
@@ -210,15 +387,46 @@ def market_query_plan(symbols: list[str]) -> list[dict[str, str]]:
     plans = [
         {
             "scope": "GLOBAL",
-            "query": "Federal Reserve Wall Street Treasury yields dollar oil gold China economy inflation tariffs stocks markets",
+            "query": (
+                "Federal Reserve Fed US CPI jobs payroll Treasury yields dollar DXY "
+                "China stimulus tariffs trade war oil gold commodities Wall Street stocks markets"
+            ),
         },
         {
             "scope": "INDONESIA",
-            "query": "IHSG rupiah Bank Indonesia suku bunga inflasi OJK BEI saham obligasi pasar modal Indonesia",
+            "query": (
+                "Indonesia IHSG rupiah Bank Indonesia BI Rate inflation trade balance GDP "
+                "SBN bond yield OJK government policy regulation DMO DHE royalty tax subsidy foreign flow"
+            ),
+        },
+        {
+            "scope": "INDEX",
+            "query": (
+                "MSCI Indonesia FTSE Russell LQ45 IDX30 IDX80 index review rebalancing "
+                "inclusion exclusion index weight free float passive fund foreign flow IDX stocks"
+            ),
         },
         {
             "scope": "SECTOR",
-            "query": "saham Indonesia energi bank tambang batubara nikel minyak emas teknologi properti infrastruktur komoditas",
+            "query": (
+                "Indonesia stocks coal nickel gold CPO crude oil copper tin commodity prices "
+                "production export policy mining energy palm oil IDX"
+            ),
+        },
+        {
+            "scope": "CORPORATE",
+            "query": (
+                "IDX Indonesia rights issue private placement buyback stock split dividend earnings "
+                "profit revenue guidance contract tender project order book acquisition merger "
+                "strategic investor controlling shareholder director material transaction"
+            ),
+        },
+        {
+            "scope": "RISK",
+            "query": (
+                "IDX Indonesia suspension UMA delisting relisting bond refinancing default covenant "
+                "rating downgrade fire mine shutdown force majeure production halt permit revoked"
+            ),
         },
     ]
     if symbols:
@@ -226,10 +434,67 @@ def market_query_plan(symbols: list[str]) -> list[dict[str, str]]:
         plans.append(
             {
                 "scope": "ISSUER",
-                "query": f"{joined} IDX earnings laba dividen rights issue buyback akuisisi kontrak proyek produksi corporate action",
+                "query": (
+                    f"{joined} IDX MSCI FTSE earnings laba guidance dividend rights issue buyback "
+                    "private placement contract tender project acquisition merger investor shareholder "
+                    "suspension UMA bond default rating fire shutdown force majeure commodity "
+                    "foreign flow management director material transaction"
+                ),
             }
         )
     return plans
+
+
+def _limit_market_items(items: list[base.NewsItem], maximum: int) -> list[base.NewsItem]:
+    maximum = max(int(maximum or 1), 1)
+    caps = {
+        "ISSUER": 4,
+        "INDEX": 3,
+        "INDONESIA": 3,
+        "GLOBAL": 3,
+        "CORPORATE": 3,
+        "RISK": 2,
+        "SECTOR": 2,
+    }
+    priority = ("ISSUER", "INDEX", "INDONESIA", "GLOBAL", "CORPORATE", "RISK", "SECTOR")
+    grouped = {
+        scope: sorted(
+            [item for item in items if item.scope == scope],
+            key=lambda item: item.score,
+            reverse=True,
+        )
+        for scope in DISPLAY_SCOPES
+    }
+
+    selected: list[base.NewsItem] = []
+    selected_urls: set[str] = set()
+    scope_counts = {scope: 0 for scope in DISPLAY_SCOPES}
+
+    # First pass: preserve breadth so one high-volume topic cannot crowd out
+    # materially different event classes.
+    for scope in priority:
+        if len(selected) >= maximum:
+            break
+        if grouped.get(scope):
+            item = grouped[scope][0]
+            selected.append(item)
+            selected_urls.add(item.url)
+            scope_counts[scope] += 1
+
+    # Second pass: fill remaining slots by relevance score while respecting caps.
+    remaining = sorted(items, key=lambda item: item.score, reverse=True)
+    for item in remaining:
+        if len(selected) >= maximum:
+            break
+        if item.url in selected_urls:
+            continue
+        if item.scope not in caps or scope_counts[item.scope] >= caps[item.scope]:
+            continue
+        selected.append(item)
+        selected_urls.add(item.url)
+        scope_counts[item.scope] += 1
+
+    return sorted(selected, key=lambda item: item.score, reverse=True)
 
 
 def _esc(value: Any) -> str:
@@ -244,6 +509,26 @@ def _subtitle(session: str, generated_at: datetime) -> str:
     if generated_at.hour < 15:
         return "🧪 <b>Manual / Off-Hours News Run</b>"
     return "🌆 <b>Daily Market News Digest</b>"
+
+
+def _category_label(category: str) -> str:
+    labels = {
+        "INDEX_REBALANCING": "Index / Rebalancing",
+        "CORPORATE_ACTION": "Corporate Action",
+        "EARNINGS_GUIDANCE": "Earnings / Guidance",
+        "CONTRACT_PROJECT": "Contract / Project",
+        "MNA_OWNERSHIP": "M&A / Ownership",
+        "REGULATION_POLICY": "Regulation / Policy",
+        "EXCHANGE_EVENT": "Exchange Event",
+        "COMMODITY_CATALYST": "Commodity Catalyst",
+        "FUNDING_DEBT": "Funding / Debt",
+        "OPERATIONAL_EVENT": "Operational Event",
+        "FOREIGN_PASSIVE_FLOW": "Foreign / Passive Flow",
+        "MANAGEMENT_DISCLOSURE": "Management / Disclosure",
+        "MACRO_INDONESIA": "Macro Indonesia",
+        "GLOBAL_CATALYST": "Global Catalyst",
+    }
+    return labels.get(str(category or "").upper(), str(category or "").replace("_", " ").title())
 
 
 def format_market_digest(
@@ -264,9 +549,12 @@ def format_market_digest(
     ]
 
     sections = [
-        ("GLOBAL", "🌍 <b>GLOBAL MARKET</b>"),
+        ("GLOBAL", "🌍 <b>GLOBAL &amp; MACRO</b>"),
         ("INDONESIA", "🇮🇩 <b>INDONESIA MARKET</b>"),
-        ("SECTOR", "🏭 <b>SECTOR WATCH</b>"),
+        ("INDEX", "📊 <b>INDEX &amp; REBALANCING</b>"),
+        ("SECTOR", "🏭 <b>SECTOR &amp; COMMODITY</b>"),
+        ("CORPORATE", "🏢 <b>CORPORATE EVENTS</b>"),
+        ("RISK", "⚠️ <b>RISK &amp; EXCHANGE</b>"),
         ("ISSUER", "📌 <b>EMITEN TERPANTAU</b>"),
     ]
 
@@ -282,7 +570,7 @@ def format_market_digest(
                 if not headline.upper().startswith(item.symbol.upper()):
                     headline = prefix + headline
             lines.append(f"◆ <b>{_esc(headline)}</b>")
-            lines.append("")
+            lines.append(f"🏷 {_esc(_category_label(item.category))}")
             time_text = base._item_time(item)
             source_line = _esc(item.source)
             if time_text:
@@ -419,6 +707,7 @@ def install_overrides() -> None:
     base._source_name = _source_label
     base.normalize_result = strict_normalize_result
     base.query_plan = market_query_plan
+    base._limit_items = _limit_market_items
     base.format_digest = format_market_digest
     base.send_existing = send_market_existing
     base.run_session = run_market_session
