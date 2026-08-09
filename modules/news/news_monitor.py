@@ -323,6 +323,7 @@ def _brave_search(*, query: str, country: str, search_lang: str, freshness: str,
             "count": max(1, min(int(count), 50)),
             "safesearch": "moderate",
             "spellcheck": "true",
+            "operators": "true",
         },
         headers={
             "Accept": "application/json",
@@ -416,6 +417,9 @@ def collect_news(session: str, scheduler: dict[str, Any] | None = None) -> tuple
     timeout = int(config.get("request_timeout_seconds", 20) or 20)
     count = int(config.get("results_per_query", 12) or 12)
     freshness = str(config.get(f"{session}_freshness", "pd") or "pd")
+    if freshness.lower() == "today":
+        today = now_wib().date().isoformat()
+        freshness = f"{today}to{today}"
     max_total = int(config.get("max_total_items", 10) or 10)
     limits = {"GLOBAL": 3, "INDONESIA": 3, "SECTOR": 2, "ISSUER": 4}
 
@@ -538,9 +542,52 @@ def latest_output(session: str) -> Path | None:
     return candidates[0] if candidates else None
 
 
+def suppress_morning_duplicates(items: list[NewsItem], date_text: str | None = None) -> tuple[list[NewsItem], int]:
+    date_text = date_text or now_wib().date().isoformat()
+    morning_json = output_paths("morning", date_text)[1]
+    payload = load_json(morning_json)
+    prior_rows = payload.get("items", []) if isinstance(payload.get("items", []), list) else []
+    prior: list[NewsItem] = []
+    for row in prior_rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            prior.append(NewsItem(**{
+                "headline": str(row.get("headline", "")),
+                "source": str(row.get("source", "")),
+                "url": str(row.get("url", "")),
+                "published_at": str(row.get("published_at", "")),
+                "age": str(row.get("age", "")),
+                "scope": str(row.get("scope", "")),
+                "category": str(row.get("category", "")),
+                "symbol": str(row.get("symbol", "")),
+                "score": float(row.get("score", 0.0) or 0.0),
+            }))
+        except Exception:
+            continue
+    if not prior:
+        return items, 0
+    prior_urls = {item.url.split("#", 1)[0].rstrip("/") for item in prior}
+    kept: list[NewsItem] = []
+    suppressed = 0
+    for item in items:
+        canonical = item.url.split("#", 1)[0].rstrip("/")
+        duplicate = canonical in prior_urls or any(_similar_title(item.headline, old.headline) for old in prior)
+        if duplicate:
+            suppressed += 1
+        else:
+            kept.append(item)
+    return kept, suppressed
+
+
 def generate(session: str) -> tuple[Path | None, dict[str, Any]]:
     items, meta = collect_news(session)
-    text_path, json_path = output_paths(session)
+    date_text = now_wib().date().isoformat()
+    if session == "post_market":
+        items, suppressed = suppress_morning_duplicates(items, date_text)
+        meta["suppressed_morning_duplicates"] = suppressed
+        meta["selected_count"] = len(items)
+    text_path, json_path = output_paths(session, date_text)
     payload = {**meta, "items": [asdict(item) for item in items]}
     write_json_atomic(json_path, payload)
     if not items:
