@@ -206,9 +206,10 @@ def format_post_market(data: dict[str, Any]) -> str:
     finished_time = _time(data.get("finished_at") or data.get("generated_at") or data.get("completed_at"))
     if finished_time:
         lines.append(f"🕒 Proses selesai: {escape(finished_time)} WIB")
+        lines.append(SEPARATOR)
 
     if status:
-        lines += ["", SEPARATOR, "<b>✅ PROCESS STATUS</b>"]
+        lines += ["", "<b>✅ PROCESS STATUS</b>"]
         lines.append(_metric_line(_status_icon(status), "Status", status))
 
         issue_total, issue_notes = _issue_counts(data)
@@ -246,7 +247,7 @@ def format_post_market(data: dict[str, Any]) -> str:
         quality_rows.append(_metric_line("🎯", "Impact", impact))
 
     if quality_rows:
-        lines += ["", SEPARATOR, "<b>📦 DATA QUALITY</b>"]
+        lines += ["", "<b>📦 DATA QUALITY</b>"]
         for row in quality_rows:
             lines.append(row)
         if coverage and impact == "TIDAK MATERIAL":
@@ -254,12 +255,12 @@ def format_post_market(data: dict[str, Any]) -> str:
 
     pipeline_rows = _pipeline_rows(data)
     if pipeline_rows:
-        lines += ["", SEPARATOR, "<b>🔎 PIPELINE READINESS</b>"]
+        lines += ["", "<b>🔎 PIPELINE READINESS</b>"]
         for row in pipeline_rows:
             lines.append(row)
 
     screening_rows = _screening_rows(data)
-    lines += ["", SEPARATOR, "<b>📊 SCREENING RESULT</b>"]
+    lines += ["", "<b>📊 SCREENING RESULT</b>"]
     if screening_rows:
         for row in screening_rows:
             lines.append(row)
@@ -268,7 +269,7 @@ def format_post_market(data: dict[str, Any]) -> str:
 
     source_rows = _source_rows(data)
     if source_rows:
-        lines += ["", SEPARATOR, "<b>📡 SOURCE STATUS</b>"]
+        lines += ["", "<b>📡 SOURCE STATUS</b>"]
         for row in source_rows:
             lines.append(row)
         source_note = data.get("degraded_reason") or data.get("zapi_note")
@@ -277,7 +278,6 @@ def format_post_market(data: dict[str, Any]) -> str:
 
     lines += [
         "",
-        SEPARATOR,
         "<b>🎯 NEXT PROCESS</b>",
         "Final Watchlist akan menentukan:",
         "• saham prioritas;",
@@ -290,7 +290,7 @@ def format_post_market(data: dict[str, Any]) -> str:
 
     status_rows = _post_status_rows(data)
     if status_rows:
-        lines += ["", SEPARATOR, "<b>📌 POST MARKET STATUS</b>"]
+        lines += ["", "<b>📌 POST MARKET STATUS</b>"]
         for row in status_rows:
             lines.append(row)
 

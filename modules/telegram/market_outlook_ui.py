@@ -254,6 +254,7 @@ def format_market_outlook(data: dict[str, Any]) -> str:
     snapshot_time = _time(created_at)
     if snapshot_time:
         lines.append(f"🕒 Snapshot diperbarui: {escape(snapshot_time)} WIB")
+        lines.append(SEPARATOR)
 
     condition_rows: list[str] = []
     if regime:
@@ -277,7 +278,7 @@ def format_market_outlook(data: dict[str, Any]) -> str:
         condition_rows.append(_metric_line("📊", "Breadth", breadth))
 
     if condition_rows:
-        lines += ["", SEPARATOR, "<b>📊 MARKET CONDITION</b>"]
+        lines += ["", "<b>📊 MARKET CONDITION</b>"]
         for row in condition_rows:
             lines.append(row)
         reason = _human_reason(data.get("ihsg_reason") or data.get("reason"))
@@ -286,7 +287,7 @@ def format_market_outlook(data: dict[str, Any]) -> str:
 
     global_rows = _global_rows(instruments)
     if global_rows:
-        lines += ["", SEPARATOR, "<b>🌍 GLOBAL MARKET</b>"]
+        lines += ["", "<b>🌍 GLOBAL MARKET</b>"]
         for row in global_rows:
             lines.append(row)
         interpretation = str(data.get("global_interpretation") or "").strip()
@@ -304,14 +305,13 @@ def format_market_outlook(data: dict[str, Any]) -> str:
     available_groups = [(title, _clean_items(values, 4)) for title, values in sector_groups]
     available_groups = [(title, values) for title, values in available_groups if values]
     if available_groups:
-        lines += ["", SEPARATOR, "<b>🔄 ROTASI SEKTOR</b>"]
+        lines += ["", "<b>🔄 ROTASI SEKTOR</b>"]
         for title, values in available_groups:
             lines += [f"<b>{escape(title)}</b>"]
             lines.extend(f"• {escape(item)}" for item in values)
 
     lines += [
         "",
-        SEPARATOR,
         # compact output
         "<b>🎯 TRADING PLAN</b>",
         # compact output
@@ -332,7 +332,7 @@ def format_market_outlook(data: dict[str, Any]) -> str:
     ]
 
     if regime or execution:
-        lines += ["", SEPARATOR, "<b>📌 SDE BIAS BESOK</b>"]
+        lines += ["", "<b>📌 SDE BIAS BESOK</b>"]
         bias_head, bias_line_1, bias_line_2 = _bias_lines(regime, execution)
         lines += [f"<b>{escape(bias_head)}</b>", escape(bias_line_1), escape(bias_line_2)]
 
