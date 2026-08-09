@@ -23,11 +23,19 @@ def test_run_sde_is_the_single_top_level_control_center() -> None:
     assert "maintenance\\MAINTENANCE_MENU.bat" in source
 
 
-def test_primary_job_submenus_use_integrated_runner_not_legacy_runner() -> None:
+def test_primary_job_submenus_keep_integrated_runner_and_existing_controls() -> None:
     for filename in ("RUN_MARKET_OUTLOOK.bat", "RUN_POST_MARKET.bat", "RUN_FINAL_WATCHLIST.bat"):
         source = (ROOT / filename).read_text(encoding="utf-8")
         assert "run_sde_job_integrated.py" in source
         assert "run_sde_job.py" not in source
+
+    market = (ROOT / "RUN_MARKET_OUTLOOK.bat").read_text(encoding="utf-8")
+    post = (ROOT / "RUN_POST_MARKET.bat").read_text(encoding="utf-8")
+    for source in (market, post):
+        assert "Preview existing" in source
+        assert "Kirim ulang - delivery-only" in source
+    assert "Morning News" in market
+    assert "Post Market News" in post
 
     daily = (ROOT / "maintenance/DAILY_OPERATIONS_MENU.bat").read_text(encoding="utf-8")
     broker = (ROOT / "maintenance/BROKER_MENU.bat").read_text(encoding="utf-8")
@@ -35,13 +43,17 @@ def test_primary_job_submenus_use_integrated_runner_not_legacy_runner() -> None:
     assert "run_sde_job_integrated.py" in broker
 
 
-def test_scheduler_does_not_alias_generic_report_to_market_thread() -> None:
+def test_scheduler_keeps_report_separate_and_news_has_own_topic() -> None:
     scheduler = json.loads((ROOT / "config/scheduler.json").read_text(encoding="utf-8"))
     routing = scheduler["delivery"]["topic_routing"]
 
     assert routing["market_outlook"] == "9"
     assert routing["post_market"] == "9"
-    assert routing["report"] == ""
+    assert routing["report"] == "701"
+    assert routing["report"] != routing["market_outlook"]
+    assert routing["news"] == "1451"
+    assert routing["morning_news"] == "1451"
+    assert routing["post_market_news"] == "1451"
 
 
 def test_portfolio_delivery_has_dedicated_route_guard() -> None:
