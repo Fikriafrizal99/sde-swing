@@ -3,9 +3,8 @@ from __future__ import annotations
 
 """Interactive local settings for Telegram routing and Brave News Search.
 
-Secrets are stored only in ignored local files and, on Windows, also persisted
-with setx for future shells. Nothing secret is written to tracked config.
-Existing .env values remain supported as a compatibility fallback.
+Secrets stay in ignored local files and Windows User environment variables.
+Existing project .env values remain supported as a compatibility fallback.
 """
 
 import argparse
@@ -63,6 +62,13 @@ def load_json(path: Path) -> dict[str, Any]:
         return {}
 
 
+def save_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    temp.replace(path)
+
+
 def dotenv_values(path: Path = DOTENV) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.exists():
@@ -84,18 +90,10 @@ def dotenv_values(path: Path = DOTENV) -> dict[str, str]:
 
 
 def runtime_value(name: str) -> str:
-    """Read process/User env first, then existing project .env as fallback."""
     value = os.getenv(name, "").strip()
     if value:
         return value
     return dotenv_values().get(name, "").strip()
-
-
-def save_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    temp.replace(path)
 
 
 def persist_env(name: str, value: str) -> None:
@@ -129,10 +127,17 @@ def _routing_section(cfg: dict[str, Any]) -> dict[str, Any]:
 def telegram_credentials() -> tuple[str, str]:
     cfg = load_json(LOCAL_TELEGRAM)
     tg = cfg.get("telegram", {}) if isinstance(cfg.get("telegram", {}), dict) else {}
-    # Explicit process/User environment wins. Local config written by this tool
-    # is second. Existing .env is a compatibility fallback only.
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or str(tg.get("bot_token", "") or "").strip() or dotenv_values().get("TELEGRAM_BOT_TOKEN", "").strip()
-    chat = os.getenv("TELEGRAM_CHAT_ID", "").strip() or str(tg.get("chat_id", "") or "").strip() or dotenv_values().get("TELEGRAM_CHAT_ID", "").strip()
+    dotenv = dotenv_values()
+    token = (
+        os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        or str(tg.get("bot_token", "") or "").strip()
+        or dotenv.get("TELEGRAM_BOT_TOKEN", "").strip()
+    )
+    chat = (
+        os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        or str(tg.get("chat_id", "") or "").strip()
+        or dotenv.get("TELEGRAM_CHAT_ID", "").strip()
+    )
     return token, chat
 
 
@@ -263,14 +268,15 @@ def _scheduler_route(key: str) -> str:
 
 def effective_topic(name: str) -> str:
     cfg = load_json(LOCAL_TELEGRAM)
-    routing = cfg.get("telegram_ui", {}).get("topic_routing", {}) if isinstance(cfg.get("telegram_ui", {}), dict) else {}
+    ui = cfg.get("telegram_ui", {}) if isinstance(cfg.get("telegram_ui", {}), dict) else {}
+    routing = ui.get("topic_routing", {}) if isinstance(ui.get("topic_routing", {}), dict) else {}
     env_name = ENV_TOPIC.get(name)
     if env_name:
         env_value = runtime_value(env_name)
         if env_value.isdigit():
             return env_value
     for key in TOPIC_KEYS[name]:
-        value = str(routing.get(key, "") or "").strip() if isinstance(routing, dict) else ""
+        value = str(routing.get(key, "") or "").strip()
         if value.isdigit():
             return value
     for key in TOPIC_KEYS[name]:
@@ -278,6 +284,57 @@ def effective_topic(name: str) -> str:
         if value.isdigit():
             return value
     return ""
+
+
+def brave_key() -> str:
+    cfg = load_json(LOCAL_NEWS)
+    dotenv = dotenv_values()
+    return (
+        os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
+        or str(cfg.get("brave_search_api_key", "") or "").strip()
+        or dotenv.get("BRAVE_SEARCH_API_KEY", "").strip()
+    )
+
+
+def _brave_error(response: Any) -> str:
+    try:
+        payload = response.json()
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception:
+        return str(getattr(response, "text", "") or "").strip()[:1000]
+
+
+def validate_brave(key: str) -> None:
+    """Validate the key with the smallest documented News Search request.
+
+    Do not attach country/search_lang here. Some Brave plans/enum revisions can
+    reject unsupported locale combinations with HTTP 422 even when the key is
+    valid. Production localization is handled by the search query itself.
+    """
+    if requests is None:
+        raise RuntimeError("Dependency requests belum terpasang.")
+    response = requests.get(
+        BRAVE_ENDPOINT,
+        params={"q": "IHSG", "freshness": "pd", "count": 1},
+        headers={
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+            "X-Subscription-Token": key,
+        },
+        timeout=15,
+    )
+    if response.status_code == 429:
+        raise RuntimeError("BRAVE_RATE_LIMIT")
+    if response.status_code == 422:
+        raise RuntimeError(f"BRAVE_REQUEST_INVALID: {_brave_error(response)}")
+    if not response.ok:
+        raise RuntimeError(f"BRAVE_HTTP_{response.status_code}: {_brave_error(response)}")
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise RuntimeError("Brave response bukan JSON.") from exc
+    if payload.get("type") not in {"news", None}:
+        raise RuntimeError(f"Unexpected Brave response type: {payload.get('type')}")
 
 
 def status() -> int:
@@ -291,8 +348,7 @@ def status() -> int:
     print(f"BRAVE_SEARCH_KEY   : {mask_secret(brave)}")
     print("")
     for name in ("market", "final_watchlist", "signal_detail", "report", "system", "news"):
-        value = effective_topic(name)
-        print(f"{name.upper():16} : {value or 'NOT SET'}")
+        print(f"{name.upper():16} : {effective_topic(name) or 'NOT SET'}")
     generic_signal = runtime_value("TELEGRAM_THREAD_SIGNAL_ID")
     if generic_signal:
         print("")
@@ -330,28 +386,6 @@ def test_all_topics() -> int:
             print(f"[FAILED] {name}: {thread} -> {exc}")
             failures += 1
     return 0 if failures == 0 else 2
-
-
-def brave_key() -> str:
-    cfg = load_json(LOCAL_NEWS)
-    return os.getenv("BRAVE_SEARCH_API_KEY", "").strip() or str(cfg.get("brave_search_api_key", "") or "").strip() or dotenv_values().get("BRAVE_SEARCH_API_KEY", "").strip()
-
-
-def validate_brave(key: str) -> None:
-    if requests is None:
-        raise RuntimeError("Dependency requests belum terpasang.")
-    response = requests.get(
-        BRAVE_ENDPOINT,
-        params={"q": "IHSG Indonesia market", "country": "ID", "search_lang": "id", "freshness": "pd", "count": 1},
-        headers={"Accept": "application/json", "X-Subscription-Token": key},
-        timeout=15,
-    )
-    if response.status_code == 429:
-        raise RuntimeError("BRAVE_RATE_LIMIT")
-    response.raise_for_status()
-    payload = response.json()
-    if payload.get("type") not in {"news", None}:
-        raise RuntimeError(f"Unexpected Brave response type: {payload.get('type')}")
 
 
 def set_brave() -> int:
