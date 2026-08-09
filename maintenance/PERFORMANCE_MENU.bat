@@ -158,7 +158,7 @@ echo.
 set "CONFIRM_ACTIVE="
 set /p "CONFIRM_ACTIVE=Kirim active recommendations ke Telegram? [Y/N]: "
 if /I not "%CONFIRM_ACTIVE%"=="Y" goto MENU
-%SDE_PYTHON_CMD% modules\analytics\outcome_tracker.py active-telegram
+%SDE_PYTHON_CMD% tools\send_active_recommendations.py
 set "RC=%ERRORLEVEL%"
 if not "%RC%"=="0" echo Pengiriman active recommendations gagal. Exit code %RC%.
 pause
