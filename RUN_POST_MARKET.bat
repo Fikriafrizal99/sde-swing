@@ -47,7 +47,7 @@ set "RC=!ERRORLEVEL!"
 if "!RC!"=="0" (
   echo.
   echo [NEWS] Menjalankan Post Market News non-blocking...
-  %SDE_PYTHON_CMD% -u modules\news\news_monitor.py run --session post_market --send
+  %SDE_PYTHON_CMD% -u modules\news\news_monitor_market_impact.py run --session post_market --send
   set "NEWS_RC=!ERRORLEVEL!"
   if not "!NEWS_RC!"=="0" echo [WARNING] Post Market News gagal/dilewati ^(exit !NEWS_RC!^). Post Market tetap SUCCESS.
 ) else (
@@ -56,7 +56,7 @@ if "!RC!"=="0" (
 goto STATUS
 
 :NEWS_ONLY
-%SDE_PYTHON_CMD% -u modules\news\news_monitor.py run --session post_market --send
+%SDE_PYTHON_CMD% -u modules\news\news_monitor_market_impact.py run --session post_market --send
 set "NEWS_RC=!ERRORLEVEL!"
 echo.
 echo News exit code: !NEWS_RC!
@@ -64,12 +64,12 @@ pause
 goto MENU
 
 :NEWS_PREVIEW
-%SDE_PYTHON_CMD% -u modules\news\news_monitor.py preview --session post_market
+%SDE_PYTHON_CMD% -u modules\news\news_monitor_market_impact.py preview --session post_market
 pause
 goto MENU
 
 :NEWS_FORCE_SEND
-%SDE_PYTHON_CMD% -u modules\news\news_monitor.py send --session post_market --force
+%SDE_PYTHON_CMD% -u modules\news\news_monitor_market_impact.py send --session post_market --force
 set "NEWS_RC=!ERRORLEVEL!"
 echo.
 echo News exit code: !NEWS_RC!
