@@ -74,6 +74,32 @@ POLITICAL_TERMS = {
     "geopolit", "sanction", "sanksi",
 }
 
+# Event-quality layer: factual/actionable wording gets priority while
+# speculation/opinion is penalized. For broad GLOBAL news, strongly speculative
+# items without a concrete event are rejected entirely.
+FACTUAL_ACTION_TERMS = {
+    "official", "officially", "resmi", "resmi berlaku", "effective",
+    "effective date", "berlaku efektif", "announces", "announced", "mengumumkan",
+    "approves", "approved", "disetujui", "raises", "raised", "cuts", "cut",
+    "holds", "held", "reports", "reported", "rilis", "merilis", "mencatat",
+    "adds", "added", "removes", "removed", "included", "excluded",
+    "inclusion", "exclusion", "review result", "hasil review", "constituent changes",
+    "weight change", "wins", "won", "menang", "signs", "signed", "menandatangani",
+    "acquires", "acquired", "akuisisi", "merger", "launches", "starts production",
+    "commercial operation", "suspends", "suspended", "unsuspends", "trading halt",
+    "rating downgrade", "rating upgrade", "default", "force majeure",
+    "production halt", "shutdown", "permit revoked", "izin dicabut",
+}
+SPECULATIVE_OPINION_TERMS = {
+    "could", "may", "might", "potential", "potentially", "possibly", "possibility",
+    "could be", "may be", "might be", "expected to", "forecast to", "prediction",
+    "predicts", "prediksi", "diprediksi", "berpotensi", "potensi", "kemungkinan",
+    "bisa masuk", "bisa keluar", "peluang masuk", "peluang keluar", "rumor", "rumour",
+    "speculation", "spekulasi", "analyst says", "analis menilai", "menurut analis",
+    "penjelasan analis", "opinion", "opini", "why", "fears", "fear of",
+    "what if", "could crash", "market crash?", "akankah", "apakah",
+}
+
 MARKET_IMPACT_TERMS = {
     "stock", "stocks", "equity", "equities", "index", "indices", "ihsg",
     "rupiah", "dollar", "usd", "dxy", "yuan", "currency", "forex",
@@ -281,6 +307,17 @@ def _hit_count(text: str, terms: set[str]) -> int:
     return sum(1 for term in terms if term in lowered)
 
 
+def _event_quality(headline: str, description: str) -> tuple[float, int, int]:
+    combined = f"{headline} {description}".lower()
+    factual_hits = _hit_count(combined, FACTUAL_ACTION_TERMS)
+    speculative_hits = _hit_count(combined, SPECULATIVE_OPINION_TERMS)
+    if "?" in headline:
+        speculative_hits += 1
+    bonus = min(2.4, factual_hits * 0.55)
+    penalty = min(3.0, speculative_hits * 0.70)
+    return bonus - penalty, factual_hits, speculative_hits
+
+
 def _is_noise(headline: str, description: str) -> bool:
     combined = f"{headline} {description}".lower()
     return any(phrase in combined for phrase in NOISE_PHRASES)
@@ -384,6 +421,7 @@ def strict_normalize_result(
     movement_hits = _hit_count(combined, MOVEMENT_EVENT_TERMS)
     source_score = base._source_score(url)
     indonesia_relevant = _indonesia_relevant(combined, symbol)
+    quality_adjustment, factual_hits, speculative_hits = _event_quality(headline, description)
 
     category, category_hits = _detect_event_category(
         combined,
@@ -411,6 +449,11 @@ def strict_normalize_result(
             )
             if _hit_count(combined, pathway_terms) < 2:
                 return None
+        # Broad macro slots should be reserved for concrete developments, not
+        # opinion/clickbait. Material index/corporate speculation is merely
+        # down-ranked instead of rejected because it can still matter to swing traders.
+        if speculative_hits >= 2 and factual_hits == 0:
+            return None
 
     elif scope in {"INDONESIA", "INDEX", "SECTOR", "CORPORATE", "RISK"}:
         if not indonesia_relevant:
@@ -430,6 +473,7 @@ def strict_normalize_result(
     score += min(3.0, float(impact_hits) * 0.30)
     score += min(2.0, float(movement_hits) * 0.35)
     score += min(1.5, float(category_hits) * 0.30)
+    score += quality_adjustment
     score += 1.0 if len(headline) >= 30 else 0.0
     if symbol:
         score += 2.0
