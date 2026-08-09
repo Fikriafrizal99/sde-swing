@@ -67,6 +67,17 @@
     "fallback_to_existing_on_refresh_failure": false,
     "report_mode": "compact_single_message"
   },
+  "news_monitor": {
+    "enabled": true,
+    "provider": "BRAVE_NEWS_SEARCH",
+    "morning_freshness": "pd",
+    "post_market_freshness": "pd",
+    "results_per_query": 12,
+    "max_total_items": 10,
+    "request_timeout_seconds": 20,
+    "non_blocking": true,
+    "decision_engine_write_access": false
+  },
   "locks": {
     "stale_after_minutes": 180,
     "global_resource_lock_name": "sde_pipeline_write.lock"
@@ -135,7 +146,10 @@
       "signal_detail": "6",
       "evaluation": "701",
       "system": "5",
-      "report": "701"
+      "report": "701",
+      "news": "1451",
+      "morning_news": "1451",
+      "post_market_news": "1451"
     }
   }
 }
