@@ -28,6 +28,7 @@ echo [9] Register semua keputusan BUY mesin
 echo [10] Maintain portfolio aktual
 echo [11] Kirim lifecycle digest (status material)
 echo [12] Kirim active recommendations ke Telegram
+echo [13] Preview lifecycle digest terbaru (read-only)
 echo [0] Kembali
 echo.
 set "PERF_CHOICE="
@@ -45,6 +46,7 @@ if "%PERF_CHOICE%"=="9" goto REGISTER_BUY
 if "%PERF_CHOICE%"=="10" goto PORTFOLIO
 if "%PERF_CHOICE%"=="11" goto SEND_LIFECYCLE
 if "%PERF_CHOICE%"=="12" goto SEND_ACTIVE
+if "%PERF_CHOICE%"=="13" goto PREVIEW_LIFECYCLE
 if "%PERF_CHOICE%"=="0" exit /b 0
 goto MENU
 
@@ -159,5 +161,18 @@ if /I not "%CONFIRM_ACTIVE%"=="Y" goto MENU
 %SDE_PYTHON_CMD% modules\analytics\outcome_tracker.py active-telegram
 set "RC=%ERRORLEVEL%"
 if not "%RC%"=="0" echo Pengiriman active recommendations gagal. Exit code %RC%.
+pause
+goto MENU
+
+:PREVIEW_LIFECYCLE
+cls
+echo Preview lifecycle digest terbaru dari SQLite.
+echo READ-ONLY: tidak refresh Yahoo, tidak scan engine, tidak kirim Telegram,
+echo dan tidak mengubah telegram_notified_at.
+echo.
+%SDE_PYTHON_CMD% tools\preview_lifecycle_digest.py --limit 8
+set "RC=%ERRORLEVEL%"
+echo.
+if not "%RC%"=="0" echo Preview lifecycle gagal. Exit code %RC%.
 pause
 goto MENU
