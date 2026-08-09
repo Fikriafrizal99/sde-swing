@@ -71,7 +71,7 @@
     "enabled": true,
     "provider": "BRAVE_NEWS_SEARCH",
     "morning_freshness": "pd",
-    "post_market_freshness": "pd",
+    "post_market_freshness": "today",
     "results_per_query": 12,
     "max_total_items": 10,
     "request_timeout_seconds": 20,
