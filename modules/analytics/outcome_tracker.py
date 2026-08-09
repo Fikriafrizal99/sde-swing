@@ -1388,13 +1388,13 @@ def telegram_report(overall: dict[str, Any], by_setup: pd.DataFrame, by_signal: 
 
 def _active_recommendations_telegram(active: pd.DataFrame) -> str:
     lines = [
-        "📌 REKOMENDASI AKTIF",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "📌 </b>REKOMENDASI AKTIF</b>",
+        "━━━━━━━━━━━━━━━━━━━",
         f"Total aktif: {len(active)} saham",
     ]
     if active.empty:
         return "\n".join(lines + ["", "Belum ada rekomendasi aktif."])
-    for status, heading in (("OPEN", "📈 ACTIVE"), ("WAITING_TRIGGER", "⏳ WAITING ENTRY")):
+    for status, heading in (("OPEN", "📈 </b>ACTIVE</b>"), ("WAITING_TRIGGER", "⏳ </b>WAITING ENTRY</b>")):
         subset = active[active["current_status"].astype(str).str.upper() == status]
         if subset.empty:
             continue
@@ -1407,7 +1407,7 @@ def _active_recommendations_telegram(active: pd.DataFrame) -> str:
                 entry = fmt_price(row.get("entry_price") or row.get("reference_price"))
                 pnl = fmt(row.get("simulated_return_pct"), 2, "%")
                 lines.extend([
-                    "", symbol, f"Sinyal       : {signal_date}",
+                    "", f"</b>{symbol}</b>", f"Sinyal       : {signal_date}",
                     f"Entry mesin  : {entry}", f"Harga kini   : {current}",
                     f"P/L simulasi : {pnl}",
                     f"TP1          : {fmt_price(row.get('take_profit_1'))}",
@@ -1420,7 +1420,7 @@ def _active_recommendations_telegram(active: pd.DataFrame) -> str:
                 high = fmt_price(row.get("entry_zone_high"), missing="")
                 entry = f"{low}–{high}" if low and high else (low or high or "belum tersedia")
                 lines.extend([
-                    "", symbol, f"Sinyal      : {signal_date}", f"Entry       : {entry}",
+                    "", f"</b>{symbol}</b>", f"Sinyal      : {signal_date}", f"Entry       : {entry}",
                     f"Harga kini  : {current}",
                     f"Status scan : {html.escape(str(row.get('latest_scan_status') or 'NOT_IN_LATEST_SCAN'))}",
                     f"Umur sinyal : {int(row.get('age_sessions') or 0)} sesi",
@@ -1434,22 +1434,69 @@ def _status_changes_telegram(events: list[sqlite3.Row], *, max_events: int = 20)
         return ""
     limit = max(int(max_events or 1), 1)
     lines = [
-        "🔔 LIFECYCLE DIGEST",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"Perubahan material: {len(material)}",
+        "🔔 <b>LIFECYCLE DIGEST</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"📊 <b>{len(material)} perubahan material</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
     ]
     for event in material[:limit]:
         symbol = html.escape(str(event["symbol"] or ""))
-        previous = html.escape(str(event["previous_status"] or "-").replace("_", " "))
-        new = html.escape(str(event["new_status"] or "-").replace("_", " "))
-        reason = html.escape(str(event["event_reason"] or event["event_type"] or ""))
+        event_type = str(event["event_type"] or "").upper()
+        previous = html.escape(
+            str(event["previous_status"] or "-").replace("_", " ")
+        )
+        new = html.escape(
+            str(event["new_status"] or "-").replace("_", " ")
+        )
+        reason_raw = str(event["event_reason"] or event_type or "")
+        reason = html.escape(reason_raw.replace("_", " "))
         price = fmt_price(event["event_price"])
-        event_date = html.escape(str(event["event_date"] or ""))
-        lines.append(f"• {event_date} | {symbol} | {previous} → {new} | {reason} | {price}")
-    if len(material) > limit:
-        lines.append(f"… {len(material) - limit} perubahan lain tersimpan di ledger.")
-    return "\n".join(lines)
+        raw_date = str(event["event_date"] or "")
+        try:
+            event_date = pd.to_datetime(raw_date).strftime("%d %b %Y")
+        except Exception:
+            event_date = html.escape(raw_date)
+        lines.append("")
+        # SYMBOL
+        lines.append(f"◆ <b>{symbol}</b>")
 
+        # EVENT TYPE
+        if event_type == "ENTRY_TRIGGERED":
+            lines.append("📈 <b>ENTRY TRIGGERED</b>")
+            lines.append(f"🎯 Trigger : {reason.title()}")
+            lines.append(f"💰 Entry   : {price}")
+        elif event_type == "TP1_HIT":
+            lines.append("🎯 <b>TP1 HIT</b>")
+            lines.append(f"💰 Exit    : {price}")
+        elif event_type == "TP2_HIT":
+            lines.append("🚀 <b>TP2 HIT</b>")
+            lines.append(f"💰 Exit    : {price}")
+        elif event_type == "STOP_LOSS_HIT":
+            lines.append("🛑 <b>STOP LOSS HIT</b>")
+            lines.append(f"💰 Exit    : {price}")
+        elif event_type == "MAX_HOLD_EXIT":
+            lines.append("⏱ <b>MAX HOLD EXIT</b>")
+            lines.append(f"💰 Exit    : {price}")
+        elif event_type == "EXPIRED":
+            lines.append("⌛ <b>SIGNAL EXPIRED</b>")
+            lines.append(f"⚠️ Reason  : {reason}")
+        elif event_type == "INVALIDATED_BEFORE_ENTRY":
+            lines.append("🚫 <b>SIGNAL INVALIDATED</b>")
+            lines.append(f"⚠️ Reason  : {reason}")
+            lines.append(f"💰 Price   : {price}")
+        else:
+            lines.append(f"🔄 <b>{previous} → {new}</b>")
+            if reason:
+                lines.append(f"📌 Reason  : {reason}")
+            if price != "belum tersedia":
+                lines.append(f"💰 Price   : {price}")
+        lines.append(f"📅 Date    : {event_date}")
+    if len(material) > limit:
+        lines.extend([
+            "",
+            f"… {len(material) - limit} perubahan lain tersimpan di ledger.",
+        ])
+    return "\n".join(lines)
 
 def export_reports(
     conn: sqlite3.Connection,
