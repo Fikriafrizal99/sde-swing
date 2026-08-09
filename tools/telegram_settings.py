@@ -5,6 +5,7 @@ from __future__ import annotations
 
 Secrets are stored only in ignored local files and, on Windows, also persisted
 with setx for future shells. Nothing secret is written to tracked config.
+Existing .env values remain supported as a compatibility fallback.
 """
 
 import argparse
@@ -27,6 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 LOCAL_TELEGRAM = PROJECT_ROOT / "config/telegram.json"
 LOCAL_NEWS = PROJECT_ROOT / "config/news.local.json"
+DOTENV = PROJECT_ROOT / ".env"
 SCHEDULER = PROJECT_ROOT / "config/scheduler.json"
 BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/news/search"
 
@@ -59,6 +61,34 @@ def load_json(path: Path) -> dict[str, Any]:
         return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
+
+
+def dotenv_values(path: Path = DOTENV) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except Exception:
+        return values
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            values[key] = value
+    return values
+
+
+def runtime_value(name: str) -> str:
+    """Read process/User env first, then existing project .env as fallback."""
+    value = os.getenv(name, "").strip()
+    if value:
+        return value
+    return dotenv_values().get(name, "").strip()
 
 
 def save_json(path: Path, payload: dict[str, Any]) -> None:
@@ -99,8 +129,10 @@ def _routing_section(cfg: dict[str, Any]) -> dict[str, Any]:
 def telegram_credentials() -> tuple[str, str]:
     cfg = load_json(LOCAL_TELEGRAM)
     tg = cfg.get("telegram", {}) if isinstance(cfg.get("telegram", {}), dict) else {}
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or str(tg.get("bot_token", "") or "").strip()
-    chat = os.getenv("TELEGRAM_CHAT_ID", "").strip() or str(tg.get("chat_id", "") or "").strip()
+    # Explicit process/User environment wins. Local config written by this tool
+    # is second. Existing .env is a compatibility fallback only.
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or str(tg.get("bot_token", "") or "").strip() or dotenv_values().get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat = os.getenv("TELEGRAM_CHAT_ID", "").strip() or str(tg.get("chat_id", "") or "").strip() or dotenv_values().get("TELEGRAM_CHAT_ID", "").strip()
     return token, chat
 
 
@@ -234,7 +266,7 @@ def effective_topic(name: str) -> str:
     routing = cfg.get("telegram_ui", {}).get("topic_routing", {}) if isinstance(cfg.get("telegram_ui", {}), dict) else {}
     env_name = ENV_TOPIC.get(name)
     if env_name:
-        env_value = os.getenv(env_name, "").strip()
+        env_value = runtime_value(env_name)
         if env_value.isdigit():
             return env_value
     for key in TOPIC_KEYS[name]:
@@ -250,8 +282,7 @@ def effective_topic(name: str) -> str:
 
 def status() -> int:
     token, chat = telegram_credentials()
-    brave_cfg = load_json(LOCAL_NEWS)
-    brave = os.getenv("BRAVE_SEARCH_API_KEY", "").strip() or str(brave_cfg.get("brave_search_api_key", "") or "").strip()
+    brave = brave_key()
     print("============================================================")
     print("                 SDE - TELEGRAM SETTINGS")
     print("============================================================")
@@ -262,6 +293,10 @@ def status() -> int:
     for name in ("market", "final_watchlist", "signal_detail", "report", "system", "news"):
         value = effective_topic(name)
         print(f"{name.upper():16} : {value or 'NOT SET'}")
+    generic_signal = runtime_value("TELEGRAM_THREAD_SIGNAL_ID")
+    if generic_signal:
+        print("")
+        print(f"[INFO] TELEGRAM_THREAD_SIGNAL_ID={generic_signal} masih aktif dan dapat meng-override route SIGNAL spesifik.")
     return 0
 
 
@@ -299,7 +334,7 @@ def test_all_topics() -> int:
 
 def brave_key() -> str:
     cfg = load_json(LOCAL_NEWS)
-    return os.getenv("BRAVE_SEARCH_API_KEY", "").strip() or str(cfg.get("brave_search_api_key", "") or "").strip()
+    return os.getenv("BRAVE_SEARCH_API_KEY", "").strip() or str(cfg.get("brave_search_api_key", "") or "").strip() or dotenv_values().get("BRAVE_SEARCH_API_KEY", "").strip()
 
 
 def validate_brave(key: str) -> None:
