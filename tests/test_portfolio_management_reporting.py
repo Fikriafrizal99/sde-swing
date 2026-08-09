@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from modules.portfolio import position_management_engine as base
 from modules.portfolio.manual_position_plan import set_manual_plan
@@ -50,11 +51,12 @@ def _row() -> dict:
         "management_action": "HOLD",
         "active_stop_loss": None,
         "extended_target": None,
+        "reason": "Thesis belum invalid dan target awal belum selesai. Broker history: current=DISTRIBUTION; 3D=INSUFFICIENT_DATA(2/3).",
         "data_quality_status": "VALID",
     }
 
 
-def test_compact_portfolio_telegram_keeps_execution_levels_and_hides_raw_broker_table():
+def test_compact_portfolio_telegram_keeps_execution_levels_and_progressive_broker_conclusion():
     rows = apply_report_interpretation([_row()], interpreter=None)
     text = telegram_text(rows, "2026-08-07")
 
@@ -63,9 +65,12 @@ def test_compact_portfolio_telegram_keeps_execution_levels_and_hides_raw_broker_
     assert "🎯 TP1 : -" in text
     assert "🚀 TP2 : -" in text
     assert "🛡️ SL  : -" in text
-    assert "YP +Rp18,40 jt" in text
+    assert "Distribusi muncul dalam 2 sesi sejak entry" in text
     assert "LG -Rp42,60 jt" in text
-    assert "Histori broker baru 2 sesi" in text
+    assert "AK -Rp27,30 jt" in text
+    assert "belum menjadi konfirmasi 3D untuk action engine" in text
+    assert "Keputusan HOLD mengikuti engine: Thesis belum invalid dan target awal belum selesai." in text
+    assert "Histori broker baru 2 sesi" not in text
     assert "Initial TP/SL belum lengkap" in text
 
     # Detailed broker windows remain in JSON/database, not the Telegram body.
@@ -76,6 +81,71 @@ def test_compact_portfolio_telegram_keeps_execution_levels_and_hides_raw_broker_
     assert "7D          :" not in text
     assert "Persistence" not in text
     assert "Flow Trend" not in text
+
+
+def test_one_day_broker_is_explained_immediately_with_actor_and_nominal():
+    row = _row()
+    row.update({
+        "broker_observation_count": 1,
+        "broker_context_since_entry": "DISTRIBUTION",
+        "broker_current_top_distribution": [
+            {"broker": "LG", "net_value": -18_400_000.0},
+            {"broker": "YP", "net_value": -11_700_000.0},
+        ],
+        "broker_top_distribution": [
+            {"broker": "LG", "net_value": -18_400_000.0},
+            {"broker": "YP", "net_value": -11_700_000.0},
+        ],
+    })
+    text = telegram_text(apply_report_interpretation([row], interpreter=None), "2026-08-07")
+
+    assert "Distribusi muncul pada 1 sesi terbaru" in text
+    assert "LG -Rp18,40 jt" in text
+    assert "YP -Rp11,70 jt" in text
+    assert "persistence belum terkonfirmasi" in text
+
+
+def test_three_day_context_uses_confirmed_window_and_keeps_engine_reason_authoritative():
+    row = _row()
+    row.update({
+        "broker_observation_count": 3,
+        "broker_context_3d": "DISTRIBUTION",
+        "broker_context_since_entry": "DISTRIBUTION",
+        "management_action": "EXIT",
+        "initial_stop_loss": 98.0,
+        "initial_tp1": 115.0,
+        "initial_tp2": 140.0,
+        "reason": "Initial stop pernah terlewati; thesis awal sudah invalid. Broker history: current=DISTRIBUTION; 3D=DISTRIBUTION(3/3).",
+    })
+    text = telegram_text(apply_report_interpretation([row], interpreter=None), "2026-08-07")
+
+    assert "Context broker 3D DISTRIBUTION" in text
+    assert "sejak entry distributor utama LG -Rp42,60 jt dan AK -Rp27,30 jt" in text
+    assert "Keputusan EXIT mengikuti engine: Initial stop pernah terlewati; thesis awal sudah invalid." in text
+    assert "alasan yang tidak dijelaskan" not in text
+
+
+def test_ai_cannot_overwrite_deterministic_portfolio_conclusion():
+    class BadInterpreter:
+        def interpret(self, facts, fallback):
+            return SimpleNamespace(
+                main_reason="Manajemen EXIT karena alasan yang tidak dijelaskan.",
+                main_risk="Risiko AI.",
+                execution_note="Ikuti action.",
+                source="GROQ",
+                status="SUCCESS",
+                warning="",
+            )
+
+    row = _row()
+    row["management_action"] = "EXIT"
+    row["reason"] = "Harga berada di/bawah active stop. Broker history: current=DISTRIBUTION."
+    result = apply_report_interpretation([row], interpreter=BadInterpreter())[0]
+
+    assert "Harga berada di/bawah active stop." in result["interpretation_main_reason"]
+    assert "alasan yang tidak dijelaskan" not in result["interpretation_main_reason"]
+    assert result["interpretation_main_risk"] == "Risiko AI."
+    assert result["interpretation_execution_note"] == "Ikuti action."
 
 
 def test_manual_plan_fills_blank_initial_plan_without_overwriting_machine_levels(tmp_path):
