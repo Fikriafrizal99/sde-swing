@@ -89,10 +89,12 @@ class TelegramRouter:
         env_thread = _topic_id(self.environ.get(env_name, ""))
         category_config = _topic_id(ui_routing.get(category) or ui_routing.get(category.lower()) or "")
 
-        if category == "REPORT" and label_lower not in {"report", "reports"}:
-            # Market Outlook, Post Market, broker reports, evaluation, etc. are
-            # REPORT payloads with dedicated per-report routes. A generic
-            # TELEGRAM_THREAD_REPORT_ID must not hijack those routes.
+        if category == "REPORT" and report_lower not in {"report", "reports"}:
+            # A concrete report_type owns its dedicated route even when the
+            # payload carries the legacy/generic topic label "report". This
+            # prevents TELEGRAM_THREAD_REPORT_ID from hijacking Market Outlook,
+            # Post Market, broker reports, etc. If no dedicated route exists,
+            # delivery.py may still apply the scheduler fallback for topic=report.
             thread = specific_config
         elif category == "NEWS":
             # NEWS is intentionally isolated. Its caller must refuse main-chat
