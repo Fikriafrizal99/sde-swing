@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-"""Read-only news monitor for SDE Swing.
+"""Read-only News Monitor for SDE Swing.
 
-News is informational only. This module never imports or mutates the trading
-Decision Engine, Broker Engine, Technical Engine, or Portfolio Management
-scoring/action logic.
+This module is intentionally isolated from Technical, Broker, Decision, and
+Portfolio Management scoring/action logic. It only collects, filters, stores,
+previews, and sends informational news digests.
 """
 
 import argparse
@@ -38,6 +38,7 @@ BRAVE_NEWS_ENDPOINT = "https://api.search.brave.com/res/v1/news/search"
 DEFAULT_SCHEDULER = PROJECT_ROOT / "config/scheduler.json"
 DEFAULT_TELEGRAM = PROJECT_ROOT / "config/telegram.json"
 DEFAULT_NEWS_LOCAL = PROJECT_ROOT / "config/news.local.json"
+DEFAULT_DOTENV = PROJECT_ROOT / ".env"
 DEFAULT_DB = PROJECT_ROOT / "data/database/sde_swing_history.db"
 DEFAULT_DECISIONS = PROJECT_ROOT / "data/output/decision/FINAL_DECISION_V3.csv"
 DEFAULT_OUTPUT = PROJECT_ROOT / "data/output/news"
@@ -81,17 +82,19 @@ GLOBAL_KEYWORDS = {
     "fed", "federal reserve", "wall street", "dow", "nasdaq", "s&p",
     "china", "beijing", "oil", "crude", "gold", "commodity", "commodities",
     "geopolit", "tariff", "inflation", "jobs", "yield", "dollar", "dxy",
+    "market", "stocks", "equities",
 }
 INDONESIA_KEYWORDS = {
     "indonesia", "ihsg", "idx", "rupiah", "bank indonesia", "bi rate",
     "ojk", "bursa efek indonesia", "bei", "ekonomi indonesia", "apbn",
-    "pemerintah", "kementerian keuangan", "sri mulyani", "purbaya",
+    "pemerintah", "kementerian keuangan", "pasar saham",
 }
 SECTOR_KEYWORDS = {
     "energy", "energi", "bank", "banking", "perbankan", "technology",
     "teknologi", "property", "properti", "infrastructure", "infrastruktur",
     "consumer", "konsumer", "healthcare", "kesehatan", "mining", "tambang",
     "coal", "batubara", "nickel", "nikel", "gold", "emas", "oil", "minyak",
+    "commodity", "komoditas",
 }
 
 
@@ -134,7 +137,7 @@ def write_text_atomic(path: Path, text: str) -> None:
     temp.replace(path)
 
 
-def _load_dotenv(path: Path) -> None:
+def _load_dotenv(path: Path = DEFAULT_DOTENV) -> None:
     if not path.exists():
         return
     try:
@@ -152,12 +155,8 @@ def _load_dotenv(path: Path) -> None:
             os.environ[key] = value
 
 
-def load_runtime_environment() -> None:
-    _load_dotenv(PROJECT_ROOT / ".env")
-
-
 def brave_api_key() -> str:
-    load_runtime_environment()
+    _load_dotenv()
     env = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
     if env:
         return env
@@ -170,7 +169,7 @@ def telegram_config() -> dict[str, Any]:
 
 
 def telegram_credentials() -> tuple[str, str]:
-    load_runtime_environment()
+    _load_dotenv()
     cfg = telegram_config().get("telegram", {})
     if not isinstance(cfg, dict):
         cfg = {}
@@ -215,7 +214,7 @@ def _blocked_source(url: str) -> bool:
 
 
 def _normalize_title(value: str) -> str:
-    text = re.sub(r"[^a-z0-9 ]+", " ", value.lower())
+    text = re.sub(r"[^a-z0-9 ]+", " ", str(value or "").lower())
     return " ".join(part for part in text.split() if len(part) > 1)
 
 
@@ -247,7 +246,7 @@ def dedupe_items(items: Iterable[NewsItem]) -> list[NewsItem]:
     seen_urls: set[str] = set()
     for item in sorted(items, key=lambda row: row.score, reverse=True):
         canonical = item.url.split("#", 1)[0].rstrip("/")
-        if canonical in seen_urls:
+        if not canonical or canonical in seen_urls:
             continue
         if any(_similar_title(item.headline, existing.headline) for existing in kept):
             continue
@@ -307,24 +306,35 @@ def normalize_result(result: dict[str, Any], *, scope: str, symbols: list[str]) 
     )
 
 
-def _brave_search(*, query: str, country: str, search_lang: str, freshness: str, count: int, timeout: int) -> list[dict[str, Any]]:
+def _response_error(response: Any) -> str:
+    try:
+        return json.dumps(response.json(), ensure_ascii=False)
+    except Exception:
+        return str(getattr(response, "text", "") or "").strip()[:1000]
+
+
+def _brave_search(*, query: str, freshness: str, count: int, timeout: int) -> list[dict[str, Any]]:
+    """Execute a minimal Brave News Search request.
+
+    Locale parameters are intentionally omitted. Indonesia relevance is
+    expressed in the query text, avoiding unsupported locale combinations that
+    can return HTTP 422 even when the subscription key itself is valid.
+    """
     if requests is None:
         raise RuntimeError("Dependency requests belum terpasang.")
     key = brave_api_key()
     if not key:
         raise RuntimeError("BRAVE_SEARCH_API_KEY belum dikonfigurasi.")
+
+    params: dict[str, Any] = {
+        "q": query,
+        "freshness": freshness,
+        "count": max(1, min(int(count), 50)),
+        "safesearch": "moderate",
+    }
     response = requests.get(
         BRAVE_NEWS_ENDPOINT,
-        params={
-            "q": query,
-            "country": country,
-            "search_lang": search_lang,
-            "freshness": freshness,
-            "count": max(1, min(int(count), 50)),
-            "safesearch": "moderate",
-            "spellcheck": "true",
-            "operators": "true",
-        },
+        params=params,
         headers={
             "Accept": "application/json",
             "Accept-Encoding": "gzip",
@@ -334,8 +344,14 @@ def _brave_search(*, query: str, country: str, search_lang: str, freshness: str,
     )
     if response.status_code == 429:
         raise RuntimeError("BRAVE_RATE_LIMIT")
-    response.raise_for_status()
-    payload = response.json()
+    if response.status_code == 422:
+        raise RuntimeError(f"BRAVE_REQUEST_INVALID: {_response_error(response)}")
+    if not response.ok:
+        raise RuntimeError(f"BRAVE_HTTP_{response.status_code}: {_response_error(response)}")
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise RuntimeError("Brave response bukan JSON.") from exc
     results = payload.get("results", [])
     return [row for row in results if isinstance(row, dict)] if isinstance(results, list) else []
 
@@ -346,28 +362,44 @@ def monitored_symbols(limit: int = 12) -> list[str]:
         try:
             conn = sqlite3.connect(DEFAULT_DB, timeout=5)
             rows = conn.execute(
-                "SELECT DISTINCT UPPER(symbol) FROM portfolio_positions WHERE UPPER(current_status)='OPEN' ORDER BY updated_at DESC"
+                "SELECT DISTINCT UPPER(symbol) FROM portfolio_positions "
+                "WHERE UPPER(current_status)='OPEN' ORDER BY updated_at DESC"
             ).fetchall()
             conn.close()
             symbols.extend(str(row[0]).replace(".JK", "").strip().upper() for row in rows if row and row[0])
         except Exception:
             pass
+
     if DEFAULT_DECISIONS.exists():
         try:
             import pandas as pd
 
             frame = pd.read_csv(DEFAULT_DECISIONS, low_memory=False)
             if not frame.empty:
-                symbol_col = next((col for col in frame.columns if str(col).strip().lower() in {"symbol", "ticker", "emiten"}), None)
-                decision_col = next((col for col in frame.columns if str(col).strip().lower() in {"decision_v3", "decision", "final_decision"}), None)
+                symbol_col = next(
+                    (col for col in frame.columns if str(col).strip().lower() in {"symbol", "ticker", "emiten"}),
+                    None,
+                )
+                decision_col = next(
+                    (col for col in frame.columns if str(col).strip().lower() in {"decision_v3", "decision", "final_decision"}),
+                    None,
+                )
                 work = frame
                 if decision_col:
                     mask = work[decision_col].astype(str).str.upper().str.contains("BUY|WATCH", regex=True, na=False)
                     work = work.loc[mask]
                 if symbol_col:
-                    symbols.extend(work[symbol_col].astype(str).str.upper().str.replace(".JK", "", regex=False).str.strip().tolist())
+                    symbols.extend(
+                        work[symbol_col]
+                        .astype(str)
+                        .str.upper()
+                        .str.replace(".JK", "", regex=False)
+                        .str.strip()
+                        .tolist()
+                    )
         except Exception:
             pass
+
     unique: list[str] = []
     for symbol in symbols:
         if symbol and symbol not in unique and re.fullmatch(r"[A-Z0-9]{2,8}", symbol):
@@ -378,149 +410,195 @@ def monitored_symbols(limit: int = 12) -> list[str]:
 
 
 def query_plan(symbols: list[str]) -> list[dict[str, str]]:
+    """Return batch queries; locality is encoded in query text, not country."""
     plans = [
         {
             "scope": "GLOBAL",
-            "query": 'Federal Reserve OR Wall Street OR China OR oil OR gold OR commodities OR geopolitics markets',
-            "country": "ALL",
-            "search_lang": "en",
+            "query": "Federal Reserve Wall Street China oil gold commodities geopolitics global markets stocks",
         },
         {
             "scope": "INDONESIA",
-            "query": 'IHSG OR rupiah OR "Bank Indonesia" OR OJK OR BEI OR ekonomi Indonesia pasar saham',
-            "country": "ID",
-            "search_lang": "id",
+            "query": "IHSG rupiah Bank Indonesia OJK BEI ekonomi Indonesia pasar saham kebijakan pemerintah",
         },
         {
             "scope": "SECTOR",
-            "query": 'saham Indonesia sektor energi perbankan teknologi properti infrastruktur konsumer tambang komoditas',
-            "country": "ID",
-            "search_lang": "id",
+            "query": "saham Indonesia sektor energi perbankan teknologi properti infrastruktur konsumer tambang komoditas",
         },
     ]
     if symbols:
-        joined = " OR ".join(symbols[:12])
+        joined = " ".join(symbols[:12])
         plans.append(
             {
                 "scope": "ISSUER",
-                "query": f"({joined}) saham emiten IDX",
-                "country": "ID",
-                "search_lang": "id",
+                "query": f"{joined} saham emiten IDX corporate action earnings dividen kontrak akuisisi",
             }
         )
     return plans
 
 
+def _resolve_freshness(session: str, config: dict[str, Any], current: datetime) -> str:
+    if session == "morning":
+        raw = str(config.get("morning_freshness", "pd") or "pd").strip()
+    else:
+        raw = str(config.get("post_market_freshness", "today") or "today").strip()
+
+    if raw in {"pd", "pw", "pm", "py"}:
+        return raw
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}to\d{4}-\d{2}-\d{2}", raw):
+        return raw
+    if session == "post_market" and raw.lower() == "today":
+        day = current.date().isoformat()
+        return f"{day}to{day}"
+    return "pd"
+
+
+def _morning_items_for_date(day: str) -> list[NewsItem]:
+    path = DEFAULT_OUTPUT / day / "morning_news.json"
+    payload = load_json(path)
+    rows = payload.get("items", []) if isinstance(payload.get("items", []), list) else []
+    items: list[NewsItem] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            items.append(NewsItem(**row))
+        except TypeError:
+            continue
+    return items
+
+
+def _remove_morning_duplicates(items: list[NewsItem], day: str) -> list[NewsItem]:
+    morning = _morning_items_for_date(day)
+    if not morning:
+        return items
+    morning_urls = {item.url.split("#", 1)[0].rstrip("/") for item in morning}
+    kept: list[NewsItem] = []
+    for item in items:
+        canonical = item.url.split("#", 1)[0].rstrip("/")
+        if canonical in morning_urls:
+            continue
+        if any(_similar_title(item.headline, existing.headline) for existing in morning):
+            continue
+        kept.append(item)
+    return kept
+
+
+def _limit_items(items: list[NewsItem], maximum: int) -> list[NewsItem]:
+    per_scope = {"GLOBAL": 3, "INDONESIA": 3, "SECTOR": 2, "ISSUER": 4}
+    selected: list[NewsItem] = []
+    for scope in ("GLOBAL", "INDONESIA", "SECTOR", "ISSUER"):
+        group = [item for item in items if item.scope == scope]
+        selected.extend(group[: per_scope[scope]])
+    return selected[:maximum]
+
+
 def collect_news(session: str, scheduler: dict[str, Any] | None = None) -> tuple[list[NewsItem], dict[str, Any]]:
+    if session not in SESSION_REPORT_TYPE:
+        raise ValueError(f"Unknown news session: {session}")
+
     scheduler = scheduler or load_json(DEFAULT_SCHEDULER)
     config = scheduler.get("news_monitor", {}) if isinstance(scheduler.get("news_monitor", {}), dict) else {}
     timeout = int(config.get("request_timeout_seconds", 20) or 20)
     count = int(config.get("results_per_query", 12) or 12)
-    freshness = str(config.get(f"{session}_freshness", "pd") or "pd")
-    if freshness.lower() == "today":
-        today = now_wib().date().isoformat()
-        freshness = f"{today}to{today}"
-    max_total = int(config.get("max_total_items", 10) or 10)
-    limits = {"GLOBAL": 3, "INDONESIA": 3, "SECTOR": 2, "ISSUER": 4}
-
+    maximum = int(config.get("max_total_items", 10) or 10)
+    current = now_wib()
+    freshness = _resolve_freshness(session, config, current)
     symbols = monitored_symbols()
-    collected: list[NewsItem] = []
-    request_errors: list[str] = []
-    request_count = 0
+    plans = query_plan(symbols)
+
     raw_count = 0
-    for plan in query_plan(symbols):
-        request_count += 1
+    normalized: list[NewsItem] = []
+    errors: list[str] = []
+    for plan in plans:
         try:
             rows = _brave_search(
                 query=plan["query"],
-                country=plan["country"],
-                search_lang=plan["search_lang"],
                 freshness=freshness,
                 count=count,
                 timeout=timeout,
             )
         except Exception as exc:
-            request_errors.append(f"{plan['scope']}:{type(exc).__name__}:{exc}")
+            errors.append(f"{plan['scope']}: {exc}")
             continue
         raw_count += len(rows)
         for row in rows:
             item = normalize_result(row, scope=plan["scope"], symbols=symbols)
             if item is not None:
-                collected.append(item)
+                normalized.append(item)
 
-    deduped = dedupe_items(collected)
-    selected: list[NewsItem] = []
-    for scope in ("GLOBAL", "INDONESIA", "SECTOR", "ISSUER"):
-        scoped = [item for item in deduped if item.scope == scope]
-        selected.extend(scoped[: limits[scope]])
-    selected = dedupe_items(selected)[:max_total]
+    deduped = dedupe_items(normalized)
+    if session == "post_market":
+        deduped = _remove_morning_duplicates(deduped, current.date().isoformat())
+    selected = _limit_items(deduped, maximum)
+
     meta = {
-        "provider": "BRAVE_NEWS_SEARCH",
         "session": session,
-        "generated_at": now_wib().isoformat(timespec="seconds"),
+        "provider": "BRAVE_NEWS_SEARCH",
+        "generated_at": current.isoformat(timespec="seconds"),
+        "freshness": freshness,
         "monitored_symbols": symbols,
-        "request_count": request_count,
-        "raw_result_count": raw_count,
-        "selected_count": len(selected),
-        "request_errors": request_errors,
+        "queries": len(plans),
+        "raw_results": raw_count,
+        "normalized_results": len(normalized),
+        "deduplicated_results": len(deduped),
+        "displayed_results": len(selected),
+        "errors": errors,
+        "decision_engine_write_access": False,
     }
     return selected, meta
 
 
-def _display_time(item: NewsItem) -> str:
+def _item_time(item: NewsItem) -> str:
     if item.age:
         return item.age
-    raw = item.published_at.strip()
-    if not raw:
-        return ""
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=WIB)
-        return parsed.astimezone(WIB).strftime("%H:%M WIB")
-    except Exception:
-        return raw[:32]
+    if item.published_at:
+        return item.published_at
+    return ""
 
 
 def format_digest(session: str, items: list[NewsItem], generated_at: datetime | None = None) -> str:
     generated_at = generated_at or now_wib()
-    label = "MORNING NEWS" if session == "morning" else "POST MARKET NEWS"
+    if session == "morning":
+        title = "📰 SDE SWING — MORNING NEWS"
+        subtitle = "🌅 Overnight & Pre-Market Brief"
+    else:
+        title = "📰 SDE SWING — POST MARKET NEWS"
+        subtitle = "🌆 Daily Market News Digest"
+
     lines = [
-        f"📰 SDE SWING — {label}",
+        title,
         "━━━━━━━━━━━━━━━━━━━━",
-        f"📅 {generated_at.strftime('%d %b %Y | %H:%M WIB')}",
+        f"📅 {generated_at.strftime('%d %b %Y')} | {generated_at.strftime('%H:%M')} WIB",
+        subtitle,
         "━━━━━━━━━━━━━━━━━━━━",
     ]
+
     sections = [
         ("GLOBAL", "🌍 GLOBAL"),
         ("INDONESIA", "🇮🇩 INDONESIA"),
         ("SECTOR", "🏭 SECTOR"),
+        ("ISSUER", "📌 EMITEN"),
     ]
     for scope, heading in sections:
-        scoped = [item for item in items if item.scope == scope]
-        if not scoped:
+        group = [item for item in items if item.scope == scope]
+        if not group:
             continue
-        lines.extend(["", heading])
-        for item in scoped:
-            stamp = _display_time(item)
-            source_line = f"  {item.source}" + (f" | {stamp}" if stamp else "")
-            lines.extend([f"• {item.headline}", source_line, f"  🔗 Baca: {item.url}"])
-
-    issuer_items = [item for item in items if item.scope == "ISSUER"]
-    if issuer_items:
-        lines.extend(["", "📌 EMITEN"])
-        by_symbol: dict[str, list[NewsItem]] = {}
-        for item in issuer_items:
-            by_symbol.setdefault(item.symbol or "LAINNYA", []).append(item)
-        for symbol, rows in by_symbol.items():
-            lines.extend(["", symbol])
-            for item in rows:
-                stamp = _display_time(item)
-                source_line = f"  {item.source}" + (f" | {stamp}" if stamp else "")
-                lines.extend([f"• {item.headline}", source_line, f"  🔗 Baca: {item.url}"])
+        lines.extend(["", heading, ""])
+        current_symbol = ""
+        for item in group:
+            if scope == "ISSUER" and item.symbol and item.symbol != current_symbol:
+                current_symbol = item.symbol
+                lines.append(current_symbol)
+            lines.append(f"• {item.headline}")
+            time_text = _item_time(item)
+            source_line = f"  {item.source}"
+            if time_text:
+                source_line += f" | {time_text}"
+            lines.append(source_line)
+            lines.append(f"  🔗 Baca: {item.url}")
+            lines.append("")
 
     lines.extend([
-        "",
         "━━━━━━━━━━━━━━━━━━━━",
         f"📊 {len(items)} berita relevan ditampilkan",
         "",
@@ -529,206 +607,182 @@ def format_digest(session: str, items: list[NewsItem], generated_at: datetime | 
     return "\n".join(lines).strip() + "\n"
 
 
-def output_paths(session: str, date_text: str | None = None) -> tuple[Path, Path]:
-    date_text = date_text or now_wib().date().isoformat()
-    folder = DEFAULT_OUTPUT / date_text
+def _paths(session: str, day: str) -> tuple[Path, Path]:
+    folder = DEFAULT_OUTPUT / day
     return folder / f"{session}_news.txt", folder / f"{session}_news.json"
 
 
-def latest_output(session: str) -> Path | None:
-    if not DEFAULT_OUTPUT.exists():
-        return None
-    candidates = sorted(DEFAULT_OUTPUT.glob(f"*/{session}_news.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
+def save_digest(session: str, items: list[NewsItem], meta: dict[str, Any]) -> tuple[Path, Path, str]:
+    generated_at = now_wib()
+    day = generated_at.date().isoformat()
+    text_path, json_path = _paths(session, day)
+    text = format_digest(session, items, generated_at)
+    write_text_atomic(text_path, text)
+    write_json_atomic(
+        json_path,
+        {
+            "session": session,
+            "generated_at": generated_at.isoformat(timespec="seconds"),
+            "items": [asdict(item) for item in items],
+            "meta": meta,
+        },
+    )
+    return text_path, json_path, text
+
+
+def _latest_text_path(session: str) -> Path | None:
+    candidates = sorted(DEFAULT_OUTPUT.glob(f"*/{session}_news.txt"), reverse=True)
     return candidates[0] if candidates else None
 
 
-def suppress_morning_duplicates(items: list[NewsItem], date_text: str | None = None) -> tuple[list[NewsItem], int]:
-    date_text = date_text or now_wib().date().isoformat()
-    morning_json = output_paths("morning", date_text)[1]
-    payload = load_json(morning_json)
-    prior_rows = payload.get("items", []) if isinstance(payload.get("items", []), list) else []
-    prior: list[NewsItem] = []
-    for row in prior_rows:
-        if not isinstance(row, dict):
-            continue
-        try:
-            prior.append(NewsItem(**{
-                "headline": str(row.get("headline", "")),
-                "source": str(row.get("source", "")),
-                "url": str(row.get("url", "")),
-                "published_at": str(row.get("published_at", "")),
-                "age": str(row.get("age", "")),
-                "scope": str(row.get("scope", "")),
-                "category": str(row.get("category", "")),
-                "symbol": str(row.get("symbol", "")),
-                "score": float(row.get("score", 0.0) or 0.0),
-            }))
-        except Exception:
-            continue
-    if not prior:
-        return items, 0
-    prior_urls = {item.url.split("#", 1)[0].rstrip("/") for item in prior}
-    kept: list[NewsItem] = []
-    suppressed = 0
-    for item in items:
-        canonical = item.url.split("#", 1)[0].rstrip("/")
-        duplicate = canonical in prior_urls or any(_similar_title(item.headline, old.headline) for old in prior)
-        if duplicate:
-            suppressed += 1
-        else:
-            kept.append(item)
-    return kept, suppressed
+def _existing_text(session: str) -> tuple[Path | None, str]:
+    today_path, _ = _paths(session, now_wib().date().isoformat())
+    path = today_path if today_path.exists() else _latest_text_path(session)
+    if path is None or not path.exists():
+        return None, ""
+    try:
+        return path, path.read_text(encoding="utf-8")
+    except Exception:
+        return path, ""
 
 
-def generate(session: str) -> tuple[Path | None, dict[str, Any]]:
-    items, meta = collect_news(session)
-    date_text = now_wib().date().isoformat()
-    if session == "post_market":
-        items, suppressed = suppress_morning_duplicates(items, date_text)
-        meta["suppressed_morning_duplicates"] = suppressed
-        meta["selected_count"] = len(items)
-    text_path, json_path = output_paths(session, date_text)
-    payload = {**meta, "items": [asdict(item) for item in items]}
-    write_json_atomic(json_path, payload)
-    if not items:
-        if text_path.exists():
-            text_path.unlink()
-        return None, payload
-    text = format_digest(session, items)
-    write_text_atomic(text_path, text)
-    return text_path, payload
-
-
-def _route_thread(session: str) -> str:
-    cfg = telegram_config()
-    report_type = SESSION_REPORT_TYPE[session]
-    route = TelegramRouter(cfg, os.environ).resolve(report_type, "news")
-    if route.message_thread_id and str(route.message_thread_id).isdigit():
-        return str(route.message_thread_id)
+def _effective_news_topic(report_type: str) -> str:
+    _load_dotenv()
+    route = TelegramRouter(telegram_config(), os.environ).resolve(report_type, "news")
+    thread = str(route.message_thread_id or "").strip()
+    if thread.isdigit() and int(thread) > 0:
+        return thread
     scheduler = load_json(DEFAULT_SCHEDULER)
     routing = scheduler.get("delivery", {}).get("topic_routing", {})
     for key in (report_type, "news"):
-        value = str(routing.get(key, "") or "").strip()
+        value = str(routing.get(key, "") or "").strip() if isinstance(routing, dict) else ""
         if value.isdigit() and int(value) > 0:
             return value
     return ""
 
 
-def _split_text(text: str, max_len: int = 3900) -> list[str]:
-    if len(text) <= max_len:
+def _signature(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _split_text(text: str, limit: int = 4000) -> list[str]:
+    if len(text) <= limit:
         return [text]
-    blocks = text.split("\n\n")
     parts: list[str] = []
     current = ""
-    for block in blocks:
+    for block in text.split("\n\n"):
         candidate = block if not current else current + "\n\n" + block
-        if len(candidate) <= max_len:
+        if len(candidate) <= limit:
             current = candidate
-        else:
-            if current:
-                parts.append(current)
-            current = block
+            continue
+        if current:
+            parts.append(current)
+        current = block
     if current:
         parts.append(current)
-    final: list[str] = []
-    for part in parts:
-        while len(part) > max_len:
-            final.append(part[:max_len])
-            part = part[max_len:]
-        if part:
-            final.append(part)
-    return final
+    return parts
 
 
-def send_existing(session: str, *, date_text: str = "", force: bool = False) -> int:
+def send_existing(session: str, *, force: bool = False) -> int:
     if requests is None:
-        print("[WARNING] requests belum terpasang. News Telegram dilewati.")
+        print("[WARNING] News Telegram dilewati: dependency requests belum terpasang.")
         return 2
-    path = output_paths(session, date_text)[0] if date_text else latest_output(session)
-    if path is None or not path.exists():
-        print(f"[WARNING] Output {session} news belum tersedia. Tidak ada yang dikirim.")
+    path, text = _existing_text(session)
+    if path is None or not text.strip():
+        print(f"[WARNING] Belum ada output {session} news untuk dikirim.")
         return 2
+
     token, chat_id = telegram_credentials()
     if not token or not chat_id:
-        print("[WARNING] Telegram token/chat_id belum dikonfigurasi. News dilewati.")
-        return 2
-    thread_id = _route_thread(session)
-    if not thread_id:
-        print("[WARNING] Topic NEWS belum dikonfigurasi. News tidak dikirim ke main chat.")
+        print("[WARNING] News Telegram dilewati: token/chat_id belum dikonfigurasi.")
         return 2
 
-    text = path.read_text(encoding="utf-8")
-    signature = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    report_type = SESSION_REPORT_TYPE[session]
+    thread_id = _effective_news_topic(report_type)
+    if not thread_id:
+        print("[WARNING] News Telegram dilewati: topic NEWS belum dikonfigurasi.")
+        return 2
+
     state = load_json(DEFAULT_STATE)
-    state_key = f"{session}:{path.parent.name}:{signature}"
-    if state_key in state and not force:
-        print("[SKIPPED] News yang sama sudah pernah dikirim. Gunakan Force Send untuk kirim ulang.")
+    sig = _signature(text)
+    prior = state.get(session, {}) if isinstance(state.get(session, {}), dict) else {}
+    if not force and prior.get("signature") == sig:
+        print(f"[SKIPPED] {session} news sudah pernah dikirim dengan isi yang sama.")
         return 0
 
-    message_ids: list[int] = []
+    message_ids: list[Any] = []
     try:
-        parts = _split_text(text)
-        for index, part in enumerate(parts, start=1):
-            prefix = f"Bagian {index}/{len(parts)}\n\n" if len(parts) > 1 else ""
+        for part in _split_text(text):
             response = requests.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
                 data={
                     "chat_id": chat_id,
                     "message_thread_id": thread_id,
-                    "text": prefix + part,
+                    "text": part,
                     "disable_web_page_preview": "true",
                 },
                 timeout=30,
             )
-            body = response.json() if response.content else {}
+            body = response.json()
             if not response.ok or not body.get("ok"):
-                raise RuntimeError(f"Telegram API gagal: {body or response.status_code}")
-            message_ids.append(int(body.get("result", {}).get("message_id", 0) or 0))
+                raise RuntimeError(str(body))
+            message_ids.append(body.get("result", {}).get("message_id"))
     except Exception as exc:
-        print(f"[WARNING] Delivery News gagal: {type(exc).__name__}: {exc}")
+        print(f"[WARNING] News Telegram gagal: {exc}")
         return 2
 
-    state[state_key] = {
+    state[session] = {
+        "signature": sig,
         "sent_at": now_wib().isoformat(timespec="seconds"),
         "thread_id": thread_id,
         "message_ids": message_ids,
-        "path": str(path),
-        "force": bool(force),
+        "source_path": str(path),
     }
     write_json_atomic(DEFAULT_STATE, state)
-    print(f"[OK] News terkirim ke topic {thread_id}: {path}")
+    print(f"[OK] {session} news terkirim ke topic {thread_id}.")
     return 0
 
 
-def preview_existing(session: str, date_text: str = "") -> int:
-    path = output_paths(session, date_text)[0] if date_text else latest_output(session)
-    if path is None or not path.exists():
-        print(f"[WARNING] Preview {session} news belum tersedia.")
-        return 2
-    print(path.read_text(encoding="utf-8"))
-    print(f"Preview: {path}")
-    return 0
-
-
-def test_brave() -> int:
-    try:
-        rows = _brave_search(
-            query="IHSG Indonesia market",
-            country="ID",
-            search_lang="id",
-            freshness="pd",
-            count=1,
-            timeout=15,
-        )
-        print(f"[OK] Brave News Search terhubung. Result={len(rows)}")
+def run_session(session: str, *, send: bool = False) -> int:
+    scheduler = load_json(DEFAULT_SCHEDULER)
+    config = scheduler.get("news_monitor", {}) if isinstance(scheduler.get("news_monitor", {}), dict) else {}
+    if config.get("enabled", True) is False:
+        print("[SKIPPED] News Monitor disabled.")
         return 0
+
+    try:
+        items, meta = collect_news(session, scheduler)
+        text_path, json_path, text = save_digest(session, items, meta)
     except Exception as exc:
-        print(f"[FAILED] Brave News Search: {type(exc).__name__}: {exc}")
-        return 1
+        print(f"[WARNING] News Monitor gagal: {exc}")
+        return 2
+
+    print(text)
+    print(f"[OK] Preview: {text_path}")
+    print(f"[OK] Metadata: {json_path}")
+    if meta.get("errors"):
+        for error in meta["errors"]:
+            print(f"[WARNING] {error}")
+
+    if send:
+        send_rc = send_existing(session)
+        if send_rc != 0:
+            return 2
+    return 0
+
+
+def preview_existing(session: str) -> int:
+    path, text = _existing_text(session)
+    if path is None or not text.strip():
+        print(f"[WARNING] Belum ada preview {session} news.")
+        return 2
+    print(text)
+    print(f"Preview source: {path}")
+    return 0
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="SDE read-only News Monitor")
+    parser = argparse.ArgumentParser(description="SDE Swing read-only News Monitor")
     sub = parser.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("run")
@@ -737,44 +791,22 @@ def parse_args() -> argparse.Namespace:
 
     preview = sub.add_parser("preview")
     preview.add_argument("--session", choices=sorted(SESSION_REPORT_TYPE), required=True)
-    preview.add_argument("--date", default="")
 
     send = sub.add_parser("send")
     send.add_argument("--session", choices=sorted(SESSION_REPORT_TYPE), required=True)
-    send.add_argument("--date", default="")
     send.add_argument("--force", action="store_true")
-
-    sub.add_parser("test-brave")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    if args.command == "test-brave":
-        return test_brave()
+    if args.command == "run":
+        return run_session(args.session, send=args.send)
     if args.command == "preview":
-        return preview_existing(args.session, args.date)
+        return preview_existing(args.session)
     if args.command == "send":
-        return send_existing(args.session, date_text=args.date, force=args.force)
-
-    try:
-        path, meta = generate(args.session)
-    except Exception as exc:
-        print(f"[WARNING] News generation gagal: {type(exc).__name__}: {exc}")
-        return 2
-    if path is None:
-        errors = meta.get("request_errors", [])
-        if errors:
-            print("[WARNING] Tidak ada News yang lolos; sebagian/seluruh Brave request gagal.")
-            for error in errors:
-                print(f"  - {error}")
-        else:
-            print("[OK] Tidak ada berita relevan baru. Telegram News tidak dikirim.")
-        return 0
-    print(f"[OK] News generated: {path}")
-    if args.send:
-        return send_existing(args.session)
-    return 0
+        return send_existing(args.session, force=args.force)
+    return 1
 
 
 if __name__ == "__main__":
