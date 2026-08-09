@@ -14,6 +14,10 @@ echo [1] Normal - refresh teknikal dan kirim ringkasan
 echo [2] Preview existing - tidak refresh dan tidak kirim
 echo [3] Kirim ulang - delivery-only hasil hari trading terakhir
 echo [4] Cek status Post Market
+echo [5] Normal + Post Market News - satu kali jalan
+echo [6] Post Market News Only
+echo [7] Preview Post Market News existing
+echo [8] Force Send Post Market News existing
 echo [0] Kembali
 echo.
 set "MODE="
@@ -24,6 +28,10 @@ if not defined SDE_PYTHON_CMD goto PYTHON_MISSING
 
 if "%MODE%"=="4" goto STATUS_ONLY
 if "%MODE%"=="3" goto RESEND
+if "%MODE%"=="5" goto NORMAL_WITH_NEWS
+if "%MODE%"=="6" goto NEWS_ONLY
+if "%MODE%"=="7" goto NEWS_PREVIEW
+if "%MODE%"=="8" goto NEWS_FORCE_SEND
 
 set "ARGS="
 if "%MODE%"=="1" set "ARGS=--job post_market"
@@ -32,6 +40,41 @@ if not defined ARGS goto MENU
 %SDE_PYTHON_CMD% -u run_sde_job_integrated.py %ARGS%
 set "RC=!ERRORLEVEL!"
 goto STATUS
+
+:NORMAL_WITH_NEWS
+%SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job post_market
+set "RC=!ERRORLEVEL!"
+if "!RC!"=="0" (
+  echo.
+  echo [NEWS] Menjalankan Post Market News non-blocking...
+  %SDE_PYTHON_CMD% -u modules\news\news_monitor.py run --session post_market --send
+  set "NEWS_RC=!ERRORLEVEL!"
+  if not "!NEWS_RC!"=="0" echo [WARNING] Post Market News gagal/dilewati ^(exit !NEWS_RC!^). Post Market tetap SUCCESS.
+) else (
+  echo [SKIPPED] Post Market News tidak dijalankan karena Post Market exit code !RC!.
+)
+goto STATUS
+
+:NEWS_ONLY
+%SDE_PYTHON_CMD% -u modules\news\news_monitor.py run --session post_market --send
+set "NEWS_RC=!ERRORLEVEL!"
+echo.
+echo News exit code: !NEWS_RC!
+pause
+goto MENU
+
+:NEWS_PREVIEW
+%SDE_PYTHON_CMD% -u modules\news\news_monitor.py preview --session post_market
+pause
+goto MENU
+
+:NEWS_FORCE_SEND
+%SDE_PYTHON_CMD% -u modules\news\news_monitor.py send --session post_market --force
+set "NEWS_RC=!ERRORLEVEL!"
+echo.
+echo News exit code: !NEWS_RC!
+pause
+goto MENU
 
 :RESEND
 set "RESEND_DATE="
