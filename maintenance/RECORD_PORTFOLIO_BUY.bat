@@ -22,6 +22,7 @@ echo [1] Catat BUY aktual
 echo [2] Catat SELL aktual
 echo [3] Lihat portfolio
 echo [4] Isi TP/SL manual posisi OPEN
+echo [5] Edit posisi OPEN
 echo [0] Keluar
 echo.
 set "ACTION="
@@ -30,6 +31,7 @@ if "!ACTION!"=="1" goto BUY
 if "!ACTION!"=="2" goto SELL
 if "!ACTION!"=="3" goto LIST
 if "!ACTION!"=="4" goto MANUAL_PLAN
+if "!ACTION!"=="5" goto EDIT_OPEN
 if "!ACTION!"=="0" exit /b 0
 echo Pilihan tidak valid.
 pause
@@ -156,5 +158,41 @@ if "!RC!"=="0" (
 ) else (
   echo [FAILED] Manual initial plan gagal. Exit code !RC!.
 )
+pause
+goto MENU
+
+:EDIT_OPEN
+cls
+echo --- EDIT POSISI OPEN ---
+echo.
+echo Portfolio saat ini:
+%SDE_PYTHON_CMD% -u modules\analytics\outcome_tracker.py portfolio --db data\database\sde_swing_history.db list
+echo.
+echo Kosongkan field yang tidak ingin diubah.
+echo TP/SL tidak diedit di sini; gunakan menu [4].
+echo.
+set "POSITION_ID="
+set "SYMBOL="
+set "QTY="
+set "PRICE="
+set "BUY_DATE="
+set "NOTES="
+set /p "POSITION_ID=position_id (disarankan; kosong jika pakai symbol): "
+set /p "SYMBOL=Symbol jika position_id kosong: "
+set /p "QTY=Quantity baru (opsional): "
+set /p "PRICE=Harga beli aktual baru (opsional): "
+set /p "BUY_DATE=Tanggal beli baru YYYY-MM-DD (opsional): "
+set /p "NOTES=Catatan baru (opsional): "
+set "EDIT_ARGS="
+if defined POSITION_ID set "EDIT_ARGS=!EDIT_ARGS! --position-id !POSITION_ID!"
+if defined SYMBOL set "EDIT_ARGS=!EDIT_ARGS! --symbol !SYMBOL!"
+if defined QTY set "EDIT_ARGS=!EDIT_ARGS! --quantity !QTY!"
+if defined PRICE set "EDIT_ARGS=!EDIT_ARGS! --buy-price !PRICE!"
+if defined BUY_DATE set "EDIT_ARGS=!EDIT_ARGS! --buy-date !BUY_DATE!"
+if defined NOTES set EDIT_ARGS=!EDIT_ARGS! --notes "!NOTES!"
+%SDE_PYTHON_CMD% -u modules\portfolio\edit_position.py --db data\database\sde_swing_history.db !EDIT_ARGS!
+set "RC=!ERRORLEVEL!"
+echo.
+if "!RC!"=="0" (echo [OK] Edit posisi selesai.) else (echo [FAILED] Edit posisi gagal. Exit code !RC!.)
 pause
 goto MENU
