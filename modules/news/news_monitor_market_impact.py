@@ -4,14 +4,14 @@ from __future__ import annotations
 """Strict market-impact presentation/filter layer for SDE Swing News Monitor.
 
 The stable base News Monitor remains untouched and usable as a fallback. This
-module only narrows relevance and improves Telegram presentation. It never
-writes to Technical, Broker, Decision, or Portfolio Management engine state.
+module broadens event coverage while keeping Telegram selective. It never writes
+to Technical, Broker, Decision, or Portfolio Management engine state.
 """
 
 import html
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +40,23 @@ SOURCE_LABELS = {
     "ft.com": "Financial Times",
     "wsj.com": "The Wall Street Journal",
     "apnews.com": "AP",
+    "abc.net.au": "ABC News",
+}
+
+# Tier A/B can enter normal market reports. Unknown specialist sources are
+# conditional and only survive for material Indonesia/issuer events.
+SOURCE_TIER_A = {
+    "reuters.com", "bloomberg.com", "cnbc.com", "cnbcindonesia.com",
+    "ft.com", "wsj.com", "apnews.com", "idx.co.id", "ojk.go.id", "bi.go.id",
+    "antaranews.com", "bisnis.com", "kontan.co.id",
+}
+SOURCE_TIER_B = {
+    "investor.id", "economictimes.indiatimes.com", "abc.net.au",
+    "liputan6.com", "timesofindia.indiatimes.com",
+}
+SOURCE_REJECT = {
+    "seekingalpha.com", "cryptobriefing.com", "nzcity.co.nz",
+    "cointelegraph.com", "coingape.com",
 }
 
 NOISE_PHRASES = {
@@ -98,57 +115,49 @@ INDEX_REBALANCING_TERMS = {
     "constituent change", "constituent changes", "index weight",
     "weight change", "effective date", "free float", "free-float",
 }
-
 CORPORATE_ACTION_TERMS = {
     "rights issue", "right issue", "private placement", "buyback",
     "share buyback", "stock split", "reverse split", "reverse stock",
     "tender offer", "mandatory tender offer", "special dividend",
     "dividen khusus", "dividend", "dividen", "bonus shares", "saham bonus",
 }
-
 EARNINGS_GUIDANCE_TERMS = {
     "earnings", "financial results", "laporan keuangan", "net profit",
     "laba bersih", "laba", "rugi", "loss", "revenue", "pendapatan",
     "margin", "ebitda", "guidance", "outlook", "target laba",
     "target pendapatan", "earnings surprise", "profit warning",
 }
-
 CONTRACT_PROJECT_TERMS = {
     "contract", "kontrak", "tender", "wins contract", "won contract",
     "menang tender", "proyek", "project", "order book", "orderbook",
     "backlog", "ekspansi kapasitas", "capacity expansion",
     "new plant", "pabrik baru", "smelter", "commercial operation",
 }
-
 MNA_OWNERSHIP_TERMS = {
     "acquisition", "akuisisi", "merger", "divestment", "divestasi",
     "strategic investor", "investor strategis", "controlling shareholder",
     "pemegang saham pengendali", "change of control", "perubahan pengendali",
     "takeover", "pengambilalihan", "stake sale", "jual saham",
 }
-
 REGULATION_POLICY_TERMS = {
     "royalty", "royalti", "dmo", "dhe", "pajak", "tax", "tariff", "tarif",
     "subsidi", "subsidy", "regulation", "regulasi", "aturan ojk", "aturan bei",
-    "bank indonesia", "bi rate", "export ban", "larangan ekspor",
+    "aturan bi", "bank indonesia regulation", "export ban", "larangan ekspor",
     "export quota", "kuota ekspor", "import quota", "kuota impor",
     "minimum free float", "free float rule", "kebijakan pemerintah",
 }
-
 EXCHANGE_EVENT_TERMS = {
     "suspension", "suspensi", "suspend", "unsuspend", "unsuspension",
     "dibuka kembali", "uma", "unusual market activity", "forced delisting",
     "delisting", "relisting", "relist", "free float", "free-float",
     "trading halt", "penghentian sementara",
 }
-
 COMMODITY_CATALYST_TERMS = {
     "coal", "batubara", "nickel", "nikel", "gold", "emas", "cpo",
     "palm oil", "minyak sawit", "crude oil", "oil", "minyak",
     "copper", "tembaga", "tin", "timah", "lng", "gas alam",
     "commodity price", "harga komoditas",
 }
-
 FUNDING_DEBT_TERMS = {
     "bond", "bonds", "obligasi", "sukuk", "refinancing", "refinance",
     "refinancing debt", "debt refinancing", "gagal bayar", "default",
@@ -156,7 +165,6 @@ FUNDING_DEBT_TERMS = {
     "downgrade rating", "upgrade rating", "maturity", "jatuh tempo utang",
     "debt restructuring", "restrukturisasi utang",
 }
-
 OPERATIONAL_EVENT_TERMS = {
     "fire", "kebakaran", "explosion", "ledakan", "mine shutdown",
     "tambang berhenti", "shutdown", "production halt", "stop production",
@@ -165,14 +173,12 @@ OPERATIONAL_EVENT_TERMS = {
     "permit extended", "izin diperpanjang", "license revoked",
     "accident", "kecelakaan", "flood", "banjir",
 }
-
 FOREIGN_PASSIVE_FLOW_TERMS = {
     "passive fund", "passive flow", "passive inflow", "passive outflow",
     "foreign flow", "foreign inflow", "foreign outflow", "foreign ownership",
     "kepemilikan asing", "net foreign buy", "net foreign sell",
     "block trade", "crossing", "index fund", "etf flow",
 }
-
 MANAGEMENT_DISCLOSURE_TERMS = {
     "ceo", "chief executive", "president director", "direktur utama",
     "director", "direktur", "commissioner", "komisaris", "management change",
@@ -180,7 +186,6 @@ MANAGEMENT_DISCLOSURE_TERMS = {
     "material transaction", "transaksi material", "affiliate transaction",
     "transaksi afiliasi", "related party transaction",
 }
-
 MACRO_INDONESIA_TERMS = {
     "bi rate", "bank indonesia", "rupiah", "inflasi", "inflation indonesia",
     "trade balance", "neraca perdagangan", "gdp indonesia", "pdb indonesia",
@@ -188,7 +193,6 @@ MACRO_INDONESIA_TERMS = {
     "foreign flow", "cadangan devisa", "current account", "neraca berjalan",
     "consumer confidence indonesia", "pmi indonesia",
 }
-
 GLOBAL_CATALYST_TERMS = {
     "federal reserve", "fed", "us cpi", "cpi", "payroll", "nonfarm payroll",
     "jobs report", "treasury yield", "treasury yields", "dollar index", "dxy",
@@ -233,7 +237,6 @@ CATEGORY_PRIORITY = {
 }
 
 DISPLAY_SCOPES = ("GLOBAL", "INDONESIA", "INDEX", "SECTOR", "CORPORATE", "RISK", "ISSUER")
-
 SCOPE_ALLOWED_CATEGORIES = {
     "GLOBAL": {"GLOBAL_CATALYST"},
     "INDONESIA": {"MACRO_INDONESIA", "REGULATION_POLICY"},
@@ -245,6 +248,26 @@ SCOPE_ALLOWED_CATEGORIES = {
     },
     "RISK": {"EXCHANGE_EVENT", "FUNDING_DEBT", "OPERATIONAL_EVENT"},
     "ISSUER": set(EVENT_TERMS),
+}
+
+# Long lookbacks are used only to find material events that can remain relevant
+# for a swing horizon. Telegram output is still capped at 10 and sent-history
+# suppression prevents old items from repeating.
+SCOPE_LOOKBACK_DAYS = {
+    "GLOBAL": 1,
+    "INDONESIA": 1,
+    "INDEX": 7,
+    "SECTOR": 1,
+    "CORPORATE": 5,
+    "RISK": 3,
+    "ISSUER": 3,
+}
+
+TITLE_STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "for", "to", "in", "on", "at", "as",
+    "is", "are", "was", "were", "after", "before", "with", "from", "by", "over",
+    "this", "that", "these", "those", "market", "markets", "news", "update",
+    "indonesia", "indonesian", "saham", "stock", "stocks", "idx",
 }
 
 
@@ -261,6 +284,21 @@ def _hit_count(text: str, terms: set[str]) -> int:
 def _is_noise(headline: str, description: str) -> bool:
     combined = f"{headline} {description}".lower()
     return any(phrase in combined for phrase in NOISE_PHRASES)
+
+
+def _domain_matches(domain: str, candidates: set[str]) -> bool:
+    return any(domain == item or domain.endswith("." + item) for item in candidates)
+
+
+def _source_tier(url: str) -> str:
+    domain = base._domain(url)
+    if not domain or _domain_matches(domain, SOURCE_REJECT):
+        return "REJECT"
+    if _domain_matches(domain, SOURCE_TIER_A):
+        return "A"
+    if _domain_matches(domain, SOURCE_TIER_B):
+        return "B"
+    return "C"
 
 
 def _source_label(result: dict[str, Any]) -> str:
@@ -302,6 +340,29 @@ def _indonesia_relevant(text: str, symbol: str = "") -> bool:
     return bool(symbol) or _contains(text, INDONESIA_MARKET_ANCHORS)
 
 
+def _source_allowed(
+    *,
+    url: str,
+    scope: str,
+    category_hits: int,
+    indonesia_relevant: bool,
+    symbol: str,
+) -> bool:
+    tier = _source_tier(url)
+    if tier == "REJECT":
+        return False
+    if tier in {"A", "B"}:
+        return True
+    # Unknown/specialist sources are not accepted for broad macro/commodity
+    # coverage. For material local/issuer events, require stronger evidence.
+    return (
+        scope in {"INDEX", "CORPORATE", "RISK", "ISSUER"}
+        and indonesia_relevant
+        and category_hits >= 2
+        and (bool(symbol) or scope != "ISSUER")
+    )
+
+
 def strict_normalize_result(
     result: dict[str, Any], *, scope: str, symbols: list[str]
 ) -> base.NewsItem | None:
@@ -322,12 +383,21 @@ def strict_normalize_result(
     impact_hits = _hit_count(combined, MARKET_IMPACT_TERMS)
     movement_hits = _hit_count(combined, MOVEMENT_EVENT_TERMS)
     source_score = base._source_score(url)
+    indonesia_relevant = _indonesia_relevant(combined, symbol)
 
     category, category_hits = _detect_event_category(
         combined,
         allowed=SCOPE_ALLOWED_CATEGORIES.get(scope),
     )
     if not category:
+        return None
+    if not _source_allowed(
+        url=url,
+        scope=scope,
+        category_hits=category_hits,
+        indonesia_relevant=indonesia_relevant,
+        symbol=symbol,
+    ):
         return None
 
     if scope == "GLOBAL":
@@ -341,11 +411,9 @@ def strict_normalize_result(
             )
             if _hit_count(combined, pathway_terms) < 2:
                 return None
-        if source_score <= 1 and (impact_hits + movement_hits + category_hits) < 3:
-            return None
 
     elif scope in {"INDONESIA", "INDEX", "SECTOR", "CORPORATE", "RISK"}:
-        if not _indonesia_relevant(combined, symbol):
+        if not indonesia_relevant:
             return None
         if scope == "SECTOR" and movement_hits < 1 and impact_hits < 1 and category_hits < 2:
             return None
@@ -356,7 +424,8 @@ def strict_normalize_result(
         if not symbol:
             return None
 
-    score = float(source_score)
+    tier_bonus = {"A": 1.5, "B": 0.6, "C": 0.0}.get(_source_tier(url), 0.0)
+    score = float(source_score) + tier_bonus
     score += CATEGORY_PRIORITY.get(category, 0.0)
     score += min(3.0, float(impact_hits) * 0.30)
     score += min(2.0, float(movement_hits) * 0.35)
@@ -445,18 +514,101 @@ def market_query_plan(symbols: list[str]) -> list[dict[str, str]]:
     return plans
 
 
+def _freshness_for_scope(
+    session: str,
+    scope: str,
+    config: dict[str, Any],
+    current: datetime,
+) -> str:
+    days = SCOPE_LOOKBACK_DAYS.get(scope, 1)
+    if days <= 1:
+        return base._resolve_freshness(session, config, current)
+    start = (current.date() - timedelta(days=days - 1)).isoformat()
+    end = current.date().isoformat()
+    return f"{start}to{end}"
+
+
+def _canonical_url(url: str) -> str:
+    return str(url or "").split("#", 1)[0].split("?", 1)[0].rstrip("/")
+
+
+def _title_tokens(title: str) -> set[str]:
+    text = re.sub(r"\s+-\s+[^-]{2,40}$", " ", str(title or "").lower())
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return {
+        token
+        for token in text.split()
+        if len(token) > 2 and token not in TITLE_STOPWORDS
+    }
+
+
+def _title_similarity(left: str, right: str) -> float:
+    a = _title_tokens(left)
+    b = _title_tokens(right)
+    if not a or not b:
+        return 0.0
+    jaccard = len(a & b) / max(len(a | b), 1)
+    containment = len(a & b) / max(min(len(a), len(b)), 1)
+    return max(jaccard, containment * 0.85)
+
+
+def _same_story(left: base.NewsItem, right: base.NewsItem) -> bool:
+    if _canonical_url(left.url) == _canonical_url(right.url):
+        return True
+    similarity = _title_similarity(left.headline, right.headline)
+    same_category = left.category == right.category
+    same_symbol = bool(left.symbol and right.symbol and left.symbol == right.symbol)
+    return similarity >= 0.62 or (similarity >= 0.50 and (same_category or same_symbol))
+
+
+def _dedupe_market_items(items: list[base.NewsItem]) -> list[base.NewsItem]:
+    kept: list[base.NewsItem] = []
+    for item in sorted(items, key=lambda row: row.score, reverse=True):
+        if any(_same_story(item, existing) for existing in kept):
+            continue
+        kept.append(item)
+    return kept
+
+
+def _seen_rows() -> list[dict[str, Any]]:
+    state = base.load_json(base.DEFAULT_STATE)
+    rows = state.get("news_seen_items", []) if isinstance(state, dict) else []
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def _already_sent(item: base.NewsItem, seen: list[dict[str, Any]]) -> bool:
+    canonical = _canonical_url(item.url)
+    for row in seen:
+        if canonical and canonical == _canonical_url(str(row.get("url") or "")):
+            return True
+        prior_title = str(row.get("headline") or "")
+        if not prior_title:
+            continue
+        same_category = str(row.get("category") or "") == str(item.category or "")
+        same_symbol = bool(
+            item.symbol
+            and str(row.get("symbol") or "").upper() == str(item.symbol).upper()
+        )
+        similarity = _title_similarity(item.headline, prior_title)
+        if similarity >= 0.65 or (similarity >= 0.52 and (same_category or same_symbol)):
+            return True
+    return False
+
+
 def _limit_market_items(items: list[base.NewsItem], maximum: int) -> list[base.NewsItem]:
-    maximum = max(int(maximum or 1), 1)
+    # User-facing hard cap: broad search coverage must never turn Telegram into
+    # a noisy feed.
+    maximum = min(max(int(maximum or 1), 1), 10)
     caps = {
         "ISSUER": 4,
         "INDEX": 3,
-        "INDONESIA": 3,
-        "GLOBAL": 3,
+        "INDONESIA": 2,
+        "GLOBAL": 2,
         "CORPORATE": 3,
         "RISK": 2,
         "SECTOR": 2,
     }
-    priority = ("ISSUER", "INDEX", "INDONESIA", "GLOBAL", "CORPORATE", "RISK", "SECTOR")
+    priority = ("ISSUER", "INDEX", "RISK", "CORPORATE", "INDONESIA", "SECTOR", "GLOBAL")
     grouped = {
         scope: sorted(
             [item for item in items if item.scope == scope],
@@ -470,31 +622,104 @@ def _limit_market_items(items: list[base.NewsItem], maximum: int) -> list[base.N
     selected_urls: set[str] = set()
     scope_counts = {scope: 0 for scope in DISPLAY_SCOPES}
 
-    # First pass: preserve breadth so one high-volume topic cannot crowd out
-    # materially different event classes.
+    # First pass preserves event breadth, but only after quality filtering.
     for scope in priority:
         if len(selected) >= maximum:
             break
         if grouped.get(scope):
             item = grouped[scope][0]
             selected.append(item)
-            selected_urls.add(item.url)
+            selected_urls.add(_canonical_url(item.url))
             scope_counts[scope] += 1
 
-    # Second pass: fill remaining slots by relevance score while respecting caps.
-    remaining = sorted(items, key=lambda item: item.score, reverse=True)
-    for item in remaining:
+    # Fill remaining slots by relevance score while respecting per-scope caps.
+    for item in sorted(items, key=lambda row: row.score, reverse=True):
         if len(selected) >= maximum:
             break
-        if item.url in selected_urls:
+        canonical = _canonical_url(item.url)
+        if canonical in selected_urls:
             continue
         if item.scope not in caps or scope_counts[item.scope] >= caps[item.scope]:
             continue
         selected.append(item)
-        selected_urls.add(item.url)
+        selected_urls.add(canonical)
         scope_counts[item.scope] += 1
 
     return sorted(selected, key=lambda item: item.score, reverse=True)
+
+
+def collect_market_news(
+    session: str,
+    scheduler: dict[str, Any] | None = None,
+) -> tuple[list[base.NewsItem], dict[str, Any]]:
+    if session not in base.SESSION_REPORT_TYPE:
+        raise ValueError(f"Unknown news session: {session}")
+
+    scheduler = scheduler or base.load_json(base.DEFAULT_SCHEDULER)
+    config = (
+        scheduler.get("news_monitor", {})
+        if isinstance(scheduler.get("news_monitor", {}), dict)
+        else {}
+    )
+    timeout = int(config.get("request_timeout_seconds", 20) or 20)
+    count = int(config.get("results_per_query", 12) or 12)
+    maximum = min(int(config.get("max_total_items", 10) or 10), 10)
+    current = base.now_wib()
+    symbols = base.monitored_symbols()
+    plans = market_query_plan(symbols)
+
+    raw_count = 0
+    normalized: list[base.NewsItem] = []
+    errors: list[str] = []
+    freshness_by_scope: dict[str, str] = {}
+
+    for plan in plans:
+        scope = plan["scope"]
+        freshness = _freshness_for_scope(session, scope, config, current)
+        freshness_by_scope[scope] = freshness
+        try:
+            rows = base._brave_search(
+                query=plan["query"],
+                freshness=freshness,
+                count=count,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            errors.append(f"{scope}: {exc}")
+            continue
+        raw_count += len(rows)
+        for row in rows:
+            item = strict_normalize_result(row, scope=scope, symbols=symbols)
+            if item is not None:
+                normalized.append(item)
+
+    deduped = _dedupe_market_items(normalized)
+    seen = _seen_rows()
+    unseen = [item for item in deduped if not _already_sent(item, seen)]
+
+    # Keep the existing morning/post-market separation too. Sent-history is
+    # stricter, while this covers preview-only morning runs on the same day.
+    if session == "post_market":
+        unseen = base._remove_morning_duplicates(unseen, current.date().isoformat())
+
+    selected = _limit_market_items(unseen, maximum)
+    meta = {
+        "session": session,
+        "provider": "BRAVE_NEWS_SEARCH",
+        "generated_at": current.isoformat(timespec="seconds"),
+        "freshness_by_scope": freshness_by_scope,
+        "monitored_symbols": symbols,
+        "queries": len(plans),
+        "raw_results": raw_count,
+        "normalized_results": len(normalized),
+        "deduplicated_results": len(deduped),
+        "already_sent_suppressed": max(0, len(deduped) - len(unseen)),
+        "displayed_results": len(selected),
+        "max_total_items": maximum,
+        "errors": errors,
+        "decision_engine_write_access": False,
+    }
+    return selected, meta
 
 
 def _esc(value: Any) -> str:
@@ -528,18 +753,23 @@ def _category_label(category: str) -> str:
         "MACRO_INDONESIA": "Macro Indonesia",
         "GLOBAL_CATALYST": "Global Catalyst",
     }
-    return labels.get(str(category or "").upper(), str(category or "").replace("_", " ").title())
+    return labels.get(
+        str(category or "").upper(),
+        str(category or "").replace("_", " ").title(),
+    )
 
 
 def format_market_digest(
-    session: str, items: list[base.NewsItem], generated_at: datetime | None = None
+    session: str,
+    items: list[base.NewsItem],
+    generated_at: datetime | None = None,
 ) -> str:
     generated_at = generated_at or base.now_wib()
-    if session == "morning":
-        title = "📰 <b>SDE SWING — MORNING NEWS</b>"
-    else:
-        title = "📰 <b>SDE SWING — POST MARKET NEWS</b>"
-
+    title = (
+        "📰 <b>SDE SWING — MORNING NEWS</b>"
+        if session == "morning"
+        else "📰 <b>SDE SWING — POST MARKET NEWS</b>"
+    )
     lines = [
         title,
         "━━━━━━━━━━━━━━━━━━━━",
@@ -592,6 +822,38 @@ def format_market_digest(
 
 def _strip_html(text: str) -> str:
     return html.unescape(re.sub(r"</?b>", "", text))
+
+
+def _remember_sent_rows(
+    state: dict[str, Any],
+    rows: list[dict[str, Any]],
+    *,
+    sent_at: str,
+) -> None:
+    existing = state.get("news_seen_items", [])
+    seen = [row for row in existing if isinstance(row, dict)] if isinstance(existing, list) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        candidate = {
+            "url": _canonical_url(str(row.get("url") or "")),
+            "headline": str(row.get("headline") or ""),
+            "category": str(row.get("category") or ""),
+            "symbol": str(row.get("symbol") or ""),
+            "sent_at": sent_at,
+        }
+        if not candidate["url"] and not candidate["headline"]:
+            continue
+        seen = [
+            old
+            for old in seen
+            if not (
+                candidate["url"]
+                and candidate["url"] == _canonical_url(str(old.get("url") or ""))
+            )
+        ]
+        seen.append(candidate)
+    state["news_seen_items"] = seen[-300:]
 
 
 def send_market_existing(session: str, *, force: bool = False) -> int:
@@ -653,13 +915,16 @@ def send_market_existing(session: str, *, force: bool = False) -> int:
         print(f"[WARNING] News Telegram gagal: {exc}")
         return 2
 
+    sent_at = base.now_wib().isoformat(timespec="seconds")
     state[session] = {
         "signature": sig,
-        "sent_at": base.now_wib().isoformat(timespec="seconds"),
+        "sent_at": sent_at,
         "thread_id": thread_id,
         "message_ids": message_ids,
         "source_path": str(path),
     }
+    if isinstance(rows, list):
+        _remember_sent_rows(state, rows, sent_at=sent_at)
     base.write_json_atomic(base.DEFAULT_STATE, state)
     print(f"[OK] {session} news terkirim ke topic {thread_id}.")
     return 0
@@ -673,7 +938,7 @@ def run_market_session(session: str, *, send: bool = False) -> int:
         return 0
 
     try:
-        items, meta = base.collect_news(session, scheduler)
+        items, meta = collect_market_news(session, scheduler)
         text_path, json_path, text = base.save_digest(session, items, meta)
     except Exception as exc:
         print(f"[WARNING] News Monitor gagal: {exc}")
@@ -708,6 +973,7 @@ def install_overrides() -> None:
     base.normalize_result = strict_normalize_result
     base.query_plan = market_query_plan
     base._limit_items = _limit_market_items
+    base.collect_news = collect_market_news
     base.format_digest = format_market_digest
     base.send_existing = send_market_existing
     base.run_session = run_market_session
