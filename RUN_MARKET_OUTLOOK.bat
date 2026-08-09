@@ -14,6 +14,10 @@ echo [1] Normal - refresh dan kirim Telegram
 echo [2] Preview existing - tidak kirim Telegram
 echo [3] Kirim ulang - delivery-only hasil hari trading terakhir
 echo [4] Cek status Market Outlook
+echo [5] Normal + Morning News - satu kali jalan
+echo [6] Morning News Only
+echo [7] Preview Morning News existing
+echo [8] Force Send Morning News existing
 echo [0] Kembali
 echo.
 set "MODE="
@@ -24,6 +28,10 @@ if not defined SDE_PYTHON_CMD goto PYTHON_MISSING
 
 if "%MODE%"=="4" goto STATUS_ONLY
 if "%MODE%"=="3" goto RESEND
+if "%MODE%"=="5" goto NORMAL_WITH_NEWS
+if "%MODE%"=="6" goto NEWS_ONLY
+if "%MODE%"=="7" goto NEWS_PREVIEW
+if "%MODE%"=="8" goto NEWS_FORCE_SEND
 
 set "ARGS="
 if "%MODE%"=="1" set "ARGS=--job market_outlook"
@@ -32,6 +40,41 @@ if not defined ARGS goto MENU
 %SDE_PYTHON_CMD% -u run_sde_job_integrated.py %ARGS%
 set "RC=!ERRORLEVEL!"
 goto STATUS
+
+:NORMAL_WITH_NEWS
+%SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job market_outlook
+set "RC=!ERRORLEVEL!"
+if "!RC!"=="0" (
+  echo.
+  echo [NEWS] Menjalankan Morning News non-blocking...
+  %SDE_PYTHON_CMD% -u modules\news\news_monitor.py run --session morning --send
+  set "NEWS_RC=!ERRORLEVEL!"
+  if not "!NEWS_RC!"=="0" echo [WARNING] Morning News gagal/dilewati ^(exit !NEWS_RC!^). Market Outlook tetap SUCCESS.
+) else (
+  echo [SKIPPED] Morning News tidak dijalankan karena Market Outlook exit code !RC!.
+)
+goto STATUS
+
+:NEWS_ONLY
+%SDE_PYTHON_CMD% -u modules\news\news_monitor.py run --session morning --send
+set "NEWS_RC=!ERRORLEVEL!"
+echo.
+echo News exit code: !NEWS_RC!
+pause
+goto MENU
+
+:NEWS_PREVIEW
+%SDE_PYTHON_CMD% -u modules\news\news_monitor.py preview --session morning
+pause
+goto MENU
+
+:NEWS_FORCE_SEND
+%SDE_PYTHON_CMD% -u modules\news\news_monitor.py send --session morning --force
+set "NEWS_RC=!ERRORLEVEL!"
+echo.
+echo News exit code: !NEWS_RC!
+pause
+goto MENU
 
 :RESEND
 set "RESEND_DATE="
