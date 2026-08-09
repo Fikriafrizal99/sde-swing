@@ -28,7 +28,7 @@ echo [5] Configure Final Watchlist Topic
 echo [6] Configure Signal Detail Topic
 echo [7] Configure Report / Portfolio / Performance Topic
 echo [8] Configure System Topic
-echo [9] Configure News Topic
+echo [9] Configure News Topic ^(1451^)
 echo [10] Lihat Status Semua Setting
 echo [11] Test Semua Telegram Route
 echo [12] Set / Update Brave Search API Key
@@ -107,9 +107,9 @@ goto MENU
 
 :TOPIC_NEWS
 cls
-echo Topic News yang disepakati saat ini: 1451
+echo Memvalidasi dan menyimpan topic News: 1451
 echo.
-%SDE_PYTHON_CMD% -u tools\telegram_settings.py set-topic --name news
+%SDE_PYTHON_CMD% -u tools\telegram_settings.py set-topic --name news --thread-id 1451
 pause
 goto MENU
 
