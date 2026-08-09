@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Telegram routing with category defaults and explicit report-topic isolation."""
+"""Telegram routing with category defaults and explicit report/news isolation."""
 
 from dataclasses import dataclass
 import os
@@ -8,13 +8,7 @@ from typing import Any, Mapping
 
 
 def _topic_id(value: Any) -> str:
-    """Return a valid positive Telegram message_thread_id or an empty string.
-
-    Legacy/local telegram.json files may still contain symbolic labels such as
-    ``REPORT`` or ``SIGNAL``.  Those labels are routing categories, not Telegram
-    message_thread_id values, and must never be sent to the Bot API as if they
-    were numeric topic IDs.
-    """
+    """Return a valid positive Telegram message_thread_id or an empty string."""
     text = str(value or "").strip()
     if not text.isdigit():
         return ""
@@ -51,6 +45,7 @@ class TelegramRouter:
         "signal_detail",
     }
     SYSTEM_TYPES = {"system", "data_warning", "startup", "source_health", "config_error", "dependency_failure"}
+    NEWS_TYPES = {"news", "morning_news", "post_market_news"}
 
     def __init__(self, config: Mapping[str, Any] | None = None, environ: Mapping[str, str] | None = None) -> None:
         self.config = dict(config or {})
@@ -59,6 +54,8 @@ class TelegramRouter:
     def category_for(self, report_type: str, topic: str = "") -> str:
         report = str(report_type or "").strip().lower()
         label = str(topic or "").strip().lower()
+        if report in self.NEWS_TYPES or label in self.NEWS_TYPES or label == "news":
+            return "NEWS"
         if report in self.SIGNAL_TYPES or label in self.SIGNAL_TYPES:
             return "SIGNAL"
         if report in self.SYSTEM_TYPES or label in self.SYSTEM_TYPES:
@@ -75,8 +72,7 @@ class TelegramRouter:
         ui_routing = ui.get("topic_routing", {}) if isinstance(ui, dict) else {}
 
         # Per-report/per-topic configuration is safe only when it is an actual
-        # numeric Telegram topic ID.  Ignore legacy symbolic labels (REPORT,
-        # SIGNAL, SYSTEM) so delivery.py can fall back to scheduler mappings.
+        # numeric Telegram topic ID. Ignore legacy symbolic labels.
         specific_config = ""
         for candidate in (
             ui_routing.get(report),
@@ -95,15 +91,14 @@ class TelegramRouter:
 
         if category == "REPORT" and label_lower not in {"report", "reports"}:
             # Market Outlook, Post Market, broker reports, evaluation, etc. are
-            # also REPORT-category payloads, but they have their own routes in
-            # scheduler/config. A generic TELEGRAM_THREAD_REPORT_ID must not
-            # hijack those routes. Return fallback when no specific UI mapping
-            # exists so delivery.py can apply its per-report scheduler mapping.
+            # REPORT payloads with dedicated per-report routes. A generic
+            # TELEGRAM_THREAD_REPORT_ID must not hijack those routes.
             thread = specific_config
+        elif category == "NEWS":
+            # NEWS is intentionally isolated. Its caller must refuse main-chat
+            # fallback when no numeric News topic exists.
+            thread = env_thread or specific_config or category_config
         else:
-            # Explicit topic="report" is the dedicated general Report topic.
-            # Environment remains first so local deployment can configure the
-            # real Telegram message_thread_id without committing it to Git.
             thread = env_thread or specific_config or category_config
 
         return TelegramRoute(
