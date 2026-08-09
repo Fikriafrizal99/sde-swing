@@ -282,35 +282,110 @@ def _formatted_actors(items: list[dict[str, Any]], limit: int = 2) -> list[dict[
     return output
 
 
-def _actors_sentence(row: dict[str, Any]) -> str:
-    accum = _formatted_actors(row.get("broker_top_accumulation") or [])
-    dist = _formatted_actors(row.get("broker_top_distribution") or [])
+def _actor_phrase(items: list[dict[str, Any]]) -> str:
+    actors = _formatted_actors(items)
+    if not actors:
+        return ""
+    return " dan ".join(f"{item['broker']} {item['value']}" for item in actors)
+
+
+def _engine_reason_text(row: dict[str, Any]) -> str:
+    """Extract the deterministic action reason without the appended broker trace."""
+    reason = str(row.get("reason") or "").strip()
+    if not reason:
+        return ""
+    return reason.split("Broker history:", 1)[0].strip()
+
+
+def _broker_conclusion(row: dict[str, Any]) -> str:
+    """Progressive broker explanation for Telegram; never changes engine state.
+
+    1D and 2D are useful evidence immediately. The existing effective broker
+    state remains untouched and still requires the stable 3D confirmation
+    rules before it can affect Position Management.
+    """
+    observations = int(row.get("broker_observation_count") or 0)
+    current = str(row.get("broker_current_state") or "UNAVAILABLE").upper()
+    since = str(row.get("broker_context_since_entry") or "UNAVAILABLE").upper()
+    d3 = str(row.get("broker_context_3d") or "INSUFFICIENT_DATA").upper()
+    d5 = str(row.get("broker_context_5d") or "INSUFFICIENT_DATA").upper()
+    d7 = str(row.get("broker_context_7d") or "INSUFFICIENT_DATA").upper()
+
+    current_accum = _actor_phrase(row.get("broker_current_top_accumulation") or [])
+    current_dist = _actor_phrase(row.get("broker_current_top_distribution") or [])
+    since_accum = _actor_phrase(row.get("broker_top_accumulation") or [])
+    since_dist = _actor_phrase(row.get("broker_top_distribution") or [])
+
+    if observations <= 0:
+        return "Broker history belum tersedia; broker tidak dipakai sebagai pemicu action."
+
+    if observations == 1:
+        if current == "DISTRIBUTION":
+            actors = f", terutama {current_dist or since_dist}" if (current_dist or since_dist) else ""
+            return f"Distribusi muncul pada 1 sesi terbaru{actors}; tekanan jual terlihat tetapi persistence belum terkonfirmasi."
+        if current == "ACCUMULATION":
+            actors = f", terutama {current_accum or since_accum}" if (current_accum or since_accum) else ""
+            return f"Akumulasi muncul pada 1 sesi terbaru{actors}; dukungan beli terlihat tetapi persistence belum terkonfirmasi."
+        return "Flow broker 1 sesi masih netral/campuran; belum ada arah yang cukup konsisten."
+
+    if observations == 2:
+        if since == "DISTRIBUTION" or current == "DISTRIBUTION":
+            actors = f", didominasi {since_dist or current_dist}" if (since_dist or current_dist) else ""
+            qualifier = "mendominasi" if since == "DISTRIBUTION" else "muncul"
+            return f"Distribusi {qualifier} dalam 2 sesi sejak entry{actors}; tekanan jual mulai terbaca, tetapi belum menjadi konfirmasi 3D untuk action engine."
+        if since == "ACCUMULATION" or current == "ACCUMULATION":
+            actors = f", didominasi {since_accum or current_accum}" if (since_accum or current_accum) else ""
+            qualifier = "mendominasi" if since == "ACCUMULATION" else "muncul"
+            return f"Akumulasi {qualifier} dalam 2 sesi sejak entry{actors}; dukungan beli mulai terbaca, tetapi belum menjadi konfirmasi 3D untuk action engine."
+        mixed_parts: list[str] = []
+        if since_dist:
+            mixed_parts.append(f"distribusi {since_dist}")
+        if since_accum:
+            mixed_parts.append(f"akumulasi {since_accum}")
+        detail = "; " + " sementara ".join(mixed_parts) if mixed_parts else ""
+        return f"Flow broker 2 sesi masih campuran{detail}; belum ada persistence yang cukup untuk mengubah action engine."
+
+    window = "3D"
+    context = d3
+    if observations >= 7 and d7 not in {"", "INSUFFICIENT_DATA", "UNAVAILABLE"}:
+        window, context = "7D", d7
+    elif observations >= 5 and d5 not in {"", "INSUFFICIENT_DATA", "UNAVAILABLE"}:
+        window, context = "5D", d5
+
+    if context == "DISTRIBUTION":
+        actors = f"; sejak entry distributor utama {since_dist}" if since_dist else ""
+        return f"Context broker {window} DISTRIBUTION{actors}; tekanan jual sudah memiliki persistence pada window yang tersedia."
+    if context == "ACCUMULATION":
+        actors = f"; sejak entry accumulator utama {since_accum}" if since_accum else ""
+        return f"Context broker {window} ACCUMULATION{actors}; dukungan beli sudah memiliki persistence pada window yang tersedia."
+
     parts: list[str] = []
-    if accum:
-        parts.append("akumulasi utama " + " dan ".join(f"{x['broker']} {x['value']}" for x in accum))
-    if dist:
-        parts.append("distribusi utama " + " dan ".join(f"{x['broker']} {x['value']}" for x in dist))
-    return "; ".join(parts)
+    if since_dist:
+        parts.append(f"distributor utama {since_dist}")
+    if since_accum:
+        parts.append(f"accumulator utama {since_accum}")
+    detail = "; " + ", sedangkan ".join(parts) if parts else ""
+    return f"Context broker {window} masih {context or 'NEUTRAL'}{detail}; flow belum menunjukkan dominasi satu arah yang kuat."
 
 
 def _deterministic_interpretation(row: dict[str, Any]) -> dict[str, str]:
     observations = int(row.get("broker_observation_count") or 0)
-    current_broker = str(row.get("broker_current_state") or "UNAVAILABLE")
-    actor_text = _actors_sentence(row)
-    if actor_text:
-        broker_sentence = f"Broker sejak entry: {actor_text}."
-    else:
-        broker_sentence = f"Broker hari ini {current_broker}; nominal broker individual belum tersedia di histori."
+    current_broker = str(row.get("broker_current_state") or "UNAVAILABLE").upper()
+    broker_sentence = _broker_conclusion(row)
+    engine_reason = _engine_reason_text(row)
+    action = str(row.get("management_action") or "HOLD").upper()
+    technical = str(row.get("technical_state") or "UNAVAILABLE").upper()
+    sector = str(row.get("sector_state") or "UNAVAILABLE").upper()
+    market = str(row.get("market_state") or "UNAVAILABLE").upper()
 
-    if observations < 3:
-        history_sentence = f"Histori broker baru {observations} sesi, jadi sinyal hari ini masih warning dan belum dianggap tren terkonfirmasi."
+    if engine_reason:
+        action_sentence = f"Keputusan {action.replace('_', ' ')} mengikuti engine: {engine_reason}"
     else:
-        history_sentence = (
-            f"Konteks broker efektif {row.get('broker_effective_state') or 'NEUTRAL'}, "
-            f"sementara teknikal {row.get('technical_state') or 'UNAVAILABLE'}, sector {row.get('sector_state') or 'UNAVAILABLE'}, "
-            f"dan market {row.get('market_state') or 'UNAVAILABLE'}."
+        action_sentence = (
+            f"Keputusan {action.replace('_', ' ')} tetap mengikuti engine dengan technical {technical}, "
+            f"sektor {sector}, dan market {market}."
         )
-    main_reason = broker_sentence + " " + history_sentence
+    main_reason = f"{broker_sentence} {action_sentence}".strip()
 
     plan_missing = not all(row.get(key) is not None for key in ("initial_stop_loss", "initial_tp1", "initial_tp2"))
     if row.get("data_quality_status") not in {"VALID", "VALID_WITH_BROKER_WARNING"}:
@@ -318,11 +393,10 @@ def _deterministic_interpretation(row: dict[str, Any]) -> dict[str, str]:
     elif plan_missing:
         main_risk = "Initial TP/SL belum lengkap; batas risiko/target awal perlu dilengkapi jika posisi berasal dari luar rekomendasi mesin."
     elif current_broker == "DISTRIBUTION" and observations < 3:
-        main_risk = "Distribusi hari ini belum terkonfirmasi oleh histori 3D, tetapi tetap perlu dipantau."
+        main_risk = "Tekanan distribusi sudah terlihat; pantau apakah arah dan broker dominan yang sama berlanjut, tetapi 1–2 sesi tidak mengubah action sendirian."
     else:
         main_risk = "Pantau perubahan teknikal, broker terkonfirmasi, dan active stop sebagai batas risiko."
 
-    action = str(row.get("management_action") or "HOLD").upper()
     notes = {
         "HOLD_STRONG": "Pertahankan posisi sesuai plan; tidak perlu menambah posisi hanya karena report ini.",
         "HOLD": "Pertahankan posisi dan pantau konfirmasi berikutnya.",
@@ -396,7 +470,10 @@ def apply_report_interpretation(
             row["interpretation_warning"] = ""
             continue
         interpreted = interpreter.interpret(_ai_facts(row), fallback)
-        row["interpretation_main_reason"] = interpreted.main_reason
+        # Keep the portfolio conclusion deterministic so the engine reason,
+        # broker actors and nominal values cannot be lost or hallucinated by AI.
+        # AI remains presentation-only for risk/execution wording.
+        row["interpretation_main_reason"] = fallback["main_reason"]
         row["interpretation_main_risk"] = interpreted.main_risk
         row["interpretation_execution_note"] = interpreted.execution_note
         row["interpretation_source"] = interpreted.source
