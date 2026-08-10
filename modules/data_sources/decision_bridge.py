@@ -127,6 +127,7 @@ def build_contexts_for_symbols(
     broker_rows_by_symbol: dict[str, list[dict[str, Any]]],
     *,
     primary_window: str = "5D",
+    as_of_date: str | None = None,
     current_price_by_symbol: dict[str, float] | None = None,
     returns_by_symbol: dict[str, dict[str, float]] | None = None,
     aggregate_foreign_by_symbol: dict[str, float] | None = None,
@@ -135,10 +136,13 @@ def build_contexts_for_symbols(
     returns_by_symbol = returns_by_symbol or {}
     aggregate_foreign_by_symbol = aggregate_foreign_by_symbol or {}
     out: dict[str, MultiDayContext] = {}
-    # Every symbol must be evaluated against the same latest market session.
-    # Otherwise a symbol missing today's broker row would silently move its
-    # 3D/5D window backward and appear fully covered.
-    market_date = _global_market_date(broker_rows_by_symbol)
+    # Production callers must anchor every symbol to the technical job date.
+    # Falling back to the latest observed raw date remains available for legacy
+    # helpers, but must never allow a missing current session to be compressed
+    # into an apparently complete 3D/5D window.
+    market_date = str(as_of_date or _global_market_date(broker_rows_by_symbol)).strip()
+    if not market_date:
+        raise ValueError("BROKER_CONTEXT_AS_OF_DATE_MISSING")
     for symbol, rows in broker_rows_by_symbol.items():
         out[symbol] = compute_multiday_context(
             symbol,

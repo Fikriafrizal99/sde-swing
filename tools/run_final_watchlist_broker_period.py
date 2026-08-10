@@ -68,6 +68,79 @@ def atomic_mask(path: Path) -> None:
     os.replace(temp, path)
 
 
+class BridgeRunLock:
+    """Prevent a second wrapper from recovering a transaction still in flight."""
+
+    def __init__(self, recovery_root: Path) -> None:
+        self.root = recovery_root
+        self.path = recovery_root / ".bridge_run.lock"
+        self.acquired = False
+
+    @staticmethod
+    def _pid_is_alive(pid: int) -> bool:
+        if os.name == "nt":
+            # ``os.kill(pid, 0)`` is not a non-destructive liveness probe on
+            # every supported Windows Python/runtime combination. Querying a
+            # limited process handle is read-only and avoids signalling the
+            # current process.
+            import ctypes
+
+            process_query_limited_information = 0x1000
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+            if handle:
+                kernel32.CloseHandle(handle)
+                return True
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
+
+    def acquire(self) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        for _attempt in range(2):
+            try:
+                descriptor = os.open(
+                    self.path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                )
+            except FileExistsError:
+                try:
+                    pid = int(self.path.read_text(encoding="utf-8").strip())
+                except (OSError, ValueError) as exc:
+                    raise RuntimeError("BROKER_BRIDGE_LOCK_UNREADABLE") from exc
+                if pid > 0 and self._pid_is_alive(pid):
+                    raise RuntimeError(f"BROKER_BRIDGE_ALREADY_RUNNING:{pid}")
+                try:
+                    self.path.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(str(os.getpid()))
+            self.acquired = True
+            return
+        raise RuntimeError("BROKER_BRIDGE_LOCK_ACQUIRE_FAILED")
+
+    def release(self) -> None:
+        if not self.acquired:
+            return
+        try:
+            owner = self.path.read_text(encoding="utf-8").strip()
+            if owner == str(os.getpid()):
+                self.path.unlink()
+        except FileNotFoundError:
+            pass
+        finally:
+            self.acquired = False
+
+
 class CanonicalTransaction:
     """Crash-recoverable transaction around mutable canonical broker inputs."""
 
@@ -276,7 +349,7 @@ def active_sidecar_payload(manifest: dict[str, Any], run_id: str) -> dict[str, A
         "broker_period_end": manifest.get("broker_period_end"),
         "broker_trading_days": manifest.get("broker_trading_days"),
         "broker_session_dates": manifest.get("broker_session_dates", []),
-        "freshness_status": "CURRENT",
+        "freshness_status": manifest.get("freshness_status") or "CURRENT",
         "broker_date": manifest.get("broker_period_end"),
         "from_date": manifest.get("broker_period_start"),
         "to_date": manifest.get("broker_period_end"),
@@ -295,7 +368,7 @@ def archive_daily_raw(raw_path: Path, archive_dir: Path, trade_date: str) -> Pat
     if not raw_path.exists() or raw_path.stat().st_size <= 0:
         return None
     archive_dir.mkdir(parents=True, exist_ok=True)
-    destination = archive_dir / f"BROKER_RAW_{trade_date}_{datetime.now(WIB):%H%M%S}.csv"
+    destination = archive_dir / f"BROKER_RAW_{trade_date}_{datetime.now(WIB):%H%M%S%f}.csv"
     shutil.copy2(raw_path, destination)
     return destination
 
@@ -372,18 +445,25 @@ def main() -> int:
     raw_archive = resolve_project(paths.get("broker_raw_archive_dir", "data/input/broker/archive"))
     recovery_root = PROJECT_ROOT / "data/output/broker_snapshots/recovery"
 
-    recovered = recover_unfinished_transactions(recovery_root)
-    if recovered:
-        print(f"[RECOVERY] {recovered} transaksi Broker Bridge lama dipulihkan sebelum run baru.", flush=True)
+    run_lock = BridgeRunLock(recovery_root)
+    run_lock.acquire()
+    try:
+        recovered = recover_unfinished_transactions(recovery_root)
+        if recovered:
+            print(f"[RECOVERY] {recovered} transaksi Broker Bridge lama dipulihkan sebelum run baru.", flush=True)
 
-    run_id = make_run_id()
-    transaction = CanonicalTransaction(
-        recovery_root,
-        run_id,
-        {"summary": canonical_summary, "sidecar": canonical_sidecar, "raw": canonical_raw},
-    )
-    transaction.begin()
+        run_id = make_run_id()
+        transaction = CanonicalTransaction(
+            recovery_root,
+            run_id,
+            {"summary": canonical_summary, "sidecar": canonical_sidecar, "raw": canonical_raw},
+        )
+        transaction.begin()
+    except Exception:
+        run_lock.release()
+        raise
     committed = False
+    daily_archive_path: Path | None = None
 
     try:
         transaction.activate("summary", summary_snapshot)
@@ -404,7 +484,6 @@ def main() -> int:
         if rc != 0:
             return rc
 
-        daily_archive_path: Path | None = None
         if spec.period_type == "1D" and raw_is_available:
             # Valid 1D raw is the only selected-period raw allowed to become a
             # daily Multi-Day observation. Keep it canonical until the stage
@@ -437,8 +516,10 @@ def main() -> int:
         committed = True
 
         try:
+            selected_manifest["snapshot_state"] = "COMMITTED"
             selected_manifest["final_watchlist_run_id"] = run_id
             selected_manifest["activated_at"] = datetime.now(WIB).isoformat(timespec="seconds")
+            selected_manifest["committed_at"] = selected_manifest["activated_at"]
             selected_manifest["primary_context"] = True
             selected_manifest["daily_archive_path"] = str(daily_archive_path.resolve()) if daily_archive_path else ""
             manifest_path = Path(str(selected_manifest.get("manifest_path", "")))
@@ -469,8 +550,13 @@ def main() -> int:
         print("=" * 68)
         return 0
     finally:
-        if not committed:
-            transaction.rollback()
+        try:
+            if not committed:
+                transaction.rollback()
+                if daily_archive_path and daily_archive_path.exists():
+                    daily_archive_path.unlink()
+        finally:
+            run_lock.release()
 
 
 if __name__ == "__main__":

@@ -1261,7 +1261,11 @@ def run_broker_multiday_stage(ctx: RunnerContext) -> dict[str, Any]:
 
     if not rows_by_symbol:
         raise RuntimeError("BROKER_MULTI_DAY_ROWS_EMPTY")
-    contexts = build_contexts_for_symbols(rows_by_symbol, primary_window=str(ctx.config.get("broker", {}).get("primary_window", "5D")))
+    contexts = build_contexts_for_symbols(
+        rows_by_symbol,
+        primary_window=str(ctx.config.get("broker", {}).get("primary_window", "5D")),
+        as_of_date=ctx.trade_date.isoformat(),
+    )
     output_dir = resolve(paths.get("broker_multiday_output_dir", "data/output/broker_multiday"))
     minimum_sessions = int(ctx.config.get("broker", {}).get("minimum_multiday_sessions", 20))
     data_quality_status = "VALID" if len(selected) >= minimum_sessions else "INSUFFICIENT_HISTORY"

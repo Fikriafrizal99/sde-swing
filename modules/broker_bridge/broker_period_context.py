@@ -196,24 +196,38 @@ def inspect_summary_export(
     if frame.empty:
         return False, "EMPTY_EXPORT", {}
 
-    from_dates = pd.to_datetime(frame["FROM_DATE"], errors="coerce").dropna()
-    to_dates = pd.to_datetime(frame["TO_DATE"], errors="coerce").dropna()
+    from_dates = pd.to_datetime(frame["FROM_DATE"], errors="coerce")
+    to_dates = pd.to_datetime(frame["TO_DATE"], errors="coerce")
+    invalid_date_rows = frame.index[from_dates.isna() | to_dates.isna()].tolist()
+    if invalid_date_rows:
+        return False, f"INVALID_PERIOD_DATES_ROWS:{','.join(map(str, invalid_date_rows[:20]))}", {
+            "invalid_period_rows": invalid_date_rows,
+        }
     if from_dates.empty or to_dates.empty:
         return False, "INVALID_PERIOD_DATES", {}
-    detected_start = from_dates.min().date().isoformat()
-    detected_end = to_dates.max().date().isoformat()
-    if detected_start != spec.period_start or detected_end != spec.period_end:
+
+    normalized_from = from_dates.dt.strftime("%Y-%m-%d")
+    normalized_to = to_dates.dt.strftime("%Y-%m-%d")
+    range_mismatch = (normalized_from != spec.period_start) | (normalized_to != spec.period_end)
+    if range_mismatch.any():
+        mismatch_rows = frame.index[range_mismatch].tolist()
         return False, (
-            f"PERIOD_MISMATCH:expected={spec.period_start}..{spec.period_end};"
-            f"detected={detected_start}..{detected_end}"
+            f"PERIOD_MISMATCH_ROWS:expected={spec.period_start}..{spec.period_end};"
+            f"rows={','.join(map(str, mismatch_rows[:20]))}"
         ), {
-            "detected_start": detected_start,
-            "detected_end": detected_end,
+            "mismatch_rows": mismatch_rows,
+            "detected_from_values": sorted(set(normalized_from.tolist())),
+            "detected_to_values": sorted(set(normalized_to.tolist())),
         }
 
     normalized = frame["EMITEN"].map(normalize_symbol)
+    empty_symbol_rows = frame.index[normalized.eq("")].tolist()
+    if empty_symbol_rows:
+        return False, f"EMPTY_SYMBOL_ROWS:{','.join(map(str, empty_symbol_rows[:20]))}", {
+            "empty_symbol_rows": empty_symbol_rows,
+        }
     symbols = {value for value in normalized if value}
-    expected = set(expected_symbols)
+    expected = {normalize_symbol(value) for value in expected_symbols if normalize_symbol(value)}
     matched = expected & symbols
     coverage = len(matched) / max(1, len(expected))
     duplicate_symbols = sorted(normalized[normalized.duplicated()].dropna().unique().tolist())
@@ -230,6 +244,19 @@ def inspect_summary_export(
             "missing_symbols": sorted(expected - symbols),
         }
 
+    unexpected_symbols = sorted(symbols - expected)
+    if unexpected_symbols:
+        return False, f"UNEXPECTED_SYMBOLS:{','.join(unexpected_symbols)}", {
+            "coverage": coverage,
+            "matched": len(matched),
+            "expected": len(expected),
+            "unexpected_symbols": unexpected_symbols,
+            "missing_symbols": sorted(expected - symbols),
+        }
+
+    detected_start = spec.period_start
+    detected_end = spec.period_end
+
     info = {
         "source": str(path.resolve()),
         "source_hash": file_sha256(path),
@@ -239,7 +266,7 @@ def inspect_summary_export(
         "expected": len(expected),
         "coverage": coverage,
         "missing_symbols": sorted(expected - symbols),
-        "unexpected_symbols": sorted(symbols - expected),
+        "unexpected_symbols": unexpected_symbols,
         "duplicate_symbols": duplicate_symbols,
         "detected_start": detected_start,
         "detected_end": detected_end,
@@ -321,30 +348,59 @@ def persist_snapshot(
     snapshot_root: Path = DEFAULT_SNAPSHOT_ROOT,
     selected_by: str = "FINAL_WATCHLIST",
 ) -> dict[str, Any]:
+    summary_source_hash = file_sha256(summary_path)
+    raw_source_hash = file_sha256(raw_path) if raw_path and raw_path.exists() else ""
     fingerprint = hashlib.sha256(
         "|".join(
             [
                 spec.period_type,
                 spec.period_start,
                 spec.period_end,
-                str(info.get("source_hash") or file_sha256(summary_path)),
+                summary_source_hash,
+                raw_source_hash or "NO_RAW",
             ]
         ).encode("utf-8")
     ).hexdigest()[:16]
     snapshot_id = f"BROKER-{spec.period_type}-{spec.period_end.replace('-', '')}-{fingerprint}"
     root = snapshot_root / spec.period_end / snapshot_id
     root.mkdir(parents=True, exist_ok=True)
+    existing_manifest_path = root / "manifest.json"
+    if existing_manifest_path.exists():
+        try:
+            existing_payload = json.loads(existing_manifest_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"BROKER_SNAPSHOT_MANIFEST_UNREADABLE:{snapshot_id}") from exc
+        existing_state = str(existing_payload.get("snapshot_state", "")).upper()
+        legacy_committed = (
+            not existing_state
+            and bool(str(existing_payload.get("final_watchlist_run_id", "")).strip())
+            and bool(str(existing_payload.get("activated_at", "")).strip())
+        )
+        if existing_state == "COMMITTED" or legacy_committed:
+            reusable = [
+                item
+                for item in list_reusable_snapshots(spec.period_end, snapshot_root=snapshot_root)
+                if item.get("snapshot_id") == snapshot_id
+            ]
+            if reusable:
+                return reusable[0]
+            raise RuntimeError(f"BROKER_SNAPSHOT_COMMITTED_INVALID:{snapshot_id}")
     summary_copy = root / "BROKER_SUMMARY.csv"
     if not summary_copy.exists():
         shutil.copy2(summary_path, summary_copy)
+    elif file_sha256(summary_copy) != summary_source_hash:
+        raise RuntimeError(f"BROKER_SNAPSHOT_SUMMARY_HASH_COLLISION:{snapshot_id}")
     raw_copy: Path | None = None
-    if raw_path is not None:
+    if raw_path is not None and raw_source_hash:
         raw_copy = root / "BROKER_RAW.csv"
         if not raw_copy.exists():
             shutil.copy2(raw_path, raw_copy)
+        elif file_sha256(raw_copy) != raw_source_hash:
+            raise RuntimeError(f"BROKER_SNAPSHOT_RAW_HASH_COLLISION:{snapshot_id}")
 
     manifest = {
         "snapshot_id": snapshot_id,
+        "snapshot_state": "PENDING",
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "selected_by": selected_by,
         "primary_context": True,
@@ -354,13 +410,13 @@ def persist_snapshot(
         "broker_period_end": spec.period_end,
         "broker_trading_days": spec.trading_sessions,
         "broker_session_dates": list(spec.session_dates),
-        "freshness_status": "CURRENT",
+        "freshness_status": freshness_status(spec.period_end, spec.period_end),
         "summary_source": str(summary_path.resolve()),
-        "summary_source_hash": file_sha256(summary_path),
+        "summary_source_hash": summary_source_hash,
         "summary_snapshot_path": str(summary_copy.resolve()),
         "summary_snapshot_hash": file_sha256(summary_copy),
         "raw_source": str(raw_path.resolve()) if raw_path else "",
-        "raw_source_hash": file_sha256(raw_path) if raw_path else "",
+        "raw_source_hash": raw_source_hash,
         "raw_snapshot_path": str(raw_copy.resolve()) if raw_copy else "",
         "raw_snapshot_hash": file_sha256(raw_copy) if raw_copy else "",
         "rows": int(info.get("rows", 0) or 0),
@@ -378,9 +434,6 @@ def persist_snapshot(
     manifest_path = root / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     manifest["manifest_path"] = str(manifest_path.resolve())
-    latest = snapshot_root / "latest_selected.json"
-    latest.parent.mkdir(parents=True, exist_ok=True)
-    latest.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     return manifest
 
 
@@ -398,15 +451,66 @@ def list_reusable_snapshots(
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        summary = Path(str(payload.get("summary_snapshot_path", "")))
+        snapshot_state = str(payload.get("snapshot_state", "")).upper()
+        final_run_id = str(payload.get("final_watchlist_run_id", "")).strip()
+        committed_at = str(payload.get("committed_at") or payload.get("activated_at") or "").strip()
+        legacy_committed = not snapshot_state and bool(final_run_id) and bool(committed_at)
         if (
-            payload.get("broker_period_end") == trade_date
-            and payload.get("snapshot_id")
-            and summary.exists()
-            and summary.stat().st_size > 0
+            (snapshot_state != "COMMITTED" and not legacy_committed)
+            or not final_run_id
+            or not committed_at
+            or payload.get("broker_period_end") != trade_date
+            or not payload.get("snapshot_id")
         ):
-            payload["manifest_path"] = str(path.resolve())
-            snapshots.append(payload)
+            continue
+
+        try:
+            period_type = str(payload.get("broker_period_type", "")).upper()
+            if period_type in FIXED_PERIOD_SESSIONS:
+                expected_spec = fixed_period_spec(period_type, trade_date)
+            elif period_type == "CUSTOM":
+                expected_spec = custom_period_spec(payload.get("broker_period_start", ""), trade_date)
+            else:
+                continue
+            if (
+                payload.get("broker_period_start") != expected_spec.period_start
+                or payload.get("broker_period_end") != expected_spec.period_end
+                or int(payload.get("broker_trading_days", 0) or 0) != expected_spec.trading_sessions
+                or list(payload.get("broker_session_dates", []) or []) != list(expected_spec.session_dates)
+            ):
+                continue
+        except Exception:
+            continue
+
+        snapshot_dir = path.parent.resolve()
+        summary = Path(str(payload.get("summary_snapshot_path", ""))).resolve()
+        expected_summary = (snapshot_dir / "BROKER_SUMMARY.csv").resolve()
+        if (
+            summary != expected_summary
+            or not summary.exists()
+            or summary.stat().st_size <= 0
+            or not str(payload.get("summary_snapshot_hash", "")).strip()
+            or file_sha256(summary) != str(payload.get("summary_snapshot_hash"))
+        ):
+            continue
+
+        raw_text = str(payload.get("raw_snapshot_path", "")).strip()
+        if raw_text:
+            raw = Path(raw_text).resolve()
+            expected_raw = (snapshot_dir / "BROKER_RAW.csv").resolve()
+            if (
+                raw != expected_raw
+                or not raw.exists()
+                or raw.stat().st_size <= 0
+                or not str(payload.get("raw_snapshot_hash", "")).strip()
+                or file_sha256(raw) != str(payload.get("raw_snapshot_hash"))
+            ):
+                continue
+
+        payload.setdefault("snapshot_state", "COMMITTED")
+        payload.setdefault("committed_at", committed_at)
+        payload["manifest_path"] = str(path.resolve())
+        snapshots.append(payload)
     return snapshots
 
 

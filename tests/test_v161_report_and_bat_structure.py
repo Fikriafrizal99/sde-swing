@@ -132,6 +132,12 @@ class V161ReportAndBatStructureTests(unittest.TestCase):
             self.assertIn("SCHEDULE_", action_text)
             self.assertEqual(workdir.text, str(project))
 
+    def test_final_watchlist_scheduler_uses_noninteractive_broker_period_bridge(self) -> None:
+        scheduler = (ROOT / "scheduler" / "SCHEDULE_FINAL_WATCHLIST.bat").read_text(encoding="utf-8-sig")
+        self.assertIn("tools\\run_final_watchlist_broker_period.py", scheduler)
+        self.assertIn("--period 1D", scheduler)
+        self.assertNotIn("run_sde_job.py --job final_watchlist", scheduler)
+
 
 if __name__ == "__main__":
     unittest.main()
