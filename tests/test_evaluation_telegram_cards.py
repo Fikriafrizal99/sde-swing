@@ -81,6 +81,46 @@ def test_active_and_waiting_are_one_card_with_agreed_monospace_fields() -> None:
     assert len(text) < 4000
 
 
+def test_current_scale_21_recommendations_stays_one_card() -> None:
+    rows: list[dict] = []
+    for index in range(6):
+        rows.append({
+            "symbol": f"A{index}",
+            "current_status": "OPEN",
+            "entry_price": 1464,
+            "reference_price": 1464,
+            "current_price": 1465,
+            "simulated_return_pct": 0.03,
+            "take_profit_1": 1523,
+            "take_profit_2": 1530,
+            "stop_loss": 1406,
+            "age_sessions": 4,
+            "source_json": json.dumps({"plan": {}}),
+        })
+    for index in range(15):
+        rows.append({
+            "symbol": f"W{index}",
+            "current_status": "WAITING_TRIGGER",
+            "entry_zone_low": 1431,
+            "entry_zone_high": 1459,
+            "reference_price": 1420,
+            "current_price": 1420,
+            "stop_loss": 1380,
+            "take_profit_1": 1520,
+            "take_profit_2": 1600,
+            "age_sessions": 4,
+            "source_json": json.dumps({"plan": {"Risk_Reward": 2.1}}),
+        })
+
+    text = build_active_message(pd.DataFrame(rows))
+
+    assert "Total aktif: 21 saham" in text
+    assert text.count("<pre>") == 2
+    assert text.count("</pre>") == 2
+    # tracker.send_telegram splits at 4000 raw characters; this must remain one card.
+    assert len(text) < 4000
+
+
 def test_lifecycle_digest_is_a_separate_monospace_card() -> None:
     events = [
         {
