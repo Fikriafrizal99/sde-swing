@@ -29,6 +29,7 @@ echo [10] Maintain portfolio aktual
 echo [11] Kirim lifecycle digest (status material)
 echo [12] Kirim active recommendations ke Telegram
 echo [13] Preview lifecycle terbaru + opsi kirim ulang
+echo [14] Evaluasi Broker Period + Confidence x Period
 echo [0] Kembali
 echo.
 set "PERF_CHOICE="
@@ -47,6 +48,7 @@ if "%PERF_CHOICE%"=="10" goto PORTFOLIO
 if "%PERF_CHOICE%"=="11" goto SEND_LIFECYCLE
 if "%PERF_CHOICE%"=="12" goto SEND_ACTIVE
 if "%PERF_CHOICE%"=="13" goto PREVIEW_LIFECYCLE
+if "%PERF_CHOICE%"=="14" goto SHOW_BROKER_PERIOD
 if "%PERF_CHOICE%"=="0" exit /b 0
 goto MENU
 
@@ -175,5 +177,17 @@ echo.
 set "RC=%ERRORLEVEL%"
 echo.
 if not "%RC%"=="0" echo Preview/resend lifecycle gagal. Exit code %RC%.
+pause
+goto MENU
+
+:SHOW_BROKER_PERIOD
+cls
+echo Broker Period Performance membaca ledger existing + metadata horizon additive.
+echo Signal lama tanpa metadata tetap utuh dan dilaporkan sebagai coverage gap.
+echo.
+%SDE_PYTHON_CMD% tools\broker_period_performance.py show
+set "RC=%ERRORLEVEL%"
+echo.
+if not "%RC%"=="0" echo Evaluasi Broker Period gagal. Exit code %RC%.
 pause
 goto MENU
