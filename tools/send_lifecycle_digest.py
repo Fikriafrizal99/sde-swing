@@ -51,9 +51,9 @@ def build_lifecycle_message(events: list[Mapping[str, Any]], *, max_events: int 
 
     limit = max(int(max_events or 1), 1)
     lines = [
-        "🔔 <b>LIFECYCLE DIGEST</b>",
+        "🔔 <b>CUANS HIT DAILY</b>",
+        f"📊 <b>{len(material)} Hit Plan</b>",
         "━━━━━━━━━━━━━━━━━━━",
-        f"📊 <b>{len(material)} perubahan material</b>",
     ]
     body: list[str] = []
 
