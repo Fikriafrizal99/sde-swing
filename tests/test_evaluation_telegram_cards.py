@@ -63,19 +63,22 @@ def test_active_and_waiting_are_one_card_with_agreed_monospace_fields() -> None:
     assert "📌 <b>REKOMENDASI AKTIF</b>" in text
     assert "📈 <b>ACTIVE</b>" in text
     assert "⏳ <b>WAITING ENTRY</b>" in text
-    assert "<code>LSIP | ACTIVE</code>" in text
-    assert "<code>Entry   1.465</code>" in text
-    assert "<code>P/L     +0,03%</code>" in text
-    assert "<code>TP1     1.525</code>" in text
-    assert "<code>SL      1.405</code>" in text
-    assert "<code>Age     4D</code>" in text
-    assert "<code>BAIK | WAITING</code>" in text
-    assert "<code>Entry   760–770</code>" in text
-    assert "<code>Gap     IN RANGE</code>" in text
-    assert "<code>RR      1:2.10</code>" in text
+    assert "LSIP | ACTIVE" in text
+    assert "Entry   1.465" in text
+    assert "P/L     +0,03%" in text
+    assert "TP1     1.525" in text
+    assert "SL      1.405" in text
+    assert "Age     4D" in text
+    assert "BAIK | WAITING" in text
+    assert "Entry   760–770" in text
+    assert "Gap     IN RANGE" in text
+    assert "RR      1:2.10" in text
     assert "Status scan" not in text
     assert "Sinyal" not in text
-    assert text.count("<code>") == text.count("</code>")
+    # One Telegram message/card with two monospace sections.
+    assert text.count("<pre>") == 2
+    assert text.count("</pre>") == 2
+    assert len(text) < 4000
 
 
 def test_lifecycle_digest_is_a_separate_monospace_card() -> None:
@@ -108,13 +111,14 @@ def test_lifecycle_digest_is_a_separate_monospace_card() -> None:
 
     assert text.startswith("🔔 <b>LIFECYCLE DIGEST</b>")
     assert "REKOMENDASI AKTIF" not in text
-    assert "<code>🎯 LSIP | TP1 HIT</code>" in text
-    assert "<code>Exit      1.525</code>" in text
-    assert "<code>⌛ BBRI | SIGNAL EXPIRED</code>" in text
-    assert "<code>Reason    Trigger Not Reached Within Window</code>" in text
-    assert "<code>Price     3.130</code>" in text
-    assert "<code>Date      07 Aug 2026</code>" in text
-    assert text.count("<code>") == text.count("</code>")
+    assert "🎯 LSIP | TP1 HIT" in text
+    assert "Exit      1.525" in text
+    assert "⌛ BBRI | SIGNAL EXPIRED" in text
+    assert "Reason    Trigger Not Reached Within Window" in text
+    assert "Price     3.130" in text
+    assert "Date      07 Aug 2026" in text
+    assert text.count("<pre>") == 1
+    assert text.count("</pre>") == 1
 
 
 def test_performance_menu_keeps_active_and_lifecycle_as_separate_sends() -> None:
