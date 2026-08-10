@@ -374,7 +374,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=60)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL)")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA_SQL)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(signal_outcome_ledger)")}
     for name in ("latest_scan_status", "latest_scan_date", "latest_scan_run_id"):
@@ -1619,7 +1619,7 @@ def print_table(path: Path, title: str, section: str = "") -> None:
         print(f"Expired          : {int(row.get('Expired', 0))}")
         print(f"Cancelled        : {int(row.get('Cancelled', 0))}")
         print(f"Invalidated pre  : {int(row.get('Invalidated_Before_Entry', 0))}")
-        print(f"Closed Outcomes  : {int(row.get('Closed_Outcomes', row.get('Closed', 0))}")
+        print(f"Closed Outcomes  : {int(row.get('Closed_Outcomes', row.get('Closed', 0)))}")
         print(f"Win / Loss       : {int(row.get('Win', 0))} / {int(row.get('Loss', 0))}")
         print(f"Ambiguous        : {int(row.get('Ambiguous', 0))}")
         print(f"Win Rate         : {fmt(row.get('Win_Rate_Pct'), 1, '%')}")
