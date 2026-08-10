@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import math
 import sys
 from pathlib import Path
@@ -15,6 +16,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from modules.analytics import outcome_tracker as tracker
+from modules.telegram.idx_price import (
+    fmt_idx_price,
+    fmt_idx_zone,
+    snap_idx_price,
+    snap_idx_zone,
+)
 
 
 def _int_or_zero(value: Any) -> int:
@@ -27,6 +34,80 @@ def _int_or_zero(value: Any) -> int:
         return 0
 
 
+def _code_line(text: str) -> str:
+    return f"<code>{html.escape(text)}</code>"
+
+
+def _fmt_pct(value: Any) -> str:
+    try:
+        number = float(value)
+        if math.isnan(number):
+            return "-"
+    except Exception:
+        return "-"
+    sign = "+" if number > 0 else ""
+    return f"{sign}{number:.2f}%".replace(".", ",")
+
+
+def _source_plan(row: pd.Series) -> dict[str, Any]:
+    raw = row.get("source_json")
+    if raw is None:
+        return {}
+    try:
+        payload = json.loads(str(raw))
+    except Exception:
+        return {}
+    plan = payload.get("plan")
+    return plan if isinstance(plan, dict) else {}
+
+
+def _risk_reward(row: pd.Series) -> str:
+    plan = _source_plan(row)
+    candidates = (
+        "Risk_Reward",
+        "Risk_Reward_Ratio",
+        "RiskReward",
+        "RR",
+        "R_R",
+    )
+    value: Any = None
+    for key in candidates:
+        if key in plan and str(plan.get(key) or "").strip():
+            value = plan.get(key)
+            break
+    if value is None:
+        return "-"
+    text = str(value).strip()
+    if ":" in text:
+        _, right = text.split(":", 1)
+        try:
+            number = float(right.replace(",", "."))
+            return f"1:{number:.2f}"
+        except Exception:
+            return text
+    try:
+        number = float(text.replace(",", "."))
+        return f"1:{number:.2f}"
+    except Exception:
+        return text
+
+
+def _gap_text(current: Any, low: Any, high: Any) -> str:
+    current_value = snap_idx_price(current, anchor_price=current, mode="nearest")
+    low_value, high_value = snap_idx_zone(low, high, anchor_price=current)
+    if current_value is None or low_value is None or high_value is None:
+        return "-"
+    if low_value <= current_value <= high_value:
+        return "IN RANGE"
+    if current_value < low_value and low_value:
+        pct = (current_value / low_value - 1.0) * 100.0
+    elif high_value:
+        pct = (current_value / high_value - 1.0) * 100.0
+    else:
+        return "-"
+    return f"{pct:+.2f}%".replace(".", ",")
+
+
 def build_active_message(active: pd.DataFrame) -> str:
     lines = [
         "📌 <b>REKOMENDASI AKTIF</b>",
@@ -36,51 +117,57 @@ def build_active_message(active: pd.DataFrame) -> str:
     if active.empty:
         return "\n".join(lines + ["", "Belum ada rekomendasi aktif."])
 
-    groups = (
+    statuses = active["current_status"].astype(str).str.upper()
+    for status, heading in (
         ("OPEN", "📈 <b>ACTIVE</b>"),
         ("WAITING_TRIGGER", "⏳ <b>WAITING ENTRY</b>"),
-    )
-    statuses = active["current_status"].astype(str).str.upper()
-    for status, heading in groups:
+    ):
         subset = active[statuses == status]
         if subset.empty:
             continue
         lines.extend(["", heading])
+
         for _, row in subset.iterrows():
-            symbol = html.escape(str(row.get("symbol") or ""))
-            signal_date = html.escape(str(row.get("signal_date") or ""))
-            current = tracker.fmt_price(row.get("current_price"))
-            lines.extend(["", f"<b>{symbol}</b>"])
+            symbol = str(row.get("symbol") or "").strip().upper()
+            current_raw = row.get("current_price")
+            anchor = current_raw or row.get("reference_price") or row.get("entry_price")
+            current = fmt_idx_price(current_raw, anchor_price=anchor)
+
             if status == "OPEN":
-                entry = tracker.fmt_price(row.get("entry_price") or row.get("reference_price"))
-                pnl = tracker.fmt(row.get("simulated_return_pct"), 2, "%")
-                lines.extend([
-                    f"Sinyal       : {signal_date}",
-                    f"Entry mesin  : {entry}",
-                    f"Harga kini   : {current}",
-                    f"P/L simulasi : {pnl}",
-                    f"TP1          : {tracker.fmt_price(row.get('take_profit_1'))}",
-                    f"TP2          : {tracker.fmt_price(row.get('take_profit_2'))}",
-                    f"SL           : {tracker.fmt_price(row.get('stop_loss'))}",
-                    f"Umur posisi  : {_int_or_zero(row.get('age_sessions'))} sesi",
-                ])
+                entry_raw = row.get("entry_price") or row.get("reference_price")
+                block = [
+                    f"{symbol} | ACTIVE",
+                    f"Entry   {fmt_idx_price(entry_raw, anchor_price=anchor)}",
+                    f"Now     {current}",
+                    f"P/L     {_fmt_pct(row.get('simulated_return_pct'))}",
+                    f"TP1     {fmt_idx_price(row.get('take_profit_1'), anchor_price=anchor)}",
+                    f"TP2     {fmt_idx_price(row.get('take_profit_2'), anchor_price=anchor)}",
+                    f"SL      {fmt_idx_price(row.get('stop_loss'), anchor_price=anchor)}",
+                    f"Age     {_int_or_zero(row.get('age_sessions'))}D",
+                ]
             else:
-                low = tracker.fmt_price(row.get("entry_zone_low"), missing="")
-                high = tracker.fmt_price(row.get("entry_zone_high"), missing="")
-                entry = f"{low}–{high}" if low and high else (low or high or "belum tersedia")
-                scan_status = html.escape(str(row.get("latest_scan_status") or "NOT_IN_LATEST_SCAN"))
-                lines.extend([
-                    f"Sinyal      : {signal_date}",
-                    f"Entry       : {entry}",
-                    f"Harga kini  : {current}",
-                    f"Status scan : {scan_status}",
-                    f"Umur sinyal : {_int_or_zero(row.get('age_sessions'))} sesi",
-                ])
+                low = row.get("entry_zone_low")
+                high = row.get("entry_zone_high")
+                block = [
+                    f"{symbol} | WAITING",
+                    f"Entry   {fmt_idx_zone(low, high, anchor_price=anchor)}",
+                    f"Now     {current}",
+                    f"Gap     {_gap_text(current_raw, low, high)}",
+                    f"SL      {fmt_idx_price(row.get('stop_loss'), anchor_price=anchor)}",
+                    f"TP1     {fmt_idx_price(row.get('take_profit_1'), anchor_price=anchor)}",
+                    f"TP2     {fmt_idx_price(row.get('take_profit_2'), anchor_price=anchor)}",
+                    f"RR      {_risk_reward(row)}",
+                    f"Age     {_int_or_zero(row.get('age_sessions'))}D",
+                ]
+
+            lines.append("")
+            lines.extend(_code_line(item) for item in block)
+
     return "\n".join(lines)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Send Active Recommendations with valid Telegram HTML")
+    parser = argparse.ArgumentParser(description="Send compact monospace Active Recommendations")
     parser.add_argument("--output-dir", default=str(tracker.DEFAULT_OUTPUT))
     parser.add_argument("--telegram-config", default="config/telegram.json")
     parser.add_argument("--scheduler-config", default="config/scheduler.json")
@@ -103,11 +190,7 @@ def main() -> int:
         return 0
 
     message = build_active_message(active)
-    # Guard against the historical malformed pattern that caused Telegram 400:
-    # closing </b> tags appearing where an opening <b> tag was intended.
-    if message.count("<b>") != message.count("</b>") or any(
-        line.lstrip().startswith("</b>") for line in message.splitlines()
-    ):
+    if message.count("<b>") != message.count("</b>") or message.count("<code>") != message.count("</code>"):
         raise RuntimeError("Active Recommendations menghasilkan HTML Telegram yang tidak seimbang.")
 
     output_dir.mkdir(parents=True, exist_ok=True)
