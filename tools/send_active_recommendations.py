@@ -42,10 +42,6 @@ def _first_price(*values: Any) -> float | None:
     return None
 
 
-def _code_line(text: str) -> str:
-    return f"<code>{html.escape(text)}</code>"
-
-
 def _fmt_pct(value: Any) -> str:
     try:
         number = float(value)
@@ -137,6 +133,7 @@ def build_active_message(active: pd.DataFrame) -> str:
         if subset.empty:
             continue
         lines.extend(["", heading])
+        section_lines: list[str] = []
 
         for _, row in subset.iterrows():
             symbol = str(row.get("symbol") or "").strip().upper()
@@ -171,8 +168,11 @@ def build_active_message(active: pd.DataFrame) -> str:
                     f"Age     {_int_or_zero(row.get('age_sessions'))}D",
                 ]
 
-            lines.append("")
-            lines.extend(_code_line(item) for item in block)
+            if section_lines:
+                section_lines.append("")
+            section_lines.extend(block)
+
+        lines.append("<pre>" + html.escape("\n".join(section_lines)) + "</pre>")
 
     return "\n".join(lines)
 
@@ -201,7 +201,7 @@ def main() -> int:
         return 0
 
     message = build_active_message(active)
-    if message.count("<b>") != message.count("</b>") or message.count("<code>") != message.count("</code>"):
+    if message.count("<b>") != message.count("</b>") or message.count("<pre>") != message.count("</pre>"):
         raise RuntimeError("Active Recommendations menghasilkan HTML Telegram yang tidak seimbang.")
 
     output_dir.mkdir(parents=True, exist_ok=True)
