@@ -46,6 +46,49 @@ def _downgrade_uma(value: Any) -> str:
     return str(value)
 
 
+def _prepare_exchange_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Make exchange/post-processing columns safe for string assignments.
+
+    Empty CSV columns are commonly inferred by pandas as float64.  Assigning
+    values such as ``BLOCKED`` or an empty string to those columns raises on
+    newer pandas versions.  Normalize only the post-processing columns here;
+    scoring/numeric decision inputs are left untouched.
+    """
+    out = frame.copy()
+    text_defaults = {
+        "Exchange_Status": "NORMAL",
+        "Risk_Flags": "",
+        "Exchange_Veto": "",
+        "Veto": "",
+        "Veto_Reason": "",
+    }
+    missing: dict[str, pd.Series] = {}
+    for column, default in text_defaults.items():
+        if column not in out.columns:
+            missing[column] = pd.Series(default, index=out.index, dtype="object")
+        else:
+            out[column] = out[column].astype("object")
+            out[column] = out[column].where(out[column].notna(), default)
+
+    if "Exchange_History_Candles" not in out.columns:
+        missing["Exchange_History_Candles"] = pd.Series(0, index=out.index, dtype="int64")
+    else:
+        out["Exchange_History_Candles"] = (
+            pd.to_numeric(out["Exchange_History_Candles"], errors="coerce").fillna(0).astype("int64")
+        )
+
+    if missing:
+        out = pd.concat([out, pd.DataFrame(missing, index=out.index)], axis=1)
+
+    # Decision status columns can also be inferred as float64 when a source CSV
+    # happens to contain only blanks.  They are categorical outputs and must be
+    # able to receive BLOCKED / BUY CANDIDATE without touching score columns.
+    for column in _decision_columns(out):
+        out[column] = out[column].astype("object")
+
+    return out
+
+
 def apply_exchange_status_to_decisions(
     decision_path: str | Path,
     enrichment_path: str | Path | None,
@@ -64,16 +107,7 @@ def apply_exchange_status_to_decisions(
     if symbol_col is None:
         return {"status": "SYMBOL_COLUMN_MISSING", "suspended_count": 0, "uma_count": 0, "relisting_blocked_count": 0}
 
-    for column, default in (
-        ("Exchange_Status", "NORMAL"),
-        ("Risk_Flags", ""),
-        ("Exchange_Veto", ""),
-        ("Veto", ""),
-        ("Veto_Reason", ""),
-        ("Exchange_History_Candles", 0),
-    ):
-        if column not in frame.columns:
-            frame[column] = default
+    frame = _prepare_exchange_columns(frame)
 
     suspended_count = uma_count = relisting_blocked_count = 0
     columns = _decision_columns(frame)
