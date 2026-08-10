@@ -3,9 +3,12 @@ from __future__ import annotations
 
 """Additive Broker Period performance analytics.
 
-The production signal_outcome_ledger is read-only from this module.  Broker
-period metadata is stored in a separate table so existing performance history
-and lifecycle rows are not rewritten or migrated.
+The production ``signal_outcome_ledger`` is never rewritten by this module.
+Broker-period observations live in a separate relation table.  Only a context
+captured for a signal newly created after the selected snapshot was prepared is
+eligible as ``INITIAL_SIGNAL`` performance metadata; older signals that are
+merely scanned again are kept as ``RESCAN_CONTEXT`` for future persistence
+analysis and are excluded from horizon win-rate statistics.
 """
 
 import argparse
@@ -13,7 +16,6 @@ import hashlib
 import json
 import math
 import sqlite3
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -49,6 +51,7 @@ CREATE TABLE IF NOT EXISTS broker_period_signal_context (
     broker_confidence_bucket TEXT,
     broker_direction TEXT,
     freshness_status TEXT,
+    context_role TEXT NOT NULL DEFAULT 'RESCAN_CONTEXT',
     primary_context INTEGER NOT NULL DEFAULT 1,
     scoring_adjustment_applied INTEGER NOT NULL DEFAULT 0,
     freshness_adjustment_applied INTEGER NOT NULL DEFAULT 0,
@@ -93,6 +96,19 @@ def bucket(value: float | None) -> str:
     return ">=75%"
 
 
+def parse_timestamp(value: Any) -> pd.Timestamp | None:
+    text = norm(value)
+    if not text:
+        return None
+    try:
+        stamp = pd.Timestamp(text)
+    except Exception:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.tz_localize("Asia/Jakarta")
+    return stamp.tz_convert("UTC")
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
     if not db_path.exists():
         raise FileNotFoundError(f"SDE_DB_NOT_FOUND:{db_path}")
@@ -101,6 +117,14 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA)
+    # Safe additive compatibility if a development run created the extension
+    # table before ``context_role`` was introduced. No ledger column is altered.
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(broker_period_signal_context)").fetchall()}
+    if "context_role" not in columns:
+        conn.execute(
+            "ALTER TABLE broker_period_signal_context "
+            "ADD COLUMN context_role TEXT NOT NULL DEFAULT 'RESCAN_CONTEXT'"
+        )
     conn.commit()
     return conn
 
@@ -121,6 +145,17 @@ def decision_value(source_json: str, *keys: str) -> Any:
     return None
 
 
+def context_role(row: sqlite3.Row, manifest: dict[str, Any]) -> str:
+    """Classify initial vs re-scan without inventing metadata for old signals."""
+    signal_created = parse_timestamp(row["created_at"])
+    snapshot_created = parse_timestamp(manifest.get("created_at"))
+    same_signal_date = norm(row["signal_date"]) == norm(manifest.get("broker_period_end"))
+    if signal_created is not None and snapshot_created is not None and same_signal_date:
+        if signal_created >= snapshot_created:
+            return "INITIAL_SIGNAL"
+    return "RESCAN_CONTEXT"
+
+
 def capture(db_path: Path, run_id: str, manifest_path: Path) -> int:
     if not manifest_path.exists():
         print(f"[BROKER PERIOD] snapshot manifest tidak ditemukan: {manifest_path}")
@@ -128,6 +163,7 @@ def capture(db_path: Path, run_id: str, manifest_path: Path) -> int:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     required = [
         "snapshot_id",
+        "created_at",
         "broker_period_type",
         "broker_period_start",
         "broker_period_end",
@@ -149,14 +185,17 @@ def capture(db_path: Path, run_id: str, manifest_path: Path) -> int:
 
     rows = conn.execute(
         """
-        SELECT signal_id, symbol, signal_date, broker_confidence,
-               broker_confidence_bucket, broker_direction, source_json
+        SELECT signal_id, symbol, signal_date, created_at,
+               broker_confidence, broker_confidence_bucket,
+               broker_direction, source_json
         FROM signal_outcome_ledger
         WHERE latest_scan_run_id=? OR run_id=?
         """,
         (run_id, run_id),
     ).fetchall()
     inserted = 0
+    initial_inserted = 0
+    rescan_inserted = 0
     for row in rows:
         broker_conf = as_float(row["broker_confidence"])
         broker_score = as_float(
@@ -168,9 +207,8 @@ def capture(db_path: Path, run_id: str, manifest_path: Path) -> int:
                 "Broker_Score",
             )
         )
-        context_key = "|".join(
-            [row["signal_id"], run_id, str(manifest["snapshot_id"])]
-        )
+        role = context_role(row, manifest)
+        context_key = "|".join([row["signal_id"], run_id, str(manifest["snapshot_id"])])
         context_id = hashlib.sha256(context_key.encode("utf-8")).hexdigest()[:32]
         cursor = conn.execute(
             """
@@ -179,10 +217,10 @@ def capture(db_path: Path, run_id: str, manifest_path: Path) -> int:
                 broker_period_type, broker_period_start, broker_period_end,
                 broker_trading_days, broker_snapshot_id, broker_score,
                 broker_confidence, broker_confidence_bucket, broker_direction,
-                freshness_status, primary_context, scoring_adjustment_applied,
-                freshness_adjustment_applied, persistence_adjustment_applied,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                freshness_status, context_role, primary_context,
+                scoring_adjustment_applied, freshness_adjustment_applied,
+                persistence_adjustment_applied, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 context_id,
@@ -200,6 +238,7 @@ def capture(db_path: Path, run_id: str, manifest_path: Path) -> int:
                 norm(row["broker_confidence_bucket"], bucket(broker_conf)),
                 norm(row["broker_direction"], "UNKNOWN"),
                 norm(manifest.get("freshness_status"), "CURRENT"),
+                role,
                 1,
                 int(bool(manifest.get("scoring_adjustment_applied", False))),
                 int(bool(manifest.get("freshness_adjustment_applied", False))),
@@ -207,11 +246,17 @@ def capture(db_path: Path, run_id: str, manifest_path: Path) -> int:
                 now_text(),
             ),
         )
-        inserted += max(cursor.rowcount, 0)
+        added = max(cursor.rowcount, 0)
+        inserted += added
+        if added and role == "INITIAL_SIGNAL":
+            initial_inserted += added
+        elif added:
+            rescan_inserted += added
     conn.commit()
     conn.close()
     print(
-        f"[BROKER PERIOD] captured={inserted} run_id={run_id} "
+        f"[BROKER PERIOD] captured={inserted} initial={initial_inserted} "
+        f"rescan={rescan_inserted} run_id={run_id} "
         f"period={manifest['broker_period_type']} snapshot={manifest['snapshot_id']}"
     )
     return 0
@@ -229,7 +274,16 @@ def load_analysis(conn: sqlite3.Connection) -> tuple[pd.DataFrame, pd.DataFrame]
 def initial_contexts(contexts: pd.DataFrame) -> pd.DataFrame:
     if contexts.empty:
         return contexts
-    ordered = contexts.sort_values(["created_at", "context_id"])
+    eligible = contexts[
+        contexts.get("context_role", pd.Series("RESCAN_CONTEXT", index=contexts.index))
+        .fillna("RESCAN_CONTEXT")
+        .astype(str)
+        .str.upper()
+        .eq("INITIAL_SIGNAL")
+    ].copy()
+    if eligible.empty:
+        return eligible
+    ordered = eligible.sort_values(["created_at", "context_id"])
     return ordered.drop_duplicates("signal_id", keep="first")
 
 
@@ -241,25 +295,30 @@ def _valid_mask(frame: pd.DataFrame) -> pd.Series:
 
 
 def metrics(group: pd.DataFrame) -> dict[str, Any]:
+    empty = {
+        "Signals": 0,
+        "Triggered": 0,
+        "Trigger_Rate_Pct": None,
+        "Closed": 0,
+        "Win": 0,
+        "Loss": 0,
+        "Win_Rate_Pct": None,
+        "Avg_Return_Pct": None,
+        "Avg_MFE_Pct": None,
+        "Avg_MAE_Pct": None,
+    }
     if group.empty:
-        return {
-            "Signals": 0,
-            "Triggered": 0,
-            "Trigger_Rate_Pct": None,
-            "Closed": 0,
-            "Win": 0,
-            "Loss": 0,
-            "Win_Rate_Pct": None,
-            "Avg_Return_Pct": None,
-            "Avg_MFE_Pct": None,
-            "Avg_MAE_Pct": None,
-        }
+        return empty
     valid = group[_valid_mask(group)].copy()
-    triggered = valid[valid.get("entry_date", pd.Series("", index=valid.index)).fillna("").astype(str).str.strip().ne("")]
+    triggered = valid[
+        valid.get("entry_date", pd.Series("", index=valid.index))
+        .fillna("").astype(str).str.strip().ne("")
+    ]
     final = valid.get("final_outcome", pd.Series("", index=valid.index)).fillna("").astype(str).str.upper()
     closed = valid[final.isin(FINAL_OUTCOMES)]
-    wins = int(closed.get("final_outcome", pd.Series(dtype=str)).fillna("").astype(str).str.upper().eq("WIN").sum())
-    losses = int(closed.get("final_outcome", pd.Series(dtype=str)).fillna("").astype(str).str.upper().eq("LOSS").sum())
+    closed_outcome = closed.get("final_outcome", pd.Series(dtype=str)).fillna("").astype(str).str.upper()
+    wins = int(closed_outcome.eq("WIN").sum())
+    losses = int(closed_outcome.eq("LOSS").sum())
     decided = wins + losses
 
     def mean_numeric(frame: pd.DataFrame, column: str) -> float | None:
@@ -287,28 +346,36 @@ def build_reports(db_path: Path, output_dir: Path) -> tuple[pd.DataFrame, pd.Dat
     conn = connect(db_path)
     ledger, contexts = load_analysis(conn)
     conn.close()
-    first = initial_contexts(contexts)
-    if ledger.empty or first.empty:
+    initial = initial_contexts(contexts)
+    ledger_signals = int(ledger["signal_id"].nunique()) if "signal_id" in ledger.columns else int(len(ledger))
+    context_rows = int(len(contexts))
+    rescan_rows = int(
+        contexts.get("context_role", pd.Series(dtype=str)).fillna("").astype(str).str.upper().eq("RESCAN_CONTEXT").sum()
+    ) if not contexts.empty else 0
+
+    if ledger.empty or initial.empty:
         period = pd.DataFrame(columns=["Broker_Period", *metrics(pd.DataFrame()).keys()])
         cross = pd.DataFrame(columns=["Broker_Period", "Broker_Confidence_Bucket", *metrics(pd.DataFrame()).keys()])
-        coverage = {"ledger_signals": int(len(ledger)), "mapped_signals": 0}
+        coverage = {
+            "ledger_signals": ledger_signals,
+            "mapped_initial_signals": 0,
+            "context_rows": context_rows,
+            "rescan_context_rows": rescan_rows,
+        }
     else:
         merged = ledger.merge(
-            first[[
-                "signal_id",
-                "broker_period_type",
-                "broker_period_start",
-                "broker_period_end",
-                "broker_trading_days",
-                "broker_snapshot_id",
+            initial[[
+                "signal_id", "broker_period_type", "broker_period_start",
+                "broker_period_end", "broker_trading_days", "broker_snapshot_id",
                 "broker_confidence_bucket",
             ]].rename(columns={"broker_confidence_bucket": "period_confidence_bucket"}),
             on="signal_id",
             how="inner",
         )
-        period_rows = []
-        for period_name, group in merged.groupby("broker_period_type", dropna=False):
-            period_rows.append({"Broker_Period": str(period_name), **metrics(group)})
+        period_rows = [
+            {"Broker_Period": str(name), **metrics(group)}
+            for name, group in merged.groupby("broker_period_type", dropna=False)
+        ]
         period = pd.DataFrame(period_rows)
         cross_rows = []
         for (period_name, conf_bucket), group in merged.groupby(
@@ -321,8 +388,10 @@ def build_reports(db_path: Path, output_dir: Path) -> tuple[pd.DataFrame, pd.Dat
             })
         cross = pd.DataFrame(cross_rows)
         coverage = {
-            "ledger_signals": int(ledger["signal_id"].nunique()),
-            "mapped_signals": int(merged["signal_id"].nunique()),
+            "ledger_signals": ledger_signals,
+            "mapped_initial_signals": int(merged["signal_id"].nunique()),
+            "context_rows": context_rows,
+            "rescan_context_rows": rescan_rows,
         }
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -347,11 +416,13 @@ def print_report(period: pd.DataFrame, cross: pd.DataFrame, coverage: dict[str, 
     print("\nBROKER PERIOD PERFORMANCE")
     print("=" * 88)
     print(
-        f"Metadata coverage: {coverage.get('mapped_signals', 0)}/{coverage.get('ledger_signals', 0)} signal "
-        "(signal lama sebelum fitur ini tetap utuh dan tidak dipaksa diberi horizon)."
+        f"Initial metadata coverage: {coverage.get('mapped_initial_signals', 0)}/"
+        f"{coverage.get('ledger_signals', 0)} signal | "
+        f"historical rescan contexts: {coverage.get('rescan_context_rows', 0)}"
     )
+    print("Signal lama tidak diberi horizon retroaktif; RESCAN_CONTEXT tidak masuk statistik WR period.")
     if period.empty:
-        print("Belum ada signal dengan Broker Period metadata.")
+        print("Belum ada signal baru dengan Broker Period metadata awal.")
     else:
         columns = [
             "Broker_Period", "Signals", "Triggered", "Trigger_Rate_Pct", "Closed",
