@@ -34,6 +34,14 @@ def _int_or_zero(value: Any) -> int:
         return 0
 
 
+def _first_price(*values: Any) -> float | None:
+    for value in values:
+        parsed = tracker.as_float(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _code_line(text: str) -> str:
     return f"<code>{html.escape(text)}</code>"
 
@@ -66,7 +74,10 @@ def _risk_reward(row: pd.Series) -> str:
     candidates = (
         "Risk_Reward",
         "Risk_Reward_Ratio",
+        "Risk_Reward_Final",
         "RiskReward",
+        "RiskRewardRatio",
+        "RR_Ratio",
         "RR",
         "R_R",
     )
@@ -129,12 +140,12 @@ def build_active_message(active: pd.DataFrame) -> str:
 
         for _, row in subset.iterrows():
             symbol = str(row.get("symbol") or "").strip().upper()
-            current_raw = row.get("current_price")
-            anchor = current_raw or row.get("reference_price") or row.get("entry_price")
+            current_raw = _first_price(row.get("current_price"))
+            anchor = _first_price(current_raw, row.get("reference_price"), row.get("entry_price"))
             current = fmt_idx_price(current_raw, anchor_price=anchor)
 
             if status == "OPEN":
-                entry_raw = row.get("entry_price") or row.get("reference_price")
+                entry_raw = _first_price(row.get("entry_price"), row.get("reference_price"))
                 block = [
                     f"{symbol} | ACTIVE",
                     f"Entry   {fmt_idx_price(entry_raw, anchor_price=anchor)}",
@@ -146,8 +157,8 @@ def build_active_message(active: pd.DataFrame) -> str:
                     f"Age     {_int_or_zero(row.get('age_sessions'))}D",
                 ]
             else:
-                low = row.get("entry_zone_low")
-                high = row.get("entry_zone_high")
+                low = _first_price(row.get("entry_zone_low"))
+                high = _first_price(row.get("entry_zone_high"))
                 block = [
                     f"{symbol} | WAITING",
                     f"Entry   {fmt_idx_zone(low, high, anchor_price=anchor)}",
