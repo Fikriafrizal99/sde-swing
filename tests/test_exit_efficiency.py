@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from modules.analytics.execution_integrity import (
     economic_outcome,
@@ -256,7 +257,7 @@ def test_exit_efficiency_is_read_only_and_flags_historical_conflict(tmp_path: Pa
     assert summary["Closed"] == 2
     assert summary["Clean_Closed"] == 1
     assert summary["Outcome_Inconsistencies"] == 1
-    assert summary["Median_TP2_Distance_Pct"] == 10.0
+    assert summary["Median_TP2_Distance_Pct"] == pytest.approx(10.0)
     assert summary["Post_Exit_3D_Full_Eligible"] == 1
 
     bad = trades[trades["Signal_ID"] == "BAD"].iloc[0]
