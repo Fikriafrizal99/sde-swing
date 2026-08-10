@@ -138,7 +138,7 @@ echo.
 set "CONFIRM_LIFECYCLE="
 set /p "CONFIRM_LIFECYCLE=Kirim lifecycle digest material ke Telegram? [Y/N]: "
 if /I not "%CONFIRM_LIFECYCLE%"=="Y" goto MENU
-%SDE_PYTHON_CMD% modules\analytics\outcome_tracker.py lifecycle-telegram
+%SDE_PYTHON_CMD% tools\send_lifecycle_digest.py
 set "RC=%ERRORLEVEL%"
 if not "%RC%"=="0" echo Pengiriman lifecycle gagal. Exit code %RC%.
 pause
