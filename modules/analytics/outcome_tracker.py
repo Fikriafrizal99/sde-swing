@@ -22,6 +22,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from swing_utils import find_col, normalize_symbol
 from modules.job_runner.runtime import load_environment_file
+from modules.analytics.execution_integrity import (
+    economic_outcome,
+    target_is_profitable,
+    validate_plan_geometry,
+)
 
 try:
     import requests
@@ -369,7 +374,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=60)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA synchronous=NORMAL)")
     conn.executescript(SCHEMA_SQL)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(signal_outcome_ledger)")}
     for name in ("latest_scan_status", "latest_scan_date", "latest_scan_run_id"):
@@ -914,6 +919,29 @@ def evaluate_record(record: sqlite3.Row, price: pd.DataFrame) -> dict[str, Any]:
             return update
         entry_idx, entry_price = trigger
         entry_date = future.loc[entry_idx, "Date"].date().isoformat()
+        geometry = validate_plan_geometry(
+            entry_price,
+            record["stop_loss"],
+            record["take_profit_1"],
+            record["take_profit_2"],
+        )
+        if not geometry.valid:
+            reason = "PLAN_GEOMETRY_INVALID_AT_ENTRY:" + "+".join(geometry.reasons)
+            update.update({
+                "current_status": "INVALIDATED_BEFORE_ENTRY",
+                "final_outcome": "INVALIDATED",
+                "trigger_date": entry_date,
+                "entry_date": None,
+                "entry_price": None,
+                "exit_date": entry_date,
+                "exit_price": None,
+                "exit_reason": reason,
+                "_event_type": "INVALIDATED_BEFORE_ENTRY",
+                "_event_date": entry_date,
+                "_event_price": entry_price,
+                "_event_reason": reason,
+            })
+            return update
         update.update({
             "current_status": "OPEN",
             "trigger_date": entry_date,
@@ -954,24 +982,34 @@ def evaluate_record(record: sqlite3.Row, price: pd.DataFrame) -> dict[str, Any]:
     update["mfe_pct"] = ret_pct(update["max_price"], entry_price)
     update["mae_pct"] = ret_pct(update["min_price"], entry_price)
 
+    # Legacy OPEN records are preserved rather than rewritten. Any stale target
+    # at/below the stored actual entry is simply ineligible to emit a TP event.
+    # This prevents a negative-return TP from becoming a reported WIN while the
+    # record remains auditable and can still resolve through a valid TP/SL or
+    # max-hold exit.
+    stop_is_loss_side = stop is not None and stop < entry_price
+    tp1_is_profit_side = target_is_profitable(entry_price, tp1)
+    tp2_is_profit_side = target_is_profitable(entry_price, tp2)
+
     for idx, bar in bars.iterrows():
         holding_days = idx - entry_idx + 1
-        hit_stop = stop is not None and float(bar["Low"]) <= stop
-        hit_tp2 = tp2 is not None and float(bar["High"]) >= tp2
-        hit_tp1 = tp1 is not None and float(bar["High"]) >= tp1
+        hit_stop = stop_is_loss_side and float(bar["Low"]) <= stop
+        hit_tp2 = tp2_is_profit_side and float(bar["High"]) >= tp2
+        hit_tp1 = tp1_is_profit_side and float(bar["High"]) >= tp1
         # Conservative daily-candle rule: if stop and target are both touched in
         # the same candle, stop is assumed first.
         if hit_stop:
             reason = "STOP_LOSS_HIT" if not (hit_tp1 or hit_tp2) else "STOP_AND_TARGET_SAME_CANDLE_CONSERVATIVE"
+            realized = ret_pct(stop, entry_price)
             update.update({
                 "current_status": "CLOSED",
-                "final_outcome": "LOSS",
+                "final_outcome": economic_outcome(realized),
                 "sl_hit": 1,
                 "exit_date": bar["Date"].date().isoformat(),
                 "exit_price": stop,
                 "exit_reason": reason,
                 "holding_days": holding_days,
-                "realized_return_pct": ret_pct(stop, entry_price),
+                "realized_return_pct": realized,
                 "_event_type": "STOP_LOSS_HIT",
                 "_event_date": bar["Date"].date().isoformat(),
                 "_event_price": stop,
@@ -979,16 +1017,17 @@ def evaluate_record(record: sqlite3.Row, price: pd.DataFrame) -> dict[str, Any]:
             })
             return update
         if hit_tp2:
+            realized = ret_pct(tp2, entry_price)
             update.update({
                 "current_status": "CLOSED",
-                "final_outcome": "WIN",
+                "final_outcome": economic_outcome(realized),
                 "tp1_hit": 1,
                 "tp2_hit": 1,
                 "exit_date": bar["Date"].date().isoformat(),
                 "exit_price": tp2,
                 "exit_reason": "TP2_HIT",
                 "holding_days": holding_days,
-                "realized_return_pct": ret_pct(tp2, entry_price),
+                "realized_return_pct": realized,
                 "_event_type": "TP2_HIT",
                 "_event_date": bar["Date"].date().isoformat(),
                 "_event_price": tp2,
@@ -996,15 +1035,16 @@ def evaluate_record(record: sqlite3.Row, price: pd.DataFrame) -> dict[str, Any]:
             })
             return update
         if hit_tp1:
+            realized = ret_pct(tp1, entry_price)
             update.update({
                 "current_status": "CLOSED",
-                "final_outcome": "WIN",
+                "final_outcome": economic_outcome(realized),
                 "tp1_hit": 1,
                 "exit_date": bar["Date"].date().isoformat(),
                 "exit_price": tp1,
                 "exit_reason": "TP1_HIT",
                 "holding_days": holding_days,
-                "realized_return_pct": ret_pct(tp1, entry_price),
+                "realized_return_pct": realized,
                 "_event_type": "TP1_HIT",
                 "_event_date": bar["Date"].date().isoformat(),
                 "_event_price": tp1,
@@ -1017,7 +1057,7 @@ def evaluate_record(record: sqlite3.Row, price: pd.DataFrame) -> dict[str, Any]:
         exit_idx = entry_idx + max_hold - 1
         exit_bar = future.loc[exit_idx]
         realized = ret_pct(float(exit_bar["Close"]), entry_price)
-        outcome = "WIN" if realized is not None and realized > 0 else "LOSS" if realized is not None and realized < 0 else "AMBIGUOUS"
+        outcome = economic_outcome(realized)
         update.update({
             "current_status": "CLOSED",
             "final_outcome": outcome,
@@ -1579,7 +1619,7 @@ def print_table(path: Path, title: str, section: str = "") -> None:
         print(f"Expired          : {int(row.get('Expired', 0))}")
         print(f"Cancelled        : {int(row.get('Cancelled', 0))}")
         print(f"Invalidated pre  : {int(row.get('Invalidated_Before_Entry', 0))}")
-        print(f"Closed Outcomes  : {int(row.get('Closed_Outcomes', row.get('Closed', 0)))}")
+        print(f"Closed Outcomes  : {int(row.get('Closed_Outcomes', row.get('Closed', 0))}")
         print(f"Win / Loss       : {int(row.get('Win', 0))} / {int(row.get('Loss', 0))}")
         print(f"Ambiguous        : {int(row.get('Ambiguous', 0))}")
         print(f"Win Rate         : {fmt(row.get('Win_Rate_Pct'), 1, '%')}")
