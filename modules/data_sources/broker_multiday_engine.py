@@ -30,6 +30,7 @@ from modules.data_sources.broker_windows import (
     BrokerDay,
     WindowFeatures,
     compute_window_features,
+    select_window_days,
 )
 
 
@@ -45,7 +46,6 @@ class MultiDayContext:
     divergence: dict[str, Any]
     persistence: dict[str, Any]
     foreign_protection: dict[str, Any]
-    # The single context bundle the Decision Engine consumes.
     broker_multiday_score: float
     broker_multiday_confidence: float
     broker_multiday_penalty: float
@@ -54,7 +54,6 @@ class MultiDayContext:
     trace: list[str] = field(default_factory=list)
 
     def to_context_dict(self) -> dict[str, Any]:
-        """The opaque context the Decision Engine ingests. No BUY/WATCH/AVOID."""
         out: dict[str, Any] = {
             "Broker_MultiDay_Score": round(self.broker_multiday_score, 4),
             "Broker_MultiDay_Confidence": round(self.broker_multiday_confidence, 2),
@@ -64,9 +63,6 @@ class MultiDayContext:
             "Broker_MultiDay_Primary_Window": self.primary_window,
             "Broker_MultiDay_Trace": " | ".join(self.trace),
         }
-        # Publish the per-window context labels used by the report contract.
-        # These remain descriptive broker context; they never become BUY/WATCH/
-        # AVOID decisions.
         for window in WINDOWS:
             classification = self.classifications.get(window)
             out[f"Broker_Context_{window}"] = (
@@ -118,7 +114,14 @@ def compute_multiday_context(
     windows: dict[str, WindowFeatures] = {}
     classifications: dict[str, ClassificationResult] = {}
     for w in WINDOWS:
-        wf = compute_window_features(days, w, current_price=current_price)
+        # Every window is anchored to the engine's market_date.  A symbol with
+        # missing 08-Aug data must not silently shift its 3D window backward.
+        wf = compute_window_features(
+            days,
+            w,
+            current_price=current_price,
+            as_of_date=market_date,
+        )
         windows[w] = wf
         classifications[w] = classify_window(wf)
 
@@ -131,14 +134,12 @@ def compute_multiday_context(
         primary_wf, window_returns_pct.get(primary_window)
     ).to_dict()
 
-    # Persistence: compare short window (3D) vs primary (5D by default).
     short_wf = windows.get("3D", primary_wf)
     persistence = compute_persistence(short_wf, primary_wf).to_dict()
 
-    # Foreign double-count protection using primary-window foreign net.
     foreign_net = sum(
         (r.get("net_value") or 0.0)
-        for r in primary_wf_rows(days, primary_window)
+        for r in primary_wf_rows(days, primary_window, market_date=market_date)
         if str(r.get("broker_type", "")).upper() == "ASING"
     )
     foreign_protection = check_foreign_double_count(
@@ -147,7 +148,6 @@ def compute_multiday_context(
         flow_origin="DERIVED_FROM_BROKER",
     ).to_dict()
 
-    # Aggregate the multi-day context bundle.
     score = primary_cls.score if primary_cls else 0.0
     confidence = primary_cls.confidence if primary_cls else 0.0
     penalty = primary_cls.penalty if primary_cls else 0.0
@@ -182,7 +182,15 @@ def compute_multiday_context(
     )
 
 
-def primary_wf_rows(days: list[BrokerDay], primary_window: str) -> list[dict[str, Any]]:
-    expected = WINDOWS.get(primary_window, 5)
-    ordered = sorted(days, key=lambda d: d.market_date)[-expected:]
-    return [r for d in ordered for r in d.rows]
+def primary_wf_rows(
+    days: list[BrokerDay],
+    primary_window: str,
+    *,
+    market_date: str | None = None,
+) -> list[dict[str, Any]]:
+    selected, _expected_dates = select_window_days(
+        days,
+        primary_window,
+        as_of_date=market_date,
+    )
+    return [r for d in selected for r in d.rows]
