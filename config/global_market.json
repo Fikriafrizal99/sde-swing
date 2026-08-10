@@ -9,7 +9,7 @@
   "retry_delay_seconds": 3,
   "request_timeout_seconds": 20,
   "cache_enabled": true,
-  "cache_max_age_minutes": 30,
+  "cache_max_age_minutes": 0,
   "minimum_sentiment_coverage_ratio": 0.5,
   "batch_fetch_enabled": true,
   "freshness": {
