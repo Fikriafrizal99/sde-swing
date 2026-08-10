@@ -53,6 +53,20 @@ def _fmt_pct(value: Any) -> str:
     return f"{sign}{number:.2f}%".replace(".", ",")
 
 
+def _compact_price(value: Any, *, anchor_price: Any = None) -> str:
+    """IDX-valid display price without thousands separators for narrow tables."""
+    return fmt_idx_price(value, anchor_price=anchor_price).replace(".", "")
+
+
+def _compact_zone(low: Any, high: Any, *, anchor_price: Any) -> str:
+    """IDX-valid entry zone in the shortest Telegram-friendly representation."""
+    return (
+        fmt_idx_zone(low, high, anchor_price=anchor_price)
+        .replace(".", "")
+        .replace("–", "-")
+    )
+
+
 def _source_plan(row: pd.Series) -> dict[str, Any]:
     raw = row.get("source_json")
     if raw is None:
@@ -105,7 +119,7 @@ def _gap_text(current: Any, low: Any, high: Any) -> str:
     if current_value is None or low_value is None or high_value is None:
         return "-"
     if low_value <= current_value <= high_value:
-        return "IN RANGE"
+        return "RANGE"
     if current_value < low_value and low_value:
         pct = (current_value / low_value - 1.0) * 100.0
     elif high_value:
@@ -116,7 +130,7 @@ def _gap_text(current: Any, low: Any, high: Any) -> str:
 
 
 def _render_table(headers: list[str], rows: list[list[str]], *, left_columns: set[int] | None = None) -> str:
-    """Render a compact fixed-width Telegram table inside one monospace block."""
+    """Render a narrow fixed-width Telegram table with single-space columns."""
     left_columns = left_columns or {0}
     normalized = [[str(cell) for cell in row] for row in rows]
     widths = [len(header) for header in headers]
@@ -131,7 +145,7 @@ def _render_table(headers: list[str], rows: list[list[str]], *, left_columns: se
                 cells.append(cell.ljust(widths[index]))
             else:
                 cells.append(cell.rjust(widths[index]))
-        return "  ".join(cells).rstrip()
+        return " ".join(cells).rstrip()
 
     output = [format_row(headers)]
     output.extend(format_row(row) for row in normalized)
@@ -157,12 +171,12 @@ def build_active_message(active: pd.DataFrame) -> str:
         entry_raw = _first_price(row.get("entry_price"), row.get("reference_price"))
         open_rows.append([
             symbol,
-            fmt_idx_price(entry_raw, anchor_price=anchor),
-            fmt_idx_price(current_raw, anchor_price=anchor),
+            _compact_price(entry_raw, anchor_price=anchor),
+            _compact_price(current_raw, anchor_price=anchor),
             _fmt_pct(row.get("simulated_return_pct")),
-            fmt_idx_price(row.get("stop_loss"), anchor_price=anchor),
-            fmt_idx_price(row.get("take_profit_1"), anchor_price=anchor),
-            fmt_idx_price(row.get("take_profit_2"), anchor_price=anchor),
+            _compact_price(row.get("stop_loss"), anchor_price=anchor),
+            _compact_price(row.get("take_profit_1"), anchor_price=anchor),
+            _compact_price(row.get("take_profit_2"), anchor_price=anchor),
             f"{_int_or_zero(row.get('age_sessions'))}D",
         ])
 
@@ -171,7 +185,7 @@ def build_active_message(active: pd.DataFrame) -> str:
             "",
             "📈 <b>ACTIVE</b>",
             "<pre>" + html.escape(_render_table(
-                ["EMITEN", "ENTRY", "NOW", "P/L", "SL", "TP1", "TP2", "AGE"],
+                ["EMT", "ENTRY", "NOW", "P/L", "SL", "TP1", "TP2", "AGE"],
                 open_rows,
             )) + "</pre>",
         ])
@@ -185,12 +199,12 @@ def build_active_message(active: pd.DataFrame) -> str:
         high = _first_price(row.get("entry_zone_high"))
         waiting_rows.append([
             symbol,
-            fmt_idx_zone(low, high, anchor_price=anchor),
-            fmt_idx_price(current_raw, anchor_price=anchor),
+            _compact_zone(low, high, anchor_price=anchor),
+            _compact_price(current_raw, anchor_price=anchor),
             _gap_text(current_raw, low, high),
-            fmt_idx_price(row.get("stop_loss"), anchor_price=anchor),
-            fmt_idx_price(row.get("take_profit_1"), anchor_price=anchor),
-            fmt_idx_price(row.get("take_profit_2"), anchor_price=anchor),
+            _compact_price(row.get("stop_loss"), anchor_price=anchor),
+            _compact_price(row.get("take_profit_1"), anchor_price=anchor),
+            _compact_price(row.get("take_profit_2"), anchor_price=anchor),
             _risk_reward(row),
             f"{_int_or_zero(row.get('age_sessions'))}D",
         ])
@@ -200,7 +214,7 @@ def build_active_message(active: pd.DataFrame) -> str:
             "",
             "⏳ <b>WAITING ENTRY</b>",
             "<pre>" + html.escape(_render_table(
-                ["EMITEN", "ENTRY", "NOW", "GAP", "SL", "TP1", "TP2", "RR", "AGE"],
+                ["EMT", "ENTRY", "NOW", "GAP", "SL", "TP1", "TP2", "RR", "AGE"],
                 waiting_rows,
                 left_columns={0},
             )) + "</pre>",
