@@ -14,6 +14,7 @@ from modules.historical_downloader.historical_downloader import (
     MISSING_ONLY,
     REPAIR_OVERLAP,
     build_refresh_plan,
+    build_result,
     group_plans_by_request,
     histories_equal,
     merge_history,
@@ -35,6 +36,8 @@ def args(**overrides: object) -> SimpleNamespace:
         "incremental_overlap_days": 5,
         "market_holiday": HOLIDAYS,
         "special_trading_day": [],
+        "market_close": "16:15",
+        "evaluation_datetime": "2026-08-04T12:00:00+07:00",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -69,12 +72,62 @@ class YahooIncrementalRefreshTests(unittest.TestCase):
         self.assertEqual(plan.download_start_date, "2026-08-04")
         self.assertEqual(plan.download_end_date, "2026-08-05")
 
-    def test_current_symbol_performs_no_request(self) -> None:
+    def test_current_symbol_performs_no_request_before_close(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             plan = self.plan(Path(temp), "BBCA", ["2026-08-04"])
         self.assertEqual(plan.refresh_action, ALREADY_CURRENT)
         self.assertEqual(plan.download_start_date, "")
         self.assertEqual(plan.download_end_date, "")
+
+    def test_current_symbol_revalidates_same_session_after_close(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            plan = self.plan(
+                Path(temp),
+                "BBCA",
+                ["2026-08-04"],
+                evaluation_datetime="2026-08-04T16:45:00+07:00",
+            )
+        self.assertEqual(plan.refresh_action, REPAIR_OVERLAP)
+        self.assertEqual(plan.download_start_date, "2026-08-04")
+        self.assertEqual(plan.download_end_date, "2026-08-05")
+        self.assertEqual(plan.refresh_reason, "LATEST_SESSION_REVALIDATION")
+
+    def test_same_date_ohlcv_revision_is_reported_updated(self) -> None:
+        existing = history("BBCA", ["2026-08-04"], [101.0])
+        fresh = history("BBCA", ["2026-08-04"], [105.0])
+        combined = merge_history(existing, fresh)
+        result = build_result(
+            "BBCA",
+            existing,
+            fresh,
+            combined,
+            date(2026, 8, 4),
+            "success",
+            True,
+            True,
+            False,
+        )
+        self.assertEqual(result.status, "UPDATED_VALID")
+        self.assertEqual(result.rows_inserted, 0)
+        self.assertEqual(result.rows_updated, 1)
+
+    def test_same_date_identical_ohlcv_remains_unchanged(self) -> None:
+        existing = history("BBCA", ["2026-08-04"], [101.0])
+        fresh = history("BBCA", ["2026-08-04"], [101.0])
+        combined = merge_history(existing, fresh)
+        result = build_result(
+            "BBCA",
+            existing,
+            fresh,
+            combined,
+            date(2026, 8, 4),
+            "success",
+            True,
+            True,
+            False,
+        )
+        self.assertEqual(result.status, "UNCHANGED_ALREADY_CURRENT")
+        self.assertEqual(result.rows_updated, 0)
 
     def test_three_missing_sessions_start_at_first_missing_session(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
