@@ -17,8 +17,8 @@ echo ================================================================
 echo              SDE SWING - BROKER OPERATIONS
 echo ================================================================
 echo.
-echo [1] Broker Summary
-echo [2] Broker Multi-Day
+echo [1] Preview Broker Summary - diagnostic, tidak kirim Telegram
+echo [2] Preview Broker Multi-Day - diagnostic, tidak kirim Telegram
 echo [3] Backfill Broker Portfolio
 echo [4] Cek status Broker Summary
 echo [5] Cek status Broker Multi-Day
@@ -36,7 +36,7 @@ goto MENU
 
 :SUMMARY
 cls
-%SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job broker_summary
+%SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job broker_summary --no-telegram
 set "RC=!ERRORLEVEL!"
 echo.
 %SDE_PYTHON_CMD% tools\print_job_status.py --job broker_summary
@@ -46,7 +46,7 @@ goto MENU
 
 :MULTIDAY
 cls
-%SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job broker_multi_day
+%SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job broker_multi_day --no-telegram
 set "RC=!ERRORLEVEL!"
 echo.
 %SDE_PYTHON_CMD% tools\print_job_status.py --job broker_multi_day
