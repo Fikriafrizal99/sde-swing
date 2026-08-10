@@ -28,7 +28,7 @@ def test_idx_price_fraction_and_snapping_match_regular_market_rules() -> None:
     assert fmt_idx_zone(1431, 1459, anchor_price=1420) == "1.435–1.455"
 
 
-def test_active_and_waiting_are_one_card_with_agreed_monospace_fields() -> None:
+def test_active_and_waiting_are_one_card_with_agreed_monospace_tables() -> None:
     active = pd.DataFrame([
         {
             "symbol": "LSIP",
@@ -63,19 +63,27 @@ def test_active_and_waiting_are_one_card_with_agreed_monospace_fields() -> None:
     assert "📌 <b>REKOMENDASI AKTIF</b>" in text
     assert "📈 <b>ACTIVE</b>" in text
     assert "⏳ <b>WAITING ENTRY</b>" in text
-    assert "LSIP | ACTIVE" in text
-    assert "Entry   1.465" in text
-    assert "P/L     +0,03%" in text
-    assert "TP1     1.525" in text
-    assert "SL      1.405" in text
-    assert "Age     4D" in text
-    assert "BAIK | WAITING" in text
-    assert "Entry   760–770" in text
-    assert "Gap     IN RANGE" in text
-    assert "RR      1:2.10" in text
+
+    # ACTIVE is one fixed-width table: one header row, one row per issuer.
+    assert "EMITEN  ENTRY    NOW     P/L" in text
+    assert "LSIP" in text
+    assert "1.465" in text
+    assert "+0,03%" in text
+    assert "1.405" in text
+    assert "1.525" in text
+    assert "1.530" in text
+    assert "4D" in text
+
+    # WAITING uses the agreed execution-focused columns.
+    assert "EMITEN      ENTRY  NOW       GAP" in text
+    assert "BAIK" in text
+    assert "760–770" in text
+    assert "IN RANGE" in text
+    assert "1:2.10" in text
     assert "Status scan" not in text
     assert "Sinyal" not in text
-    # One Telegram message/card with two monospace sections.
+
+    # Active + Waiting stay one Telegram message/card with two monospace tables.
     assert text.count("<pre>") == 2
     assert text.count("</pre>") == 2
     assert len(text) < 4000
@@ -117,6 +125,7 @@ def test_current_scale_21_recommendations_stays_one_card() -> None:
     assert "Total aktif: 21 saham" in text
     assert text.count("<pre>") == 2
     assert text.count("</pre>") == 2
+    assert text.count("EMITEN") == 2
     # tracker.send_telegram splits at 4000 raw characters; this must remain one card.
     assert len(text) < 4000
 
