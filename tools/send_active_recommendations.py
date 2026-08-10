@@ -115,6 +115,29 @@ def _gap_text(current: Any, low: Any, high: Any) -> str:
     return f"{pct:+.2f}%".replace(".", ",")
 
 
+def _render_table(headers: list[str], rows: list[list[str]], *, left_columns: set[int] | None = None) -> str:
+    """Render a compact fixed-width Telegram table inside one monospace block."""
+    left_columns = left_columns or {0}
+    normalized = [[str(cell) for cell in row] for row in rows]
+    widths = [len(header) for header in headers]
+    for row in normalized:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+
+    def format_row(row: list[str]) -> str:
+        cells: list[str] = []
+        for index, cell in enumerate(row):
+            if index in left_columns:
+                cells.append(cell.ljust(widths[index]))
+            else:
+                cells.append(cell.rjust(widths[index]))
+        return "  ".join(cells).rstrip()
+
+    output = [format_row(headers)]
+    output.extend(format_row(row) for row in normalized)
+    return "\n".join(output)
+
+
 def build_active_message(active: pd.DataFrame) -> str:
     lines = [
         "📌 <b>REKOMENDASI AKTIF</b>",
@@ -125,54 +148,63 @@ def build_active_message(active: pd.DataFrame) -> str:
         return "\n".join(lines + ["", "Belum ada rekomendasi aktif."])
 
     statuses = active["current_status"].astype(str).str.upper()
-    for status, heading in (
-        ("OPEN", "📈 <b>ACTIVE</b>"),
-        ("WAITING_TRIGGER", "⏳ <b>WAITING ENTRY</b>"),
-    ):
-        subset = active[statuses == status]
-        if subset.empty:
-            continue
-        lines.extend(["", heading])
-        section_lines: list[str] = []
 
-        for _, row in subset.iterrows():
-            symbol = str(row.get("symbol") or "").strip().upper()
-            current_raw = _first_price(row.get("current_price"))
-            anchor = _first_price(current_raw, row.get("reference_price"), row.get("entry_price"))
-            current = fmt_idx_price(current_raw, anchor_price=anchor)
+    open_rows: list[list[str]] = []
+    for _, row in active[statuses == "OPEN"].iterrows():
+        symbol = str(row.get("symbol") or "").strip().upper()
+        current_raw = _first_price(row.get("current_price"))
+        anchor = _first_price(current_raw, row.get("reference_price"), row.get("entry_price"))
+        entry_raw = _first_price(row.get("entry_price"), row.get("reference_price"))
+        open_rows.append([
+            symbol,
+            fmt_idx_price(entry_raw, anchor_price=anchor),
+            fmt_idx_price(current_raw, anchor_price=anchor),
+            _fmt_pct(row.get("simulated_return_pct")),
+            fmt_idx_price(row.get("stop_loss"), anchor_price=anchor),
+            fmt_idx_price(row.get("take_profit_1"), anchor_price=anchor),
+            fmt_idx_price(row.get("take_profit_2"), anchor_price=anchor),
+            f"{_int_or_zero(row.get('age_sessions'))}D",
+        ])
 
-            if status == "OPEN":
-                entry_raw = _first_price(row.get("entry_price"), row.get("reference_price"))
-                block = [
-                    f"{symbol} | ACTIVE",
-                    f"Entry   {fmt_idx_price(entry_raw, anchor_price=anchor)}",
-                    f"Now     {current}",
-                    f"P/L     {_fmt_pct(row.get('simulated_return_pct'))}",
-                    f"TP1     {fmt_idx_price(row.get('take_profit_1'), anchor_price=anchor)}",
-                    f"TP2     {fmt_idx_price(row.get('take_profit_2'), anchor_price=anchor)}",
-                    f"SL      {fmt_idx_price(row.get('stop_loss'), anchor_price=anchor)}",
-                    f"Age     {_int_or_zero(row.get('age_sessions'))}D",
-                ]
-            else:
-                low = _first_price(row.get("entry_zone_low"))
-                high = _first_price(row.get("entry_zone_high"))
-                block = [
-                    f"{symbol} | WAITING",
-                    f"Entry   {fmt_idx_zone(low, high, anchor_price=anchor)}",
-                    f"Now     {current}",
-                    f"Gap     {_gap_text(current_raw, low, high)}",
-                    f"SL      {fmt_idx_price(row.get('stop_loss'), anchor_price=anchor)}",
-                    f"TP1     {fmt_idx_price(row.get('take_profit_1'), anchor_price=anchor)}",
-                    f"TP2     {fmt_idx_price(row.get('take_profit_2'), anchor_price=anchor)}",
-                    f"RR      {_risk_reward(row)}",
-                    f"Age     {_int_or_zero(row.get('age_sessions'))}D",
-                ]
+    if open_rows:
+        lines.extend([
+            "",
+            "📈 <b>ACTIVE</b>",
+            "<pre>" + html.escape(_render_table(
+                ["EMITEN", "ENTRY", "NOW", "P/L", "SL", "TP1", "TP2", "AGE"],
+                open_rows,
+            )) + "</pre>",
+        ])
 
-            if section_lines:
-                section_lines.append("")
-            section_lines.extend(block)
+    waiting_rows: list[list[str]] = []
+    for _, row in active[statuses == "WAITING_TRIGGER"].iterrows():
+        symbol = str(row.get("symbol") or "").strip().upper()
+        current_raw = _first_price(row.get("current_price"))
+        anchor = _first_price(current_raw, row.get("reference_price"), row.get("entry_price"))
+        low = _first_price(row.get("entry_zone_low"))
+        high = _first_price(row.get("entry_zone_high"))
+        waiting_rows.append([
+            symbol,
+            fmt_idx_zone(low, high, anchor_price=anchor),
+            fmt_idx_price(current_raw, anchor_price=anchor),
+            _gap_text(current_raw, low, high),
+            fmt_idx_price(row.get("stop_loss"), anchor_price=anchor),
+            fmt_idx_price(row.get("take_profit_1"), anchor_price=anchor),
+            fmt_idx_price(row.get("take_profit_2"), anchor_price=anchor),
+            _risk_reward(row),
+            f"{_int_or_zero(row.get('age_sessions'))}D",
+        ])
 
-        lines.append("<pre>" + html.escape("\n".join(section_lines)) + "</pre>")
+    if waiting_rows:
+        lines.extend([
+            "",
+            "⏳ <b>WAITING ENTRY</b>",
+            "<pre>" + html.escape(_render_table(
+                ["EMITEN", "ENTRY", "NOW", "GAP", "SL", "TP1", "TP2", "RR", "AGE"],
+                waiting_rows,
+                left_columns={0},
+            )) + "</pre>",
+        ])
 
     return "\n".join(lines)
 
