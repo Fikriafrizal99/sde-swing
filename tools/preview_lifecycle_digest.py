@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-"""Read-only preview of recent lifecycle events using the live Telegram formatter.
+"""Preview recent lifecycle events and optionally resend the exact preview.
 
-This utility intentionally opens SQLite with mode=ro and never sends Telegram,
-updates telegram_notified_at, refreshes Yahoo data, or runs an engine scan.
+SQLite is always opened read-only.  The optional resend path sends the exact
+preview artifact shown to the operator and never updates telegram_notified_at,
+refreshes Yahoo data, or runs an engine scan.
 """
 
 import argparse
@@ -39,6 +40,7 @@ def _plain_preview(text: str) -> str:
 
 
 def recent_material_events(db_path: Path, limit: int) -> list[sqlite3.Row]:
+    """Return recent material events regardless of Telegram notification state."""
     event_types = sorted(tracker.MATERIAL_LIFECYCLE_EVENT_TYPES)
     placeholders = ",".join("?" for _ in event_types)
     conn = _open_read_only(db_path)
@@ -61,10 +63,34 @@ def recent_material_events(db_path: Path, limit: int) -> list[sqlite3.Row]:
     return rows
 
 
+def _write_preview(message: str, output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    message_path = output_dir / "LIFECYCLE_DIGEST_PREVIEW.txt"
+    message_path.write_text(message, encoding="utf-8")
+    return message_path
+
+
+def _confirm_resend() -> bool:
+    try:
+        answer = input("\nKirim ulang preview lifecycle ini ke Telegram? [Y/N]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nPengiriman dibatalkan.")
+        return False
+    return answer.upper() == "Y"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Preview recent lifecycle digest without mutating SQLite")
     parser.add_argument("--db", default=str(tracker.DEFAULT_DB))
     parser.add_argument("--limit", type=int, default=8)
+    parser.add_argument("--output-dir", default=str(tracker.DEFAULT_OUTPUT))
+    parser.add_argument("--telegram-config", default="config/telegram.json")
+    parser.add_argument("--scheduler-config", default="config/scheduler.json")
+    parser.add_argument(
+        "--confirm-send",
+        action="store_true",
+        help="After preview, ask whether the exact preview should be resent to Telegram",
+    )
     args = parser.parse_args()
 
     try:
@@ -74,17 +100,48 @@ def main() -> int:
         return 2
 
     if not events:
+        _write_preview("", Path(args.output_dir))
         print("Belum ada lifecycle event material untuk dipreview.")
         return 0
 
     message = build_lifecycle_message(events, max_events=len(events))
     if not message:
+        _write_preview("", Path(args.output_dir))
         print("Belum ada lifecycle event material untuk dipreview.")
         return 0
 
-    print("PREVIEW ONLY — SQLite read-only, tidak mengirim Telegram.\n")
+    message_path = _write_preview(message, Path(args.output_dir))
+
+    print("PREVIEW LIFECYCLE TERBARU — SQLite read-only.\n")
     print(_plain_preview(message))
     print(f"\nMenampilkan {len(events)} lifecycle event material terakhir.")
+    print(f"Preview tersimpan: {message_path}")
+
+    if not args.confirm_send:
+        return 0
+    if not _confirm_resend():
+        print("Preview tidak dikirim ulang.")
+        return 0
+
+    if message.count("<b>") != message.count("</b>") or message.count("<pre>") != message.count("</pre>"):
+        print("[ERROR] Lifecycle preview menghasilkan HTML Telegram yang tidak seimbang.")
+        return 2
+
+    try:
+        tracker.send_telegram(
+            message_path,
+            Path(args.telegram_config),
+            Path(args.scheduler_config),
+            False,
+        )
+    except Exception as exc:
+        print(f"[ERROR] Pengiriman ulang lifecycle gagal: {exc}")
+        return 2
+
+    print(
+        "Preview lifecycle berhasil dikirim ulang ke Telegram. "
+        "telegram_notified_at tidak diubah."
+    )
     return 0
 
 
