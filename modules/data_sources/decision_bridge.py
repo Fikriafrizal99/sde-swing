@@ -11,18 +11,15 @@ Shadow comparison evaluates alternative broker-window framings side by side so
 an operator can compare them — without any of them becoming production.
 """
 
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Callable
+from dataclasses import dataclass
+from typing import Any
 
 import pandas as pd
 
-from swing_utils import atomic_csv, write_json
 from modules.data_sources.broker_multiday_engine import (
     MultiDayContext,
     compute_multiday_context,
 )
-from modules.data_sources.broker_windows import WINDOWS
 
 # Shadow framings to compare (section T).
 SHADOW_FRAMINGS = (
@@ -84,10 +81,7 @@ def attach_multiday_context(
     *,
     symbol_col: str = "Symbol",
 ) -> BridgeResult:
-    """Left-join multi-day context onto decision rows without touching scores.
-
-    Verifies protected columns are byte-for-byte identical before and after.
-    """
+    """Left-join multi-day context onto decision rows without touching scores."""
     before = {
         c: decision_frame[c].copy() for c in PROTECTED_COLUMNS if c in decision_frame.columns
     }
@@ -108,14 +102,25 @@ def attach_multiday_context(
             if col in ctx_dict:
                 out.at[idx, col] = ctx_dict[col]
 
-    # Verify no protected column changed.
     intact = True
     for col, series in before.items():
         if not out[col].equals(series):
             intact = False
-            # Restore the original — the bridge must never mutate decisions.
             out[col] = series
     return BridgeResult(out, context_by_symbol, intact)
+
+
+def _global_market_date(broker_rows_by_symbol: dict[str, list[dict[str, Any]]]) -> str:
+    """Return one common as-of session for every symbol in the same dataset."""
+    return max(
+        (
+            str(row.get("market_date", ""))
+            for rows in broker_rows_by_symbol.values()
+            for row in rows
+            if str(row.get("market_date", "")).strip()
+        ),
+        default="",
+    )
 
 
 def build_contexts_for_symbols(
@@ -130,8 +135,11 @@ def build_contexts_for_symbols(
     returns_by_symbol = returns_by_symbol or {}
     aggregate_foreign_by_symbol = aggregate_foreign_by_symbol or {}
     out: dict[str, MultiDayContext] = {}
+    # Every symbol must be evaluated against the same latest market session.
+    # Otherwise a symbol missing today's broker row would silently move its
+    # 3D/5D window backward and appear fully covered.
+    market_date = _global_market_date(broker_rows_by_symbol)
     for symbol, rows in broker_rows_by_symbol.items():
-        market_date = max((str(r.get("market_date", "")) for r in rows), default="")
         out[symbol] = compute_multiday_context(
             symbol,
             market_date,
@@ -182,19 +190,15 @@ def run_shadow_comparison(
     current_price_by_symbol: dict[str, float] | None = None,
     returns_by_symbol: dict[str, dict[str, float]] | None = None,
 ) -> dict[str, ShadowFramingResult]:
-    """Compare broker-window framings on the SAME technical + raw inputs.
-
-    Returns a summary per framing.  Choosing a framing must never be based on
-    'produces the most BUYs' — this only reports context distributions.
-    """
+    """Compare broker-window framings on the SAME technical + raw inputs."""
     results: dict[str, ShadowFramingResult] = {}
+    market_date = _global_market_date(broker_rows_by_symbol)
     for framing in SHADOW_FRAMINGS:
         window = _framing_window(framing)
         counts: dict[str, int] = {}
         blockers = 0
         confidences: list[float] = []
         for symbol, rows in broker_rows_by_symbol.items():
-            market_date = max((str(r.get("market_date", "")) for r in rows), default="")
             if window is not None:
                 ctx = compute_multiday_context(
                     symbol, market_date, rows,
@@ -206,7 +210,6 @@ def run_shadow_comparison(
                 confidences.append(ctx.broker_multiday_confidence)
                 blockers += 1 if ctx.broker_multiday_blocker else 0
             else:
-                # Consensus: majority label across all windows.
                 ctx = compute_multiday_context(
                     symbol, market_date, rows,
                     primary_window="5D",
