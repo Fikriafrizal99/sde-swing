@@ -3,11 +3,11 @@
   "paths": {
     "normalized_watchlist": "data/input/IDX_ALL_NON_FCA.csv",
     "ihsg_csv": "data/input/IHSG.csv",
-    "historical_downloader": "modules/historical_downloader/historical_downloader.py",
+    "historical_downloader": "modules/historical_downloader/post_market_resilient_downloader.py",
     "historical_dir": "data/output/historical/by_symbol",
     "ihsg_updater": "modules/market_data/update_ihsg.py",
     "sector_rotation_output": "data/output/market/SECTOR_ROTATION.json",
-    "technical_feature_engine": "modules/technical_feature_engine/technical_feature_engine.py",
+    "technical_feature_engine": "modules/technical_feature_engine/post_market_validated_runner.py",
     "technical_output_dir": "data/output/technical",
     "candidate_selector": "modules/candidate_selector/technical_candidate_selector.py",
     "candidate_output_dir": "data/output/candidates",
