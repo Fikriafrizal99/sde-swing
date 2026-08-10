@@ -394,6 +394,35 @@ def current_candle_written_before_close(
     return modified.date() == expected_closed and modified.time() < close
 
 
+def latest_session_revalidation_needed(
+    local_latest_valid_date: str,
+    expected_closed: date,
+    evaluation_datetime: str,
+    market_close: str,
+) -> bool:
+    """Re-check today's closed Yahoo candle even when the local date already matches.
+
+    Daily OHLCV can change during the session while keeping the same Date.  A
+    post-close run therefore must not treat a matching local date as proof that
+    the row itself is current.  Before market close this stays disabled, so an
+    in-progress daily candle is never promoted to the closed-candle baseline.
+    """
+    if local_latest_valid_date != expected_closed.isoformat():
+        return False
+    try:
+        evaluated = (
+            datetime.fromisoformat(str(evaluation_datetime))
+            if str(evaluation_datetime or "").strip()
+            else datetime.now().astimezone()
+        )
+        hour, minute = (int(part) for part in str(market_close).split(":", 1))
+        close = dt_time(hour, minute)
+        evaluated_time = evaluated.time().replace(tzinfo=None)
+    except (TypeError, ValueError):
+        return False
+    return evaluated.date() == expected_closed and evaluated_time >= close
+
+
 def parse_date_text(value: str) -> date | None:
     try:
         return date.fromisoformat(str(value)[:10])
@@ -521,6 +550,12 @@ def build_refresh_plan(symbol: str, destination: Path, args: argparse.Namespace,
         modified_at,
         str(getattr(args, "market_close", "16:15") or "16:15"),
     )
+    latest_session_revalidation = latest_session_revalidation_needed(
+        local_latest,
+        expected_closed,
+        str(getattr(args, "evaluation_datetime", "") or ""),
+        str(getattr(args, "market_close", "16:15") or "16:15"),
+    )
     if current_candle_preclose:
         warning = "; ".join(
             item for item in (warning, "current_candle_written_before_market_close") if item
@@ -552,6 +587,7 @@ def build_refresh_plan(symbol: str, destination: Path, args: argparse.Namespace,
         or integrity["internal_gaps"]
         or integrity["invalid_latest_candle"]
         or current_candle_preclose
+        or latest_session_revalidation
     )
     explicit_repair = bool(getattr(args, "repair", False) or getattr(args, "force_refresh", False))
     action = classify_refresh_action(
@@ -568,7 +604,18 @@ def build_refresh_plan(symbol: str, destination: Path, args: argparse.Namespace,
     if action == MISSING_ONLY:
         download_start = first_missing
     elif action == REPAIR_OVERLAP:
-        download_start = repair_start_date(local_latest, overlap_sessions, holidays, special_trading_days)
+        same_session_only = bool(
+            latest_session_revalidation
+            and not explicit_repair
+            and not integrity["duplicate_dates"]
+            and not integrity["internal_gaps"]
+            and not integrity["invalid_latest_candle"]
+        )
+        download_start = (
+            expected_closed.isoformat()
+            if same_session_only
+            else repair_start_date(local_latest, overlap_sessions, holidays, special_trading_days)
+        )
         if integrity["internal_gaps"]:
             download_start = min(download_start, integrity["internal_gaps"][0].isoformat()) if download_start else integrity["internal_gaps"][0].isoformat()
     elif action == FULL_BACKFILL:
@@ -584,6 +631,8 @@ def build_refresh_plan(symbol: str, destination: Path, args: argparse.Namespace,
         reason = "INVALID_LATEST_CANDLE"
     elif current_candle_preclose:
         reason = "CURRENT_CANDLE_WRITTEN_BEFORE_MARKET_CLOSE"
+    elif latest_session_revalidation:
+        reason = "LATEST_SESSION_REVALIDATION"
     elif integrity["duplicate_dates"]:
         reason = "DUPLICATE_DATES"
     elif integrity["internal_gaps"]:
@@ -1077,6 +1126,8 @@ def build_result(
     latest_any_after = latest_date(combined, valid_only=False)
     partial_after = latest_partial_date(fresh)
     expected_text = expected_closed.isoformat()
+    rows_inserted, rows_updated = history_change_counts(existing, fresh)
+    content_changed = bool(rows_inserted or rows_updated or latest_valid_after != latest_before)
 
     status = "NO_DATA"
     if provider_status != "success" and combined.empty:
@@ -1084,7 +1135,7 @@ def build_result(
     elif not latest_valid_after:
         status = "NO_DATA"
     elif latest_valid_after >= expected_text:
-        status = "UPDATED_VALID" if latest_valid_after != latest_before else "UNCHANGED_ALREADY_CURRENT"
+        status = "UPDATED_VALID" if content_changed else "UNCHANGED_ALREADY_CURRENT"
     elif partial_after and partial_after >= expected_text and not allow_partial:
         status = "PARTIAL_CANDLE_IGNORED"
     elif provider_status != "success":
@@ -1094,8 +1145,6 @@ def build_result(
 
     if status not in SYMBOL_STATUSES:
         status = "FAILED"
-
-    rows_inserted, rows_updated = history_change_counts(existing, fresh)
 
     return DownloadResult(
         symbol=symbol,
