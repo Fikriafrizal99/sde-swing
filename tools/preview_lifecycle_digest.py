@@ -20,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from modules.analytics import outcome_tracker as tracker
+from tools.send_lifecycle_digest import build_lifecycle_message
 
 
 def _open_read_only(db_path: Path) -> sqlite3.Connection:
@@ -33,7 +34,7 @@ def _open_read_only(db_path: Path) -> sqlite3.Connection:
 
 
 def _plain_preview(text: str) -> str:
-    text = re.sub(r"</?b>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"</?(?:b|code|pre)>", "", text, flags=re.IGNORECASE)
     return html.unescape(text)
 
 
@@ -76,7 +77,7 @@ def main() -> int:
         print("Belum ada lifecycle event material untuk dipreview.")
         return 0
 
-    message = tracker._status_changes_telegram(events, max_events=len(events))
+    message = build_lifecycle_message(events, max_events=len(events))
     if not message:
         print("Belum ada lifecycle event material untuk dipreview.")
         return 0
