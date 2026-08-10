@@ -65,7 +65,8 @@ def test_active_and_waiting_are_one_card_with_agreed_monospace_tables() -> None:
     assert "⏳ <b>WAITING ENTRY</b>" in text
 
     # ACTIVE is one fixed-width table: one header row, one row per issuer.
-    assert "EMITEN  ENTRY    NOW     P/L" in text
+    for header in ("EMITEN", "ENTRY", "NOW", "P/L", "SL", "TP1", "TP2", "AGE"):
+        assert header in text
     assert "LSIP" in text
     assert "1.465" in text
     assert "+0,03%" in text
@@ -75,7 +76,8 @@ def test_active_and_waiting_are_one_card_with_agreed_monospace_tables() -> None:
     assert "4D" in text
 
     # WAITING uses the agreed execution-focused columns.
-    assert "EMITEN      ENTRY  NOW       GAP" in text
+    for header in ("GAP", "RR"):
+        assert header in text
     assert "BAIK" in text
     assert "760–770" in text
     assert "IN RANGE" in text
@@ -86,6 +88,7 @@ def test_active_and_waiting_are_one_card_with_agreed_monospace_tables() -> None:
     # Active + Waiting stay one Telegram message/card with two monospace tables.
     assert text.count("<pre>") == 2
     assert text.count("</pre>") == 2
+    assert text.count("EMITEN") == 2
     assert len(text) < 4000
 
 
