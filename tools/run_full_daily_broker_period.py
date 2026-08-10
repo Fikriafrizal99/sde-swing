@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+"""Full Daily orchestration without exposing Broker Summary as a daily report.
+
+Stage order intentionally keeps the existing engines separate:
+1. Post Market technical snapshot
+2. Market Outlook
+3. Final Watchlist through explicit Broker Period Bridge
+
+The Final Watchlist bridge internally runs Broker Summary -> Broker Multi-Day ->
+Decision/Exit with one lineage run ID.  Broker Summary and Broker Multi-Day are
+internal stages and are not delivered as normal Telegram reports here.
+"""
+
+import argparse
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+WIB = ZoneInfo("Asia/Jakarta")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="SDE Swing Full Daily with selectable Broker Period")
+    parser.add_argument("--config", default="config/pipeline.json")
+    parser.add_argument("--scheduler-config", default="config/scheduler.json")
+    parser.add_argument("--trade-date", default="")
+    parser.add_argument("--no-telegram", action="store_true")
+    parser.add_argument("--debug", action="store_true")
+    return parser.parse_args()
+
+
+def run(command: list[str], label: str) -> int:
+    print("\n" + "=" * 68, flush=True)
+    print(f"FULL DAILY - {label}", flush=True)
+    print("=" * 68, flush=True)
+    completed = subprocess.run(command, cwd=PROJECT_ROOT)
+    if completed.returncode != 0:
+        print(f"[FAILED] {label} exit code {completed.returncode}", flush=True)
+    return int(completed.returncode)
+
+
+def integrated_job(args: argparse.Namespace, job: str, trade_date: str) -> list[str]:
+    command = [
+        sys.executable,
+        "-u",
+        str(PROJECT_ROOT / "run_sde_job_integrated.py"),
+        "--job",
+        job,
+        "--config",
+        args.config,
+        "--scheduler-config",
+        args.scheduler_config,
+        "--trade-date",
+        trade_date,
+    ]
+    if args.no_telegram:
+        command.append("--no-telegram")
+    if args.debug:
+        command.append("--debug")
+    return command
+
+
+def final_watchlist_command(args: argparse.Namespace, trade_date: str) -> list[str]:
+    command = [
+        sys.executable,
+        "-u",
+        str(PROJECT_ROOT / "tools/run_final_watchlist_broker_period.py"),
+        "--config",
+        args.config,
+        "--scheduler-config",
+        args.scheduler_config,
+        "--trade-date",
+        trade_date,
+    ]
+    if args.no_telegram:
+        command.append("--no-telegram")
+    if args.debug:
+        command.append("--debug")
+    return command
+
+
+def main() -> int:
+    args = parse_args()
+    trade_date = args.trade_date or datetime.now(WIB).date().isoformat()
+
+    # Keep the established Full Manual sequencing: Post Market technical first,
+    # then market context, then broker/final execution.
+    rc = run(integrated_job(args, "post_market", trade_date), "POST MARKET")
+    if rc != 0:
+        return rc
+
+    rc = run(integrated_job(args, "market_outlook", trade_date), "MARKET OUTLOOK")
+    if rc != 0:
+        return rc
+
+    rc = run(final_watchlist_command(args, trade_date), "BROKER PERIOD + FINAL WATCHLIST")
+    if rc != 0:
+        return rc
+
+    print("\n" + "=" * 68)
+    print("FULL DAILY COMPLETE")
+    print("Broker Summary/Multi-Day: internal engine stages")
+    print("Final Watchlist: primary broker-period output")
+    print("=" * 68)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
