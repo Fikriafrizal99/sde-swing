@@ -28,7 +28,7 @@ echo [9] Register semua keputusan BUY mesin
 echo [10] Maintain portfolio aktual
 echo [11] Kirim lifecycle digest (status material)
 echo [12] Kirim active recommendations ke Telegram
-echo [13] Preview lifecycle digest terbaru (read-only)
+echo [13] Preview lifecycle terbaru + opsi kirim ulang
 echo [0] Kembali
 echo.
 set "PERF_CHOICE="
@@ -166,13 +166,14 @@ goto MENU
 
 :PREVIEW_LIFECYCLE
 cls
-echo Preview lifecycle digest terbaru dari SQLite.
-echo READ-ONLY: tidak refresh Yahoo, tidak scan engine, tidak kirim Telegram,
+echo Preview lifecycle material terbaru dari SQLite.
+echo SQLite read-only: tidak refresh Yahoo, tidak scan engine,
 echo dan tidak mengubah telegram_notified_at.
+echo Jika dikonfirmasi, hanya preview yang tampil ini yang dikirim ulang.
 echo.
-%SDE_PYTHON_CMD% tools\preview_lifecycle_digest.py --limit 8
+%SDE_PYTHON_CMD% tools\preview_lifecycle_digest.py --limit 8 --confirm-send
 set "RC=%ERRORLEVEL%"
 echo.
-if not "%RC%"=="0" echo Preview lifecycle gagal. Exit code %RC%.
+if not "%RC%"=="0" echo Preview/resend lifecycle gagal. Exit code %RC%.
 pause
 goto MENU
