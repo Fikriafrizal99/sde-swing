@@ -24,10 +24,6 @@ def _value(event: Mapping[str, Any], key: str, default: Any = "") -> Any:
         return default
 
 
-def _code_line(text: str) -> str:
-    return f"<code>{html.escape(text)}</code>"
-
-
 def _event_date(value: Any) -> str:
     raw = str(value or "")
     try:
@@ -59,6 +55,7 @@ def build_lifecycle_message(events: list[Mapping[str, Any]], *, max_events: int 
         "━━━━━━━━━━━━━━━━━━━",
         f"📊 <b>{len(material)} perubahan material</b>",
     ]
+    body: list[str] = []
 
     for event in material[:limit]:
         symbol = str(_value(event, "symbol") or "").strip().upper()
@@ -91,9 +88,11 @@ def build_lifecycle_message(events: list[Mapping[str, Any]], *, max_events: int 
                 block.append(f"Price     {price}")
         block.append(f"Date      {date_text}")
 
-        lines.append("")
-        lines.extend(_code_line(item) for item in block)
+        if body:
+            body.append("")
+        body.extend(block)
 
+    lines.extend(["", "<pre>" + html.escape("\n".join(body)) + "</pre>"])
     if len(material) > limit:
         lines.extend([
             "",
@@ -133,7 +132,7 @@ def main() -> int:
     if not events:
         print("Tidak ada perubahan lifecycle material. Telegram tidak dikirim.")
         return 0
-    if message.count("<b>") != message.count("</b>") or message.count("<code>") != message.count("</code>"):
+    if message.count("<b>") != message.count("</b>") or message.count("<pre>") != message.count("</pre>"):
         raise RuntimeError("Lifecycle Digest menghasilkan HTML Telegram yang tidak seimbang.")
     if args.dry_run:
         print(message)
