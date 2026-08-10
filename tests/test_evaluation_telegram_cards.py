@@ -28,7 +28,7 @@ def test_idx_price_fraction_and_snapping_match_regular_market_rules() -> None:
     assert fmt_idx_zone(1431, 1459, anchor_price=1420) == "1.435–1.455"
 
 
-def test_active_and_waiting_are_one_card_with_agreed_monospace_tables() -> None:
+def test_active_and_waiting_are_one_card_with_compact_mobile_tables() -> None:
     active = pd.DataFrame([
         {
             "symbol": "LSIP",
@@ -64,31 +64,23 @@ def test_active_and_waiting_are_one_card_with_agreed_monospace_tables() -> None:
     assert "📈 <b>ACTIVE</b>" in text
     assert "⏳ <b>WAITING ENTRY</b>" in text
 
-    # ACTIVE is one fixed-width table: one header row, one row per issuer.
-    for header in ("EMITEN", "ENTRY", "NOW", "P/L", "SL", "TP1", "TP2", "AGE"):
-        assert header in text
-    assert "LSIP" in text
-    assert "1.465" in text
-    assert "+0,03%" in text
-    assert "1.405" in text
-    assert "1.525" in text
-    assert "1.530" in text
-    assert "4D" in text
+    # ACTIVE: short headers, no thousands separators, still IDX-snapped.
+    assert "EMT ENTRY  NOW    P/L   SL  TP1  TP2 AGE" in text
+    assert "LSIP  1465 1465 +0,03% 1405 1525 1530  4D" in text
+    assert "1.465" not in text
 
-    # WAITING uses the agreed execution-focused columns.
-    for header in ("GAP", "RR"):
-        assert header in text
-    assert "BAIK" in text
-    assert "760–770" in text
-    assert "IN RANGE" in text
-    assert "1:2.10" in text
+    # WAITING: compact entry zone and RANGE label.
+    assert "EMT   ENTRY NOW   GAP  SL TP1 TP2     RR AGE" in text
+    assert "BAIK 760-770 770 RANGE 730 815 840 1:2.10  4D" in text
+    assert "IN RANGE" not in text
+    assert "760–770" not in text
     assert "Status scan" not in text
     assert "Sinyal" not in text
 
     # Active + Waiting stay one Telegram message/card with two monospace tables.
     assert text.count("<pre>") == 2
     assert text.count("</pre>") == 2
-    assert text.count("EMITEN") == 2
+    assert text.count("EMT") == 2
     assert len(text) < 4000
 
 
@@ -128,9 +120,9 @@ def test_current_scale_21_recommendations_stays_one_card() -> None:
     assert "Total aktif: 21 saham" in text
     assert text.count("<pre>") == 2
     assert text.count("</pre>") == 2
-    assert text.count("EMITEN") == 2
-    # tracker.send_telegram splits at 4000 raw characters; this must remain one card.
-    assert len(text) < 4000
+    assert text.count("EMT") == 2
+    # Compact representation should stay comfortably below the sender split limit.
+    assert len(text) < 3000
 
 
 def test_lifecycle_digest_is_a_separate_monospace_card() -> None:
