@@ -1,0 +1,428 @@
+from __future__ import annotations
+
+import html
+import json
+import math
+import re
+from typing import Any, Mapping
+
+
+_MISSING = {
+    "",
+    "nan",
+    "none",
+    "null",
+    "engine_data_not_available",
+    "data_not_available",
+    "n/a",
+}
+_SEPARATOR = "━━━━━━━━━━━━━━━━━━━━"
+
+
+def _raw(value: Any) -> str:
+    text = str(value if value is not None else "").strip()
+    return "" if text.lower() in _MISSING else text
+
+
+def _pick(row: Mapping[str, Any], *keys: str, default: Any = "") -> Any:
+    lookup = {str(key).strip().lower(): value for key, value in row.items()}
+    for key in keys:
+        value = lookup.get(str(key).strip().lower())
+        if _raw(value):
+            return value
+    return default
+
+
+def _num(value: Any) -> float | None:
+    text = _raw(value)
+    if not text:
+        return None
+    try:
+        if ":" in text:
+            text = text.rsplit(":", 1)[-1].strip()
+        return float(text.replace(",", ""))
+    except Exception:
+        return None
+
+
+def _idx_tick_size(price: float) -> float:
+    value = abs(float(price))
+    if value < 200:
+        return 1.0
+    if value < 500:
+        return 2.0
+    if value < 2_000:
+        return 5.0
+    if value < 5_000:
+        return 10.0
+    return 25.0
+
+
+def _price(value: Any, fallback: str = "N/A") -> str:
+    number = _num(value)
+    if number is None or number <= 0:
+        return fallback
+    tick = _idx_tick_size(number)
+    rounded = math.floor(number / tick + 0.5) * tick
+    return f"{rounded:,.0f}".replace(",", ".")
+
+
+def _enum(
+    value: Any,
+    fallback: str = "N/A",
+    *,
+    upper: bool = False,
+    lower: bool = False,
+) -> str:
+    text = _raw(value)
+    if not text:
+        return fallback
+    text = re.sub(r"\s+", " ", text.replace("_", " ")).strip()
+    if upper:
+        return text.upper()
+    if lower:
+        return text.lower()
+    return text
+
+
+def _score(value: Any) -> str:
+    number = _num(value)
+    return f"{number:.0f}" if number is not None else "N/A"
+
+
+def _confidence(value: Any) -> str:
+    number = _num(value)
+    if number is None:
+        return "N/A"
+    if 0 <= number <= 1:
+        number *= 100.0
+    return f"{number:.0f}%"
+
+
+def _pct(value: Any, *, concentration: bool = False) -> str:
+    number = _num(value)
+    if number is None:
+        return "N/A"
+    if concentration and abs(number) <= 1:
+        number *= 100.0
+    return f"{number:.2f}%" if concentration else f"{number:+.2f}%"
+
+
+def _money(value: Any, *, signed: bool = True) -> str:
+    number = _num(value)
+    if number is None:
+        return "N/A"
+    sign = "+" if signed and number > 0 else "-" if signed and number < 0 else ""
+    amount = abs(number)
+    if amount >= 1_000_000_000:
+        rendered = f"Rp{amount / 1_000_000_000:.2f}B"
+    elif amount >= 1_000_000:
+        rendered = f"Rp{amount / 1_000_000:.2f}Jt"
+    elif amount >= 1_000:
+        rendered = f"Rp{amount / 1_000:.2f}Rb"
+    else:
+        rendered = f"Rp{amount:,.0f}"
+    return (sign + rendered).replace(".", ",")
+
+
+def _rr(value: Any) -> str:
+    number = _num(value)
+    return f"{number:.2f}" if number is not None else "N/A"
+
+
+def _day_count(value: Any) -> str:
+    number = _num(value)
+    return str(int(round(number))) if number is not None else "N/A"
+
+
+def _participants(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw.startswith("["):
+            try:
+                value = json.loads(raw)
+            except Exception:
+                value = []
+        else:
+            value = []
+    items = list(value or []) if isinstance(value, (list, tuple)) else []
+    lines: list[str] = []
+    for index, item in enumerate(items[:3], 1):
+        if not isinstance(item, Mapping):
+            continue
+        broker = _enum(
+            item.get("broker") or item.get("code") or item.get("name"),
+            "?",
+            upper=True,
+        )
+        amount = _money(
+            item.get("value") or item.get("net_value") or item.get("amount"),
+            signed=False,
+        )
+        average = _price(
+            item.get("avg_price") or item.get("average_price") or item.get("avg")
+        )
+        details: list[str] = []
+        if amount != "N/A":
+            details.append(amount)
+        if average != "N/A":
+            details.append(f"Avg Rp{average}")
+        suffix = f" — {' | '.join(details)}" if details else ""
+        lines.append(f"{index}. {broker}{suffix}")
+    return lines or ["• Data tidak tersedia"]
+
+
+def _inside(value: float | None, low: float | None, high: float | None) -> bool:
+    return value is not None and low is not None and high is not None and low <= value <= high
+
+
+def _interpretive_reason(row: Mapping[str, Any]) -> str:
+    """Explain existing engine facts without changing any trading decision."""
+    symbol = _enum(_pick(row, "symbol", "Symbol"), "Saham", upper=True)
+    trend = _enum(
+        _pick(row, "trend", "Technical_Regime", "technical_status", "technical_state"),
+        "",
+        lower=True,
+    )
+    phase = _enum(
+        _pick(row, "phase", "execution_state", "Execution_Status"),
+        "",
+        upper=True,
+    )
+
+    current_raw = _pick(row, "last_price", "current_price", "Reference_Close")
+    low_raw = _pick(row, "entry_low", "Entry_Zone_Low")
+    high_raw = _pick(row, "entry_high", "Entry_Zone_High")
+    current, low, high = _num(current_raw), _num(low_raw), _num(high_raw)
+    current_text = _price(current_raw)
+    low_text, high_text = _price(low_raw), _price(high_raw)
+    entry_text = (
+        f"{low_text}–{high_text}"
+        if low_text != "N/A" and high_text != "N/A"
+        else "area entry"
+    )
+
+    opening = f"{symbol} {trend}" if trend else f"{symbol} punya setup teknikal aktif"
+    if _inside(current, low, high):
+        opening += f"; harga {current_text} masih di entry {entry_text}."
+    elif current is not None and high is not None and current > high:
+        opening += f"; harga {current_text} sudah di atas entry {entry_text}."
+    elif current is not None and low is not None and current < low:
+        opening += f"; harga {current_text} masih di bawah entry {entry_text}."
+    else:
+        opening += "."
+
+    broker_state = _enum(
+        _pick(row, "broker_status", "broker_signal", "Broker_Confirmation", "broker_direction"),
+        "INSUFFICIENT",
+        upper=True,
+    )
+    net_raw = _pick(row, "broker_net_flow", "net_flow", "cumulative_net_value")
+    net = _num(net_raw)
+    buy_days_raw, sell_days_raw = _pick(row, "buy_days"), _pick(row, "sell_days")
+    buy_days, sell_days = _num(buy_days_raw), _num(sell_days_raw)
+    buy_sell = (
+        f"Buy/Sell {_day_count(buy_days_raw)}/{_day_count(sell_days_raw)}"
+        if buy_days is not None and sell_days is not None
+        else ""
+    )
+
+    insufficient = any(
+        token in broker_state
+        for token in ("INSUFFICIENT", "NO DATA", "MISSING", "UNKNOWN")
+    )
+    accumulating = "ACCUM" in broker_state or broker_state in {"BUY", "BROKER CONFIRM"}
+    distributing = "DISTR" in broker_state or broker_state == "SELL"
+
+    evidence = []
+    if net is not None:
+        evidence.append(f"net {_money(net_raw)}")
+    if buy_sell:
+        evidence.append(buy_sell)
+    evidence_text = " dan ".join(evidence)
+
+    if insufficient:
+        broker_text = "Broker INSUFFICIENT: Score 0 = data belum cukup, bukan distribusi."
+        if evidence_text:
+            broker_text += f" {evidence_text} baru indikasi awal."
+    elif accumulating:
+        broker_text = f"Broker mendukung ({broker_state})"
+        if evidence_text:
+            broker_text += f": {evidence_text}"
+        if buy_days is not None and sell_days is not None and buy_days > sell_days:
+            broker_text += ", buying konsisten."
+        else:
+            broker_text += "."
+    elif distributing:
+        broker_text = f"Broker belum mendukung ({broker_state})"
+        if net is not None:
+            broker_text += f": net {_money(net_raw)}"
+        broker_text += "."
+    else:
+        broker_text = f"Broker masih {broker_state}"
+        if evidence_text:
+            broker_text += f": {evidence_text}"
+        broker_text += ", jadi konfirmasi belum kuat."
+
+    resistance_raw = _pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance")
+    resistance = _num(resistance_raw)
+    resistance_text = _price(resistance_raw)
+    waiting = any(
+        token in phase for token in ("WAIT", "NOT READY", "CONDITIONAL", "MONITOR")
+    )
+
+    if current is not None and high is not None and current > high:
+        action = f"Jangan kejar; tunggu pullback ke {entry_text} atau trigger baru."
+    elif waiting and resistance is not None:
+        if current is not None and current >= resistance:
+            action = (
+                f"Status {phase}; tunggu harga bertahan di atas resistance "
+                f"{resistance_text} sebagai konfirmasi."
+            )
+        else:
+            action = (
+                f"{phase}; resistance {resistance_text} belum lewat. "
+                f"Tunggu break dan bertahan >{resistance_text} sebelum entry."
+            )
+    elif waiting:
+        action = f"Status {phase}; tunggu trigger harga valid sebelum entry."
+    else:
+        stop = _price(_pick(row, "active_stop_loss", "stop_loss", "Initial_Stop"))
+        action = "Setup lebih siap; eksekusi tetap hanya di area entry."
+        if stop != "N/A":
+            action += f" SL {stop} adalah batas invalidasi."
+
+    text = " ".join((opening, broker_text, action))
+    text = re.sub(r"\s+", " ", text).strip()
+    return html.escape(text, quote=False)
+
+
+def _technical_status(row: Mapping[str, Any]) -> str:
+    direct = _pick(row, "technical_status", "technical_state", "Plan_Status")
+    if _raw(direct):
+        return _enum(direct, "N/A", lower=True)
+    decision = _pick(row, "decision")
+    if _raw(decision):
+        return _enum(decision, "N/A", upper=True)
+    return _enum(_pick(row, "trend"), "N/A", lower=True)
+
+
+def format_watchlist_detail(row: Mapping[str, Any]) -> str:
+    """Compact Final Watchlist card with a deterministic interpretive Reason."""
+    symbol = html.escape(
+        _enum(_pick(row, "symbol", "Symbol"), "N/A", upper=True), quote=False
+    )
+    setup = html.escape(
+        _enum(_pick(row, "setup", "Setup_Type"), "N/A", upper=True), quote=False
+    )
+    analysis_date = html.escape(
+        _enum(_pick(row, "analysis_date", "trade_date", "Trade_Date"), "N/A"),
+        quote=False,
+    )
+    current = _price(_pick(row, "last_price", "current_price", "Reference_Close"))
+    entry_low = _price(_pick(row, "entry_low", "Entry_Zone_Low"))
+    entry_high = _price(_pick(row, "entry_high", "Entry_Zone_High"))
+    stop = _price(_pick(row, "active_stop_loss", "stop_loss", "Initial_Stop"))
+    tp1 = _price(_pick(row, "target_1", "Target_1"))
+    tp2 = _price(_pick(row, "target_2", "Target_2"))
+    rr = _rr(_pick(row, "risk_reward", "Target_2_RR", "Target_1_RR"))
+    technical_status = html.escape(_technical_status(row), quote=False)
+    confidence = _confidence(_pick(row, "confidence", "Final_Score", "Final_Score_V3"))
+
+    broker_signal = html.escape(
+        _enum(
+            _pick(
+                row,
+                "broker_status",
+                "broker_signal",
+                "Broker_Confirmation",
+                "broker_direction",
+            ),
+            "INSUFFICIENT",
+            upper=True,
+        ),
+        quote=False,
+    )
+    broker_score = _score(_pick(row, "broker_score", "Broker_Score"))
+    net_flow = _money(_pick(row, "broker_net_flow", "net_flow", "cumulative_net_value"))
+    buy_days = _day_count(_pick(row, "buy_days"))
+    sell_days = _day_count(_pick(row, "sell_days"))
+    buyer_concentration = _pct(_pick(row, "buyer_concentration"), concentration=True)
+    seller_concentration = _pct(_pick(row, "seller_concentration"), concentration=True)
+    top_buy = _participants(_pick(row, "top_buyers", default=[]))
+    top_sell = _participants(_pick(row, "top_sellers", default=[]))
+    buy_cost = _price(
+        _pick(row, "bandar_buy_cost", "avg_buyer_price", "weighted_broker_buy_cost")
+    )
+    vs_cost = _pct(
+        _pick(
+            row,
+            "distance_to_buy_cost",
+            "distance_to_buyer_avg_pct",
+            "distance_to_buy_cost_pct",
+        )
+    )
+
+    trend = html.escape(
+        _enum(_pick(row, "trend", "Technical_Regime"), "N/A", lower=True),
+        quote=False,
+    )
+    phase = html.escape(
+        _enum(
+            _pick(row, "phase", "execution_state", "Execution_Status"),
+            "N/A",
+            upper=True,
+        ),
+        quote=False,
+    )
+    support = _price(_pick(row, "support", "Support_Level"))
+    resistance = _price(
+        _pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance")
+    )
+    fib_status = html.escape(
+        _enum(
+            _pick(row, "fib_status", "Fibonacci_Status", "Fib_Status"),
+            "ENGINE NOT AVAILABLE V1 7",
+            upper=True,
+        ),
+        quote=False,
+    )
+
+    lines = [
+        "<b>📈 SDE SWING — FINAL WATCHLIST</b>",
+        _SEPARATOR,
+        f"📌 <b>{symbol} | {setup}</b>",
+        f"🕒 {analysis_date}",
+        _SEPARATOR,
+        "",
+        "<b>🎯 TRADE SETUP</b>",
+        f"💰 {current} | Entry {entry_low}–{entry_high}",
+        f"🛑 SL {stop} | 🎯 TP1/TP2 {tp1} | {tp2}",
+        f"⚖️ RR 1:{rr}",
+        f"📊 {technical_status} | 🧠 Confidence {confidence}",
+        "",
+        "<b>🏦 BROKER SUMMARY</b>",
+        f"📌 {broker_signal} | Score {broker_score}/100",
+        f"💵 Net Flow {net_flow} | 📅 Buy/Sell {buy_days}/{sell_days}",
+        f"🎯 Concentration B {buyer_concentration} | S {seller_concentration}",
+        "",
+        "<b>🟢 Top Buy</b>",
+        *top_buy,
+        "",
+        "<b>🔴 Top Sell</b>",
+        *top_sell,
+        "",
+        f"💰 Buy Cost {buy_cost} | Buy Avg {vs_cost}",
+        "",
+        "<b>📌 SETUP CONTEXT</b>",
+        f"📈 {trend} | {phase}",
+        f"🟢 Support {support} | 🔴 Resistance {resistance}",
+        f"📐 Fibonacci {fib_status}",
+        "",
+        "<b>Reason:</b>",
+        _interpretive_reason(row),
+    ]
+    return "\n".join(lines).strip()
+
+
+__all__ = ["format_watchlist_detail"]
