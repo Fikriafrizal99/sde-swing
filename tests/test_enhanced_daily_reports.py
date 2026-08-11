@@ -139,10 +139,10 @@ def test_final_watchlist_uses_agreed_format_and_exports_active_rows(tmp_path: Pa
     for section in required_sections:
         assert section in text
     assert "S1 | BREAKOUT RETEST" in text
-    assert "💰 Current 103 | Entry 100–105" in text
-    assert "🛑 SL 95 | 🎯 TP1 115 | 🚀 TP2 120" in text
-    assert "1. AK — Rp1,00 miliar | Avg Rp103 | Lokal" in text
-    assert "Jarak Buy Avg +0.98%" in text
+    assert "💰 103 | Entry 100–105" in text
+    assert "🛑 SL 95 | 🎯 TP1/TP2 115 | 120" in text
+    assert "1. AK — Rp1,00B | Avg Rp103" in text
+    assert "Buy Avg +0.98%" in text
     assert "Yahoo: VALID" not in text
     assert "ZAPI IDX:" not in text
 
