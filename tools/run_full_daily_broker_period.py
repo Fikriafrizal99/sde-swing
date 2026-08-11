@@ -29,6 +29,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="config/pipeline.json")
     parser.add_argument("--scheduler-config", default="config/scheduler.json")
     parser.add_argument("--trade-date", default="")
+    parser.add_argument("--period", choices=["1D", "3D", "5D", "CUSTOM", "REUSE"], default="")
+    parser.add_argument("--custom-start", default="")
+    parser.add_argument("--timeout", type=int, default=-1)
     parser.add_argument("--no-telegram", action="store_true")
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args()
@@ -77,6 +80,12 @@ def final_watchlist_command(args: argparse.Namespace, trade_date: str) -> list[s
         "--trade-date",
         trade_date,
     ]
+    if args.period:
+        command.extend(["--period", args.period])
+    if args.custom_start:
+        command.extend(["--custom-start", args.custom_start])
+    if args.timeout >= 0:
+        command.extend(["--timeout", str(args.timeout)])
     if args.no_telegram:
         command.append("--no-telegram")
     if args.debug:

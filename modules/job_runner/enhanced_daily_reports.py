@@ -61,12 +61,23 @@ BROKER_SUMMARY_COLUMNS = [
     "trade_date", "symbol", "broker_state", "broker_score", "net_flow",
     "buy_ratio", "sell_ratio", "top_buyer", "top_seller", "broker_1d",
     "broker_3d", "broker_5d", "data_status", "source",
+    "broker_period_type", "broker_period_start", "broker_period_end",
+    "broker_trading_days", "broker_session_dates", "broker_snapshot_id",
+    "broker_period_source", "broker_coverage", "broker_session_coverage",
+    "broker_coverage_text", "broker_coverage_status", "broker_freshness_status",
 ]
 
 BROKER_MULTIDAY_COLUMNS = [
     "trade_date", "symbol", "state_1d", "state_3d", "state_5d", "state_10d",
     "state_20d", "overall_state", "broker_score", "coverage_days",
     "missing_days", "data_status", "source",
+    "broker_period_type", "broker_period_start", "broker_period_end",
+    "broker_trading_days", "broker_session_dates", "broker_snapshot_id",
+    "broker_period_source", "broker_coverage", "broker_session_coverage",
+    "broker_coverage_text", "broker_coverage_status", "broker_freshness_status",
+    "today_pulse_date", "today_pulse_snapshot_id", "today_pulse_status",
+    "today_pulse_net_flow", "today_pulse_buy_days", "today_pulse_sell_days",
+    "today_pulse_direction", "broker_alignment",
 ]
 
 
@@ -955,6 +966,13 @@ _FW_EXTRA_FINAL_COLUMNS = [
     "broker_pattern", "bandar_buy_cost", "distance_to_buy_cost",
     "multi_day_flow", "flow_persistence", "phase", "support", "resistance",
     "fib_status", "swing_high", "swing_low", "engine_final_reason",
+    "broker_period_type", "broker_period_start", "broker_period_end",
+    "broker_trading_days", "broker_session_dates", "broker_snapshot_id",
+    "broker_period_source", "broker_coverage", "broker_session_coverage",
+    "broker_coverage_text", "broker_coverage_status", "broker_freshness_status",
+    "today_pulse_date", "today_pulse_snapshot_id", "today_pulse_status",
+    "today_pulse_net_flow", "today_pulse_buy_days", "today_pulse_sell_days",
+    "today_pulse_direction",
 ]
 for _fw_column in _FW_EXTRA_FINAL_COLUMNS:
     if _fw_column not in FINAL_WATCHLIST_COLUMNS:
@@ -963,14 +981,32 @@ for _fw_column in _FW_EXTRA_FINAL_COLUMNS:
 
 def _fw_primary_multiday_map(builder):
     path = builder.output_root / "broker_multiday" / "BROKER_WINDOW_COMPARISON.csv"
+    manifest_path = builder.output_root / "broker_multiday" / "BROKER_MULTIDAY_MANIFEST.json"
+    manifest = {}
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            manifest = {}
+    primary_manifest = manifest.get("primary_context") if isinstance(manifest.get("primary_context"), dict) else {}
+    period_type = str(
+        manifest.get("broker_period_type")
+        or primary_manifest.get("broker_period_type", "")
+    ).upper()
     result = {}
-    for row in builder._read_csv_optional(path):
+    rows = builder._read_csv_optional(path)
+    target_window = period_type
+    if period_type == "CUSTOM" and not any(
+        str(_value(item, "Window", default="")).upper() == "CUSTOM" for item in rows
+    ):
+        target_window = ""
+    for row in rows:
         symbol = builder._symbol(_value(row, "Symbol", "symbol"))
         if not symbol:
             continue
         primary = str(_value(row, "Primary_Window", default="5D") or "5D").upper()
         window = str(_value(row, "Window", "window", default="")).upper()
-        if window == primary:
+        if (target_window and window == target_window) or (not target_window and window == primary):
             result[symbol] = row
     return result
 
@@ -979,9 +1015,36 @@ def _fw_raw_participant_map(builder):
     cache = getattr(builder, "_fw_raw_participant_cache", None)
     if cache is not None:
         return cache
-    path = builder.output_root.parent / "input" / "broker" / "BROKER_RAW_LATEST.csv"
+    canonical = builder.output_root.parent / "input" / "broker" / "BROKER_RAW_LATEST.csv"
+    path = canonical
+    # A multi-day PRIMARY may intentionally restore/mask the canonical raw
+    # companion before Final Watchlist.  Prefer the selected immutable raw
+    # snapshot when its manifest is active; never fall back to an unrelated
+    # stale canonical file in that case.
+    sidecars = [
+        canonical.with_suffix(".manifest.json"),
+        builder.output_root / "broker_snapshots" / "latest_selected.json",
+    ]
+    active_period = False
+    for sidecar in sidecars:
+        if not sidecar.exists():
+            continue
+        try:
+            payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict) or not payload.get("broker_period_type"):
+            continue
+        active_period = True
+        raw_text = str(payload.get("raw_snapshot_path", "")).strip()
+        selected_raw = Path(raw_text) if raw_text else None
+        path = selected_raw if selected_raw and selected_raw.exists() else None
+        break
     result = {}
     try:
+        if path is None and active_period:
+            builder._fw_raw_participant_cache = result
+            return result
         frame = _fw_read_broker_raw(path)
         if not frame.empty:
             for symbol, group in frame.groupby("SYMBOL"):
@@ -1093,6 +1156,18 @@ def _fw_enrich_watchlist_rows(self, rows):
         _fw_fill(current, sources, "swing_low", "Swing_Low", "Valid_Swing_Low")
         if not _present(current.get("trend")):
             _fw_fill(current, sources, "trend", "Trend", "Technical_Regime", "Trend_State")
+
+        for metadata_key in (
+            "broker_period_type", "broker_period_start", "broker_period_end",
+            "broker_trading_days", "broker_session_dates", "broker_snapshot_id",
+            "broker_period_source", "broker_coverage", "broker_session_coverage",
+            "broker_coverage_text", "broker_coverage_status",
+            "broker_freshness_status",
+            "today_pulse_date", "today_pulse_snapshot_id", "today_pulse_status",
+            "today_pulse_net_flow", "today_pulse_buy_days", "today_pulse_sell_days",
+            "today_pulse_direction", "broker_alignment",
+        ):
+            _fw_fill(current, sources, metadata_key, metadata_key)
 
         primary = multiday_primary.get(symbol, {})
         available = _float(_value(primary, "available_sessions", "Available_Sessions", default=0), 0.0)

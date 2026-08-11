@@ -36,14 +36,31 @@ def write_multiday_outputs(
     divergence_rows: list[dict[str, Any]] = []
     window_rows: list[dict[str, Any]] = []
 
+    first_metadata: dict[str, Any] = {}
+
     for symbol, ctx in sorted(contexts.items()):
         ctx_dict = ctx.to_context_dict()
+        period_metadata = dict(ctx.period_metadata)
+        if not first_metadata and period_metadata:
+            first_metadata = period_metadata
         provenance = {
             "Symbol": symbol,
             "Market_Date": ctx.market_date,
             "Data_Quality_Status": data_quality_status,
-            "Source": "STOCKBIT",
-            "Primary_Window": ctx.primary_window,
+            "Source": period_metadata.get("broker_period_source") or "STOCKBIT",
+            "Primary_Window": period_metadata.get("broker_period_type") or ctx.primary_window,
+            "Broker_Period_Type": period_metadata.get("broker_period_type", ""),
+            "Broker_Period_Start": period_metadata.get("broker_period_start", ""),
+            "Broker_Period_End": period_metadata.get("broker_period_end", ""),
+            "Broker_Trading_Days": period_metadata.get("broker_trading_days", ""),
+            "Broker_Session_Dates": period_metadata.get("broker_session_dates", []),
+            "Broker_Snapshot_ID": period_metadata.get("broker_snapshot_id", ""),
+            "Broker_Period_Source": period_metadata.get("broker_period_source", ""),
+            "Broker_Coverage": period_metadata.get("broker_coverage", ""),
+            "Broker_Session_Coverage": period_metadata.get("broker_session_coverage", ""),
+            "Broker_Coverage_Text": period_metadata.get("broker_coverage_text", ""),
+            "Broker_Coverage_Status": period_metadata.get("broker_coverage_status", ""),
+            "Broker_Freshness_Status": period_metadata.get("broker_freshness_status", ""),
         }
         # Detail: one row per symbol with the full context bundle.
         detail_rows.append({**provenance, **ctx_dict})
@@ -57,6 +74,8 @@ def write_multiday_outputs(
             "Penalty": round(ctx.broker_multiday_penalty, 1),
             "Blocker": ctx.broker_multiday_blocker,
             "Alignment": ctx.alignment.alignment,
+            "Broker_Period_Alignment": ctx.broker_period_alignment,
+            **ctx.today_pulse,
         })
 
         # Rotation.
@@ -107,6 +126,18 @@ def write_multiday_outputs(
         "files": {name: str(path) for name, path in paths.items()},
         "shadow_summary": shadow_summary or {},
         "contract": "MULTI_DAY_ENGINE_PRODUCES_CONTEXT_ONLY_NO_BUY_WATCH_AVOID",
+        "primary_context": first_metadata,
+        "broker_period_type": first_metadata.get("broker_period_type", ""),
+        "broker_period_start": first_metadata.get("broker_period_start", ""),
+        "broker_period_end": first_metadata.get("broker_period_end", ""),
+        "broker_trading_days": first_metadata.get("broker_trading_days", 0),
+        "broker_session_dates": first_metadata.get("broker_session_dates", []),
+        "broker_snapshot_id": first_metadata.get("broker_snapshot_id", ""),
+        "broker_period_source": first_metadata.get("broker_period_source", ""),
+        "broker_coverage": first_metadata.get("broker_coverage", 0.0),
+        "broker_freshness_status": first_metadata.get("broker_freshness_status", ""),
+        "aggregate_snapshot": str(first_metadata.get("broker_period_type", "")).upper() != "1D",
+        "daily_history_eligible": str(first_metadata.get("broker_period_type", "")).upper() == "1D",
     }
     manifest_path = out_dir / "BROKER_MULTIDAY_MANIFEST.json"
     write_json(manifest_path, manifest)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sqlite3
 import sys
 from datetime import datetime
@@ -324,29 +325,77 @@ def to_int(value: Any) -> int | None:
         return None
 
 
+_SQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _sql_identifier(value: str) -> str:
+    """Validate an internal SQLite identifier before interpolating it.
+
+    Values remain parameterized.  These helpers accept table/column names as
+    identifiers by design, so validation is the safe compatibility boundary
+    for the existing generic archive API.
+    """
+    text = str(value or "").strip()
+    if not _SQL_IDENTIFIER.fullmatch(text):
+        raise ValueError(f"UNSAFE_SQL_IDENTIFIER:{value}")
+    return text
+
+
+def _sql_identifiers(values: list[str], *, require: bool = True) -> list[str]:
+    if require and not values:
+        raise ValueError("SQL_IDENTIFIER_LIST_EMPTY")
+    return [_sql_identifier(value) for value in values]
+
+
 def upsert(conn: sqlite3.Connection, table: str, row: dict[str, Any], keys: list[str]) -> None:
-    columns = list(row)
+    table_name = _sql_identifier(table)
+    columns = _sql_identifiers(list(row))
+    conflict_keys = _sql_identifiers(keys)
     placeholders = ",".join("?" for _ in columns)
     updates = ",".join(f"{c}=excluded.{c}" for c in columns if c not in keys)
-    sql = f"INSERT INTO {table} ({','.join(columns)}) VALUES ({placeholders})"
+    sql = f"INSERT INTO {table_name} ({','.join(columns)}) VALUES ({placeholders})"
     if updates:
-        sql += f" ON CONFLICT({','.join(keys)}) DO UPDATE SET {updates}"
+        sql += f" ON CONFLICT({','.join(conflict_keys)}) DO UPDATE SET {updates}"
     else:
-        sql += f" ON CONFLICT({','.join(keys)}) DO NOTHING"
+        sql += f" ON CONFLICT({','.join(conflict_keys)}) DO NOTHING"
     conn.execute(sql, [row[c] for c in columns])
 
 
 def upsert_many(conn: sqlite3.Connection, table: str, rows: list[dict[str, Any]], keys: list[str]) -> None:
     if not rows:
         return
-    columns = list(rows[0])
+    table_name = _sql_identifier(table)
+    columns = _sql_identifiers(list(rows[0]))
+    conflict_keys = _sql_identifiers(keys)
     placeholders = ",".join("?" for _ in columns)
     updates = ",".join(f"{c}=excluded.{c}" for c in columns if c not in keys)
-    sql = f"INSERT INTO {table} ({','.join(columns)}) VALUES ({placeholders})"
+    sql = f"INSERT INTO {table_name} ({','.join(columns)}) VALUES ({placeholders})"
     if updates:
-        sql += f" ON CONFLICT({','.join(keys)}) DO UPDATE SET {updates}"
+        sql += f" ON CONFLICT({','.join(conflict_keys)}) DO UPDATE SET {updates}"
     else:
-        sql += f" ON CONFLICT({','.join(keys)}) DO NOTHING"
+        sql += f" ON CONFLICT({','.join(conflict_keys)}) DO NOTHING"
+    conn.executemany(sql, [[row.get(c) for c in columns] for row in rows])
+
+
+def insert_if_missing(conn: sqlite3.Connection, table: str, row: dict[str, Any], keys: list[str]) -> None:
+    table_name = _sql_identifier(table)
+    columns = _sql_identifiers(list(row))
+    conflict_keys = _sql_identifiers(keys)
+    placeholders = ",".join("?" for _ in columns)
+    sql = f"INSERT INTO {table_name} ({','.join(columns)}) VALUES ({placeholders})"
+    sql += f" ON CONFLICT({','.join(conflict_keys)}) DO NOTHING"
+    conn.execute(sql, [row[c] for c in columns])
+
+
+def insert_many_if_missing(conn: sqlite3.Connection, table: str, rows: list[dict[str, Any]], keys: list[str]) -> None:
+    if not rows:
+        return
+    table_name = _sql_identifier(table)
+    columns = _sql_identifiers(list(rows[0]))
+    conflict_keys = _sql_identifiers(keys)
+    placeholders = ",".join("?" for _ in columns)
+    sql = f"INSERT INTO {table_name} ({','.join(columns)}) VALUES ({placeholders})"
+    sql += f" ON CONFLICT({','.join(conflict_keys)}) DO NOTHING"
     conn.executemany(sql, [[row.get(c) for c in columns] for row in rows])
 
 
@@ -558,7 +607,7 @@ def archive_broker(conn: sqlite3.Connection, path: Path, manifest_path: Path | N
         "manifest_json": json_text(manifest),
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
-    upsert(conn, "broker_snapshots", row, ["broker_snapshot_id"])
+    insert_if_missing(conn, "broker_snapshots", row, ["broker_snapshot_id"])
 
     symbol_col = find_col(df, "EMITEN", "Symbol", "Ticker")
     status_col = find_col(df, "STATUS", "Scrape_Status", "Broker_Status")
@@ -567,9 +616,9 @@ def archive_broker(conn: sqlite3.Connection, path: Path, manifest_path: Path | N
         if not symbol:
             continue
         payload = json_text(item.where(pd.notna(item), None).to_dict())
-        upsert(conn, "broker_summary", {"broker_snapshot_id": snapshot_id, "symbol": symbol, "row_json": payload}, ["broker_snapshot_id", "symbol"])
+        insert_if_missing(conn, "broker_summary", {"broker_snapshot_id": snapshot_id, "symbol": symbol, "row_json": payload}, ["broker_snapshot_id", "symbol"])
         if status_col:
-            upsert(conn, "broker_status", {
+            insert_if_missing(conn, "broker_status", {
                 "broker_snapshot_id": snapshot_id,
                 "symbol": symbol,
                 "status": str(item.get(status_col, "")),

@@ -48,6 +48,18 @@ REQUIRED_SUMMARY_COLUMNS = {
 }
 FIXED_PERIOD_SESSIONS = {"1D": 1, "3D": 3, "5D": 5}
 PERIOD_TYPES = ("1D", "3D", "5D", "CUSTOM")
+BROKER_PERIOD_SOURCES = (
+    "STOCKBIT_1D",
+    "INTERNAL_DAILY_ROLLUP",
+    "STOCKBIT_AGGREGATE_EXPORT",
+)
+ALIGNMENT_LABELS = (
+    "ALIGNED_POSITIVE",
+    "ALIGNED_NEGATIVE",
+    "POSITIVE_DIVERGENCE",
+    "NEGATIVE_DIVERGENCE",
+    "INSUFFICIENT",
+)
 
 
 @dataclass(frozen=True)
@@ -62,6 +74,178 @@ class BrokerPeriodSpec:
         payload = asdict(self)
         payload["session_dates"] = list(self.session_dates)
         return payload
+
+
+def period_source_for(
+    period_type: str,
+    *,
+    internal_rollup: bool = False,
+    aggregate_export: bool = False,
+) -> str:
+    """Return the provenance label for the selected PRIMARY context.
+
+    The source is metadata only.  It never selects a different score formula.
+    Explicit flags win so callers can distinguish an internal rollup from a
+    Stockbit aggregate even when both cover the same sessions.
+    """
+    if internal_rollup:
+        return "INTERNAL_DAILY_ROLLUP"
+    if aggregate_export or str(period_type).strip().upper() != "1D":
+        return "STOCKBIT_AGGREGATE_EXPORT"
+    return "STOCKBIT_1D"
+
+
+def session_coverage(
+    expected_dates: Iterable[str],
+    observed_dates: Iterable[str],
+) -> dict[str, Any]:
+    """Describe exact session coverage without shifting a missing date."""
+    expected = [str(value)[:10] for value in expected_dates if str(value).strip()]
+    observed = {str(value)[:10] for value in observed_dates if str(value).strip()}
+    available = [value for value in expected if value in observed]
+    missing = [value for value in expected if value not in observed]
+    count = len(expected)
+    ratio = len(available) / count if count else 0.0
+    return {
+        "broker_coverage": round(ratio, 6),
+        "broker_session_coverage": round(ratio, 6),
+        "broker_coverage_text": f"{len(available)}/{count}",
+        "broker_available_sessions": len(available),
+        "broker_expected_sessions": count,
+        "broker_missing_session_dates": missing,
+        "broker_coverage_status": "COMPLETE" if count and not missing else "INCOMPLETE",
+    }
+
+
+def primary_context_metadata(
+    spec: BrokerPeriodSpec,
+    *,
+    snapshot_id: str = "",
+    source: str = "",
+    coverage: float | None = None,
+    observed_session_dates: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Build the stable metadata envelope carried by every PRIMARY context."""
+    source_name = str(source or period_source_for(spec.period_type)).strip().upper()
+    if source_name not in BROKER_PERIOD_SOURCES:
+        raise ValueError(f"BROKER_PERIOD_SOURCE_UNSUPPORTED:{source_name}")
+    observed = list(observed_session_dates if observed_session_dates is not None else spec.session_dates)
+    metadata: dict[str, Any] = {
+        "broker_period_type": spec.period_type,
+        "broker_period_start": spec.period_start,
+        "broker_period_end": spec.period_end,
+        "broker_trading_days": int(spec.trading_sessions),
+        "broker_session_dates": list(spec.session_dates),
+        "broker_snapshot_id": str(snapshot_id or ""),
+        "broker_period_source": source_name,
+        "broker_coverage": float(coverage) if coverage is not None else 1.0,
+    }
+    if coverage is not None:
+        metadata["broker_symbol_coverage"] = float(coverage)
+    metadata.update(session_coverage(spec.session_dates, observed))
+    if coverage is not None:
+        # ``broker_coverage`` is the symbol/export coverage.  Session coverage
+        # remains separately available so the two dimensions are not confused.
+        metadata["broker_coverage"] = float(coverage)
+    return metadata
+
+
+def primary_context_metadata_from_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a persisted snapshot/sidecar into the PRIMARY envelope."""
+    period_type = str(manifest.get("broker_period_type", "")).strip().upper()
+    session_dates = [str(item)[:10] for item in manifest.get("broker_session_dates", []) or []]
+    spec = BrokerPeriodSpec(
+        period_type=period_type,
+        period_start=str(manifest.get("broker_period_start", ""))[:10],
+        period_end=str(manifest.get("broker_period_end", ""))[:10],
+        trading_sessions=int(manifest.get("broker_trading_days", len(session_dates)) or 0),
+        session_dates=tuple(session_dates),
+    )
+    metadata = primary_context_metadata(
+        spec,
+        snapshot_id=str(manifest.get("broker_snapshot_id") or manifest.get("snapshot_id") or ""),
+        source=str(manifest.get("broker_period_source") or ""),
+        coverage=(
+            float(manifest.get("broker_coverage"))
+            if manifest.get("broker_coverage") not in (None, "")
+            else float(manifest.get("coverage_ratio", 0.0) or 0.0)
+        ),
+        observed_session_dates=manifest.get("observed_session_dates") or session_dates,
+    )
+    metadata["broker_snapshot_id"] = str(manifest.get("snapshot_id") or metadata["broker_snapshot_id"])
+    metadata["broker_freshness_status"] = str(
+        manifest.get("freshness_status") or manifest.get("broker_freshness_status") or "CURRENT"
+    ).upper()
+    return metadata
+
+
+def today_pulse_from_rows(
+    rows: Iterable[dict[str, Any]],
+    *,
+    pulse_date: str = "",
+    snapshot_id: str = "",
+) -> dict[str, Any]:
+    """Create interpretation-only metadata from the latest real 1D rows."""
+    materialized = [dict(row) for row in rows]
+    dates = sorted({str(row.get("market_date", ""))[:10] for row in materialized if str(row.get("market_date", "")).strip()})
+    selected_date = str(pulse_date or (dates[-1] if dates else ""))[:10]
+    selected = [row for row in materialized if str(row.get("market_date", ""))[:10] == selected_date]
+    if not selected:
+        return {
+            "today_pulse_date": selected_date,
+            "today_pulse_snapshot_id": str(snapshot_id or ""),
+            "today_pulse_status": "UNAVAILABLE",
+            "today_pulse_net_flow": 0.0,
+            "today_pulse_buy_days": 0,
+            "today_pulse_sell_days": 0,
+            "today_pulse_direction": "INSUFFICIENT",
+        }
+    net = 0.0
+    for row in selected:
+        try:
+            value = float(row.get("net_value") or 0.0)
+        except (TypeError, ValueError):
+            value = 0.0
+        net += value if str(row.get("side", "")).upper() == "BUY" else -abs(value)
+    direction = "POSITIVE" if net > 0 else "NEGATIVE" if net < 0 else "NEUTRAL"
+    return {
+        "today_pulse_date": selected_date,
+        "today_pulse_snapshot_id": str(snapshot_id or ""),
+        "today_pulse_status": "AVAILABLE",
+        "today_pulse_net_flow": round(net, 4),
+        "today_pulse_buy_days": 1 if net > 0 else 0,
+        "today_pulse_sell_days": 1 if net < 0 else 0,
+        "today_pulse_direction": direction,
+    }
+
+
+def primary_pulse_alignment(
+    primary_net_flow: float | None,
+    pulse_net_flow: float | None,
+    *,
+    pulse_status: str = "AVAILABLE",
+) -> str:
+    """Classify PRIMARY vs TODAY PULSE for interpretation only."""
+    if str(pulse_status or "").upper() not in {"AVAILABLE", "VALID", "CURRENT"}:
+        return "INSUFFICIENT"
+    if primary_net_flow is None or pulse_net_flow is None:
+        return "INSUFFICIENT"
+    try:
+        primary = float(primary_net_flow)
+        pulse = float(pulse_net_flow)
+    except (TypeError, ValueError):
+        return "INSUFFICIENT"
+    if primary == 0 or pulse == 0:
+        return "INSUFFICIENT"
+    if primary > 0 and pulse > 0:
+        return "ALIGNED_POSITIVE"
+    if primary < 0 and pulse < 0:
+        return "ALIGNED_NEGATIVE"
+    if primary > 0 and pulse < 0:
+        return "NEGATIVE_DIVERGENCE"
+    if primary < 0 and pulse > 0:
+        return "POSITIVE_DIVERGENCE"
+    return "INSUFFICIENT"
 
 
 def _as_date(value: Any) -> date:
@@ -400,6 +584,7 @@ def persist_snapshot(
 
     manifest = {
         "snapshot_id": snapshot_id,
+        "broker_snapshot_id": snapshot_id,
         "snapshot_state": "PENDING",
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "selected_by": selected_by,
@@ -410,19 +595,25 @@ def persist_snapshot(
         "broker_period_end": spec.period_end,
         "broker_trading_days": spec.trading_sessions,
         "broker_session_dates": list(spec.session_dates),
+        "broker_period_source": period_source_for(spec.period_type, aggregate_export=spec.period_type != "1D"),
         "freshness_status": freshness_status(spec.period_end, spec.period_end),
         "summary_source": str(summary_path.resolve()),
         "summary_source_hash": summary_source_hash,
+        "source_path": str(summary_path.resolve()),
+        "source_hash": summary_source_hash,
+        "summary_hash": summary_source_hash,
         "summary_snapshot_path": str(summary_copy.resolve()),
         "summary_snapshot_hash": file_sha256(summary_copy),
         "raw_source": str(raw_path.resolve()) if raw_path else "",
         "raw_source_hash": raw_source_hash,
+        "raw_hash": raw_source_hash,
         "raw_snapshot_path": str(raw_copy.resolve()) if raw_copy else "",
         "raw_snapshot_hash": file_sha256(raw_copy) if raw_copy else "",
         "rows": int(info.get("rows", 0) or 0),
         "matched_symbols": int(info.get("matched", 0) or 0),
         "expected_symbols": int(info.get("expected", 0) or 0),
         "coverage_ratio": float(info.get("coverage", 0.0) or 0.0),
+        "broker_coverage": float(info.get("coverage", 0.0) or 0.0),
         "missing_symbols": list(info.get("missing_symbols", []) or []),
         "unexpected_symbols": list(info.get("unexpected_symbols", []) or []),
         "aggregate_snapshot": spec.period_type != "1D",

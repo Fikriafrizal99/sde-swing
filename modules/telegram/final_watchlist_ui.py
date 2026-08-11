@@ -135,6 +135,39 @@ def _day_count(value: Any) -> str:
     return str(int(round(number))) if number is not None else "N/A"
 
 
+def _period_session_text(value: Any) -> str:
+    raw = value
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("["):
+            try:
+                raw = json.loads(text)
+            except Exception:
+                raw = [item.strip() for item in text.split(",") if item.strip()]
+        else:
+            raw = [item.strip() for item in text.split(",") if item.strip()]
+    if isinstance(raw, (list, tuple)):
+        return ", ".join(str(item)[:10] for item in raw if str(item).strip())
+    return _raw(raw)
+
+
+def _period_coverage(row: Mapping[str, Any]) -> str:
+    text = _raw(_pick(row, "broker_coverage_text", "Broker_Coverage_Text"))
+    if text:
+        return text
+    ratio = _num(_pick(row, "broker_session_coverage", "broker_coverage"))
+    expected = _num(_pick(row, "broker_trading_days", "Broker_Trading_Days"))
+    if ratio is not None and expected is not None:
+        if 0 <= ratio <= 1:
+            return f"{int(round(ratio * expected))}/{int(round(expected))}"
+        return f"{int(round(ratio))}/{int(round(expected))}"
+    return "N/A"
+
+
+def _period_is_multi(period_type: str) -> bool:
+    return bool(period_type) and period_type not in {"1D", "1DAY", "DAY"}
+
+
 def _participants(value: Any) -> list[str]:
     if isinstance(value, str):
         raw = value.strip()
@@ -292,7 +325,55 @@ def _interpretive_reason(row: Mapping[str, Any]) -> str:
         if stop != "N/A":
             action += f" SL {stop} adalah batas invalidasi."
 
-    text = " ".join((opening, broker_text, action))
+    period_type = _enum(
+        _pick(row, "broker_period_type", "Broker_Period_Type", "primary_window"),
+        "",
+        upper=True,
+    )
+    period_facts: list[str] = []
+    if period_type:
+        source = _enum(
+            _pick(row, "broker_period_source", "Broker_Period_Source", "source"),
+            "UNKNOWN",
+            upper=True,
+        )
+        start = _raw(_pick(row, "broker_period_start", "Broker_Period_Start")) or "?"
+        end = _raw(_pick(row, "broker_period_end", "Broker_Period_End")) or "?"
+        sessions = _period_session_text(
+            _pick(row, "broker_session_dates", "Broker_Session_Dates")
+        ) or "N/A"
+        snapshot = _raw(_pick(row, "broker_snapshot_id", "Broker_Snapshot_ID"))
+        snapshot_text = f" snapshot {snapshot}" if snapshot else ""
+        freshness = _enum(
+            _pick(row, "broker_freshness_status", "freshness_status"),
+            "UNKNOWN",
+            upper=True,
+        )
+        period_facts.append(
+            f"Primary {period_type} dari {source}, range {start}–{end}, "
+            f"sesi {sessions}, coverage {_period_coverage(row)}, freshness {freshness}{snapshot_text}."
+        )
+        if _period_is_multi(period_type):
+            pulse_status = _enum(
+                _pick(row, "today_pulse_status"),
+                "UNAVAILABLE",
+                upper=True,
+            )
+            pulse_date = _raw(_pick(row, "today_pulse_date")) or end
+            pulse_net = _money(_pick(row, "today_pulse_net_flow"))
+            pulse_buy = _day_count(_pick(row, "today_pulse_buy_days"))
+            pulse_sell = _day_count(_pick(row, "today_pulse_sell_days"))
+            alignment = _enum(
+                _pick(row, "broker_alignment", "Broker_Period_Alignment"),
+                "INSUFFICIENT",
+                upper=True,
+            )
+            period_facts.append(
+                f"Today Pulse {pulse_status} {pulse_date}: net {pulse_net}, "
+                f"Buy/Sell {pulse_buy}/{pulse_sell}; alignment {alignment}."
+            )
+
+    text = " ".join((opening, broker_text, action, *period_facts))
     text = re.sub(r"\s+", " ", text).strip()
     return html.escape(text, quote=False)
 
@@ -388,6 +469,69 @@ def format_watchlist_detail(row: Mapping[str, Any]) -> str:
         quote=False,
     )
 
+    period_type = _enum(
+        _pick(row, "broker_period_type", "Broker_Period_Type", "primary_window"),
+        "",
+        upper=True,
+    )
+    period_lines: list[str] = []
+    if period_type:
+        source = html.escape(
+            _enum(
+                _pick(row, "broker_period_source", "Broker_Period_Source", "source"),
+                "UNKNOWN",
+                upper=True,
+            ),
+            quote=False,
+        )
+        start = html.escape(
+            _raw(_pick(row, "broker_period_start", "Broker_Period_Start")) or "N/A",
+            quote=False,
+        )
+        end = html.escape(
+            _raw(_pick(row, "broker_period_end", "Broker_Period_End")) or "N/A",
+            quote=False,
+        )
+        session_text = html.escape(
+            _period_session_text(
+                _pick(row, "broker_session_dates", "Broker_Session_Dates")
+            ) or "N/A",
+            quote=False,
+        )
+        freshness = html.escape(
+            _enum(
+                _pick(row, "broker_freshness_status", "freshness_status"),
+                "UNKNOWN",
+                upper=True,
+            ),
+            quote=False,
+        )
+        period_lines.extend([
+            "",
+            "<b>Broker Primary Context</b>",
+            f"Primary {period_type} | {source} | {start}–{end}",
+            f"IDX sessions {session_text} | Coverage {_period_coverage(row)} | Freshness {freshness}",
+        ])
+        if _period_is_multi(period_type):
+            pulse_status = _enum(
+                _pick(row, "today_pulse_status"),
+                "UNAVAILABLE",
+                upper=True,
+            )
+            pulse_date = _raw(_pick(row, "today_pulse_date")) or end
+            pulse_net = _money(_pick(row, "today_pulse_net_flow"))
+            pulse_buy = _day_count(_pick(row, "today_pulse_buy_days"))
+            pulse_sell = _day_count(_pick(row, "today_pulse_sell_days"))
+            alignment = _enum(
+                _pick(row, "broker_alignment", "Broker_Period_Alignment"),
+                "INSUFFICIENT",
+                upper=True,
+            )
+            period_lines.append(
+                f"TODAY PULSE {pulse_status} {pulse_date} | Net {pulse_net} | "
+                f"Buy/Sell {pulse_buy}/{pulse_sell} | {alignment}"
+            )
+
     lines = [
         "<b>📈 SDE SWING — FINAL WATCHLIST</b>",
         _SEPARATOR,
@@ -422,6 +566,11 @@ def format_watchlist_detail(row: Mapping[str, Any]) -> str:
         "<b>Reason:</b>",
         _interpretive_reason(row),
     ]
+    if period_lines:
+        # Keep legacy 1.6/1.7 cards byte-for-byte compatible when no period
+        # envelope is present; enriched runs get the context card after the
+        # date header.
+        lines[5:5] = period_lines
     return "\n".join(lines).strip()
 
 

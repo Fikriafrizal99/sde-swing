@@ -1088,6 +1088,35 @@ def run_broker_fusion_from_snapshot(
     bcfg = cfg.get("broker", {})
     fusion_manifest_path = manifest_dir / f"BROKER_FUSION_MANIFEST_{ctx.run_id}.json"
     existing_manifest = read_json_safely(fusion_manifest_path)
+    # The Broker Period Bridge changes the canonical input on the same trade
+    # date.  Date-only reuse would therefore allow a previous 1D/3D/5D fusion
+    # to leak into the new PRIMARY.  Legacy runs without a period sidecar keep
+    # their historical date-only reuse compatibility; production bridge runs
+    # require the immutable source identity as well.
+    period_sidecar = read_json_safely(broker_summary.with_suffix(".manifest.json"))
+    period_sidecar_active = bool(
+        str(period_sidecar.get("snapshot_id") or period_sidecar.get("broker_snapshot_id") or "").strip()
+    )
+    canonical_summary_hash = file_sha256(broker_summary)
+    canonical_raw_hash = file_sha256(broker_raw)
+
+    def fusion_matches_period(candidate: dict[str, Any]) -> bool:
+        if str(candidate.get("broker_date", "")) != ctx.trade_date.isoformat():
+            return False
+        if not period_sidecar_active:
+            return True
+        if str(candidate.get("broker_source_hash", "")) != canonical_summary_hash:
+            return False
+        if str(candidate.get("broker_raw_source_hash", "")) != canonical_raw_hash:
+            return False
+        if str(candidate.get("broker_period_snapshot_id", "")) != str(
+            period_sidecar.get("snapshot_id") or period_sidecar.get("broker_snapshot_id") or ""
+        ):
+            return False
+        if str(candidate.get("broker_period_type", "")).upper() != str(period_sidecar.get("broker_period_type", "")).upper():
+            return False
+        return True
+
     if ctx.preview_existing and decision_source.exists():
         # Preview mode may reuse a canonical artifact produced by an earlier
         # run.  The caller validates date/config/source before allowing this
@@ -1098,7 +1127,7 @@ def run_broker_fusion_from_snapshot(
             reverse=True,
         ):
             candidate_manifest = read_json_safely(candidate_manifest_path)
-            if str(candidate_manifest.get("broker_date", "")) != ctx.trade_date.isoformat():
+            if not fusion_matches_period(candidate_manifest):
                 continue
             if str(candidate_manifest.get("output", "")) and Path(str(candidate_manifest.get("output"))).resolve() != decision_source.resolve():
                 continue
@@ -1114,7 +1143,7 @@ def run_broker_fusion_from_snapshot(
             }
     if (
         decision_source.exists()
-        and str(existing_manifest.get("broker_date", "")) == ctx.trade_date.isoformat()
+        and fusion_matches_period(existing_manifest)
     ):
         return {
             "candidate": candidate,
@@ -1134,7 +1163,7 @@ def run_broker_fusion_from_snapshot(
         dependency_manifest = read_json_safely(dependency_manifest_path) if dependency_manifest_path else {}
         if (
             decision_source.exists()
-            and str(dependency_manifest.get("broker_date", "")) == ctx.trade_date.isoformat()
+            and fusion_matches_period(dependency_manifest)
         ):
             return {
                 "candidate": candidate,
@@ -1174,6 +1203,18 @@ def run_broker_fusion_from_snapshot(
     broker_date = str(fusion_manifest.get("broker_date", ""))
     if broker_date != ctx.trade_date.isoformat():
         raise RuntimeError(f"BROKER_DATE_MISMATCH: {broker_date} != {ctx.trade_date.isoformat()}")
+    if period_sidecar_active:
+        fusion_manifest.update({
+            "broker_period_snapshot_id": period_sidecar.get("snapshot_id") or period_sidecar.get("broker_snapshot_id", ""),
+            "broker_period_type": period_sidecar.get("broker_period_type", ""),
+            "broker_period_start": period_sidecar.get("broker_period_start", ""),
+            "broker_period_end": period_sidecar.get("broker_period_end", ""),
+            "broker_period_source": period_sidecar.get("broker_period_source", ""),
+            "broker_period_summary_hash": period_sidecar.get("summary_snapshot_hash") or period_sidecar.get("summary_source_hash", ""),
+            "broker_period_raw_snapshot_hash": period_sidecar.get("raw_snapshot_hash") or period_sidecar.get("raw_source_hash", ""),
+        })
+        write_json(fusion_manifest_path, fusion_manifest)
+        write_json(decision_source.with_suffix(".manifest.json"), fusion_manifest)
     return {
         "candidate": candidate,
         "decision_source": decision_source,
@@ -1202,6 +1243,48 @@ def run_broker_multiday_stage(ctx: RunnerContext) -> dict[str, Any]:
     if not candidates:
         raise RuntimeError("BROKER_MULTI_DAY_RAW_SOURCE_NOT_FOUND")
 
+    from modules.broker_bridge.broker_period_context import (
+        BrokerPeriodSpec,
+        fixed_period_spec,
+        list_reusable_snapshots,
+        primary_context_metadata,
+        primary_context_metadata_from_manifest,
+        session_coverage,
+        today_pulse_from_rows,
+    )
+    from modules.data_sources.broker_history import (
+        connect as connect_broker_history,
+        get_trading_sessions_before,
+        init_schema as init_broker_history_schema,
+        upsert_broker_rows,
+        register_trading_sessions,
+    )
+    from modules.data_sources.broker_windows import WINDOWS
+
+    period_sidecar = read_json_safely(
+        resolve(paths.get("broker_summary_latest", "data/input/broker/BROKER_SUMMARY_LATEST.csv")).with_suffix(".manifest.json")
+    )
+    if not period_sidecar:
+        period_sidecar = read_json_safely(resolve("data/output/broker_snapshots/latest_selected.json"))
+    period_type = str(period_sidecar.get("broker_period_type") or ctx.config.get("broker", {}).get("primary_window", "5D")).upper()
+    if period_sidecar.get("broker_period_type"):
+        period_metadata = primary_context_metadata_from_manifest(period_sidecar)
+    else:
+        fallback_spec = fixed_period_spec(period_type if period_type in {"1D", "3D", "5D"} else "5D", ctx.trade_date.isoformat())
+        period_metadata = primary_context_metadata(fallback_spec)
+        period_metadata["broker_period_type"] = period_type
+
+    # Fixed windows use the existing engine labels.  CUSTOM is carried as an
+    # explicit dynamic window; it is still computed by the existing feature /
+    # classification formula over the exact IDX session list.
+    configured_window = str(ctx.config.get("broker", {}).get("primary_window", "5D")).upper()
+    if period_type in WINDOWS:
+        engine_primary_window = period_type
+    elif period_type == "CUSTOM":
+        engine_primary_window = "CUSTOM"
+    else:
+        engine_primary_window = configured_window if configured_window in WINDOWS else "5D"
+
     # Pick the newest complete capture for each market date.  Multiple browser
     # captures of one date must never be merged as if they were separate days.
     selected: dict[str, tuple[Path, pd.DataFrame]] = {}
@@ -1217,61 +1300,131 @@ def run_broker_multiday_stage(ctx: RunnerContext) -> dict[str, Any]:
         dates = [item for item in dates if item <= ctx.trade_date.isoformat()]
         if not dates:
             continue
-        market_date = max(dates)
-        if market_date not in selected:
-            selected[market_date] = (path, frame)
+        from_col = find_col(frame, "FROM_DATE", "From_Date")
+        to_col = find_col(frame, "TO_DATE", "Market_Date", "Date")
+        # Aggregate Stockbit raw exports are valid primary companions, but
+        # they are never eligible for daily history.  Only a frame whose every
+        # valid row is one real session can enter the rolling source.
+        if from_col is None or to_col is None:
+            continue
+        from_values = pd.to_datetime(frame[from_col], errors="coerce")
+        to_values = pd.to_datetime(frame[to_col], errors="coerce")
+        valid_range = from_values.notna() & to_values.notna()
+        if not valid_range.any() or not (from_values[valid_range].dt.date == to_values[valid_range].dt.date).all():
+            continue
+        for market_date in sorted(set(dates)):
+            if market_date not in selected:
+                selected[market_date] = (path, frame)
 
     if not selected:
         raise RuntimeError("BROKER_MULTI_DAY_MARKET_DATE_NOT_FOUND")
 
+    # Normalize accepted 1D captures into the immutable daily store.  The
+    # aggregate export path was filtered above and therefore cannot be split
+    # into synthetic dates here.
+    history_db = resolve(paths.get("broker_history_db", "data/database/broker_multiday.db"))
+    history_conn = connect_broker_history(history_db)
+    init_broker_history_schema(history_conn)
+    try:
+        for _market_date, (_path, frame) in sorted(selected.items()):
+            symbol_col = find_col(frame, "SYMBOL", "EMITEN", "Ticker", "Symbol")
+            date_col = find_col(frame, "TO_DATE", "Market_Date", "Date")
+            if symbol_col is None or date_col is None:
+                continue
+            parsed_dates = pd.to_datetime(frame[date_col], errors="coerce").dt.date.astype(str)
+            daily_rows: list[dict[str, Any]] = []
+            for raw in frame.loc[parsed_dates.eq(_market_date)].to_dict(orient="records"):
+                symbol = str(raw.get(symbol_col, "")).strip().upper().replace(".JK", "")
+                parsed_market_date = pd.to_datetime(raw.get(date_col), errors="coerce")
+                if pd.isna(parsed_market_date):
+                    continue
+                market_date = parsed_market_date.date().isoformat()
+                if not symbol or market_date > ctx.trade_date.isoformat():
+                    continue
+
+                def number(*aliases: str) -> float | None:
+                    column = find_col(frame, *aliases)
+                    try:
+                        return float(raw.get(column)) if column and raw.get(column) not in (None, "") else None
+                    except (TypeError, ValueError):
+                        return None
+
+                row = {
+                    "symbol": symbol,
+                    "market_date": market_date,
+                    "broker_code": str(raw.get(find_col(frame, "BROKER_CODE", "Broker_Code") or "", "")).upper(),
+                    "broker_type": str(raw.get(find_col(frame, "BROKER_TYPE", "Broker_Type") or "", "UNKNOWN")).upper(),
+                    "side": str(raw.get(find_col(frame, "SIDE", "Side") or "", "")).upper(),
+                    "net_value": number("NET_VALUE", "Net_Value"),
+                    "net_lot": number("NET_LOT", "Net_Lot"),
+                    "gross_value": number("GROSS_VALUE", "Gross_Value"),
+                    "gross_lot": number("GROSS_LOT", "Gross_Lot"),
+                    "frequency": number("FREQUENCY", "Frequency"),
+                    "avg_price": number("AVG_PRICE", "Avg_Price"),
+                    "rank": number("RANK", "Rank"),
+                    "source": "STOCKBIT",
+                    "quality_status": "VALIDATED",
+                    "received_at": now_wib().isoformat(),
+                    "capture_id": file_sha256(_path),
+                }
+                if row["broker_code"] and row["side"] in {"BUY", "SELL"}:
+                    daily_rows.append(row)
+            if daily_rows:
+                upsert_broker_rows(history_conn, daily_rows)
+                register_trading_sessions(history_conn, [_market_date])
+
+        history_rows = history_conn.execute(
+            "SELECT * FROM broker_daily WHERE market_date <= ? ORDER BY market_date, symbol, side, rank",
+            (ctx.trade_date.isoformat(),),
+        ).fetchall()
+        normalized_history = [dict(row) for row in history_rows]
+        history_sessions = get_trading_sessions_before(history_conn, ctx.trade_date.isoformat(), limit=120)
+    finally:
+        history_conn.close()
+
+    if not normalized_history:
+        raise RuntimeError("BROKER_MULTI_DAY_ROWS_EMPTY")
+
     rows_by_symbol: dict[str, list[dict[str, Any]]] = {}
-    for _market_date, (_path, frame) in sorted(selected.items()):
-        symbol_col = find_col(frame, "SYMBOL", "EMITEN", "Ticker", "Symbol")
-        date_col = find_col(frame, "TO_DATE", "Market_Date", "Date")
-        if symbol_col is None or date_col is None:
-            continue
-        parsed_dates = pd.to_datetime(frame[date_col], errors="coerce").dt.date.astype(str)
-        frame = frame.loc[parsed_dates.eq(_market_date)].copy()
-        for raw in frame.to_dict(orient="records"):
-            symbol = str(raw.get(symbol_col, "")).strip().upper().replace(".JK", "")
-            parsed_market_date = pd.to_datetime(raw.get(date_col), errors="coerce")
-            if pd.isna(parsed_market_date):
-                continue
-            market_date = parsed_market_date.date().isoformat()
-            if not symbol or market_date > ctx.trade_date.isoformat():
-                continue
-            def number(*aliases: str) -> float | None:
-                column = find_col(frame, *aliases)
-                try:
-                    return float(raw.get(column)) if column and raw.get(column) not in (None, "") else None
-                except (TypeError, ValueError):
-                    return None
-            row = {
-                "symbol": symbol,
-                "market_date": market_date,
-                "broker_code": str(raw.get(find_col(frame, "BROKER_CODE", "Broker_Code") or "", "")).upper(),
-                "broker_type": str(raw.get(find_col(frame, "BROKER_TYPE", "Broker_Type") or "", "UNKNOWN")).upper(),
-                "side": str(raw.get(find_col(frame, "SIDE", "Side") or "", "")).upper(),
-                "net_value": number("NET_VALUE", "Net_Value"),
-                "net_lot": number("NET_LOT", "Net_Lot"),
-                "gross_value": number("GROSS_VALUE", "Gross_Value"),
-                "gross_lot": number("GROSS_LOT", "Gross_Lot"),
-                "frequency": number("FREQUENCY", "Frequency"),
-                "avg_price": number("AVG_PRICE", "Avg_Price"),
-                "rank": number("RANK", "Rank"),
-            }
+    for row in normalized_history:
+        symbol = str(row.get("symbol", "")).strip().upper()
+        if symbol:
             rows_by_symbol.setdefault(symbol, []).append(row)
 
-    if not rows_by_symbol:
-        raise RuntimeError("BROKER_MULTI_DAY_ROWS_EMPTY")
+    expected_period_dates = [str(value)[:10] for value in period_metadata.get("broker_session_dates", []) or []]
+    period_metadata.update(session_coverage(expected_period_dates, history_sessions))
+    period_metadata["broker_rollup_source"] = "INTERNAL_DAILY_ROLLUP"
+    pulse_snapshot_id = ""
+    if period_type == "1D":
+        pulse_snapshot_id = str(period_metadata.get("broker_snapshot_id", ""))
+    else:
+        snapshot_root = resolve("data/output/broker_snapshots")
+        for candidate_manifest in list_reusable_snapshots(ctx.trade_date.isoformat(), snapshot_root=snapshot_root):
+            if str(candidate_manifest.get("broker_period_type", "")).upper() == "1D":
+                pulse_snapshot_id = str(candidate_manifest.get("snapshot_id", ""))
+                break
+    today_pulse_by_symbol = {
+        symbol: today_pulse_from_rows(
+            rows if period_type == "1D" or pulse_snapshot_id else [],
+            pulse_date=ctx.trade_date.isoformat(),
+            snapshot_id=pulse_snapshot_id,
+        )
+        for symbol, rows in rows_by_symbol.items()
+    }
+
     contexts = build_contexts_for_symbols(
         rows_by_symbol,
-        primary_window=str(ctx.config.get("broker", {}).get("primary_window", "5D")),
+        primary_window=engine_primary_window,
         as_of_date=ctx.trade_date.isoformat(),
+        period_metadata=period_metadata,
+        today_pulse_by_symbol=today_pulse_by_symbol,
     )
     output_dir = resolve(paths.get("broker_multiday_output_dir", "data/output/broker_multiday"))
-    minimum_sessions = int(ctx.config.get("broker", {}).get("minimum_multiday_sessions", 20))
-    data_quality_status = "VALID" if len(selected) >= minimum_sessions else "INSUFFICIENT_HISTORY"
+    minimum_sessions = max(1, int(period_metadata.get("broker_trading_days", 0) or 0))
+    available_period_sessions = len(
+        set(expected_period_dates) & set(history_sessions)
+    ) if expected_period_dates else len(history_sessions)
+    data_quality_status = "VALID" if available_period_sessions == minimum_sessions else "INCOMPLETE"
     outputs = write_multiday_outputs(
         contexts,
         output_dir=output_dir,

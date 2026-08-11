@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -112,6 +113,84 @@ def _final_watchlist_reason(raw: dict[str, Any]) -> Any:
 
 def _coverage(valid: int, requested: int) -> float:
     return round((valid / requested * 100.0), 1) if requested > 0 else 0.0
+
+
+def _broker_period_metadata(
+    ctx: RunnerContext,
+    *,
+    multiday_manifest: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Load the active Broker Period envelope for presentation lineage.
+
+    The active sidecar is preferred over the output manifest because it is
+    written before the dependent stages run.  Older runs may only have the
+    multi-day manifest, so the lookup remains additive/backward compatible.
+    This helper never supplies a score or decision value.
+    """
+    candidates = [
+        ctx.path("broker_summary_latest", "data/input/broker/BROKER_SUMMARY_LATEST.csv").with_suffix(".manifest.json"),
+        resolve("data/output/broker_snapshots/latest_selected.json"),
+    ]
+    if multiday_manifest:
+        candidates.append(
+            ctx.path("broker_multiday_output_dir", "data/output/broker_multiday")
+            / "BROKER_MULTIDAY_MANIFEST.json"
+        )
+    selected: dict[str, Any] = {}
+    for path in candidates:
+        if not path.exists():
+            continue
+        payload = read_json(path)
+        if not isinstance(payload, dict):
+            continue
+        period_end = str(
+            payload.get("broker_period_end")
+            or payload.get("to_date")
+            or payload.get("broker_date")
+            or ""
+        )[:10]
+        if period_end and period_end != ctx.trade_date.isoformat():
+            continue
+        if payload.get("broker_period_type") or payload.get("period_type"):
+            selected = payload
+            break
+
+    if not selected and isinstance(multiday_manifest, Mapping):
+        selected = dict(multiday_manifest)
+    if not selected:
+        return {}
+
+    session_dates = _value(
+        selected,
+        "broker_session_dates",
+        "Broker_Session_Dates",
+        "session_dates",
+        default=[],
+    )
+    if isinstance(session_dates, str):
+        try:
+            parsed = json.loads(session_dates)
+            session_dates = parsed if isinstance(parsed, list) else [session_dates]
+        except Exception:
+            session_dates = [item.strip() for item in session_dates.split(",") if item.strip()]
+    if not isinstance(session_dates, (list, tuple)):
+        session_dates = []
+
+    normalized = {
+        "broker_period_type": str(_value(selected, "broker_period_type", "Broker_Period_Type", "period_type", default="")).upper(),
+        "broker_period_start": str(_value(selected, "broker_period_start", "Broker_Period_Start", "from_date", default=""))[:10],
+        "broker_period_end": str(_value(selected, "broker_period_end", "Broker_Period_End", "to_date", "broker_date", default=""))[:10],
+        "broker_trading_days": _value(selected, "broker_trading_days", "Broker_Trading_Days", "trading_sessions", default=""),
+        "broker_session_dates": [str(item)[:10] for item in session_dates if str(item).strip()],
+        "broker_snapshot_id": _value(selected, "broker_snapshot_id", "snapshot_id", "Broker_Snapshot_ID", default=""),
+        "broker_period_source": str(_value(selected, "broker_period_source", "Broker_Period_Source", "source", default="")).upper(),
+        "broker_coverage": _value(selected, "broker_coverage", "Broker_Coverage", "coverage_ratio", "coverage", default=""),
+        "broker_session_coverage": _value(selected, "broker_session_coverage", "Broker_Session_Coverage", default=""),
+        "broker_coverage_text": _value(selected, "broker_coverage_text", "Broker_Coverage_Text", default=""),
+        "broker_coverage_status": _value(selected, "broker_coverage_status", "Broker_Coverage_Status", "data_quality_status", default=""),
+        "broker_freshness_status": str(_value(selected, "broker_freshness_status", "freshness_status", default="")).upper(),
+    }
+    return {key: value for key, value in normalized.items() if value not in ("", [], {})}
 
 
 def _artifact_payload(artifact: DailyReportArtifact) -> ReportPayload:
@@ -345,10 +424,11 @@ def _broker_summary_rows(ctx: RunnerContext) -> tuple[list[dict[str, Any]], dict
     source = ctx.path("broker_summary_engine", "data/input/FINAL_DECISION_V2.csv")
     frame = read_required_csv(source, "broker_summary")
     validation = validate_broker_summary_source(frame, source)
+    period_metadata = _broker_period_metadata(ctx)
     rows: list[dict[str, Any]] = []
     for raw in frame.to_dict(orient="records"):
         state = str(_value(raw, "Broker_Confirmation", "broker_state", "Broker_Direction_Final", "Broker_Direction", default="")).upper()
-        rows.append({
+        rows.append({**period_metadata,
             "trade_date": ctx.trade_date.isoformat(),
             "symbol": _symbol(_value(raw, "Symbol", "EMITEN", "Ticker")),
             "broker_state": state,
@@ -369,6 +449,7 @@ def _broker_summary_rows(ctx: RunnerContext) -> tuple[list[dict[str, Any]], dict
 
 def broker_summary_payloads(ctx: RunnerContext) -> list[ReportPayload]:
     rows, validation, source = _broker_summary_rows(ctx)
+    period_metadata = _broker_period_metadata(ctx)
     counts = {
         "accumulation_count": sum("ACC" in str(row["broker_state"]).upper() for row in rows),
         "distribution_count": sum("DIST" in str(row["broker_state"]).upper() for row in rows),
@@ -378,6 +459,7 @@ def broker_summary_payloads(ctx: RunnerContext) -> list[ReportPayload]:
     valid = len(rows) - counts["no_data_count"]
     data = {
         "trade_date": ctx.trade_date.isoformat(),
+        **period_metadata,
         "process_status": "SUCCESS" if valid > 0 else "PARTIAL",
         **counts,
         "rows": rows,
@@ -436,6 +518,7 @@ def _multiday_rows(ctx: RunnerContext) -> tuple[list[dict[str, Any]], dict[str, 
         "summary": validate_broker_multiday_source(frame, summary_path),
         "detail": validate_broker_multiday_source(detail, detail_path),
     }
+    period_metadata = _broker_period_metadata(ctx, multiday_manifest=multiday_manifest)
     detail_map = {
         _symbol(_value(raw, "Symbol", "EMITEN", "Ticker")): raw
         for raw in detail.to_dict(orient="records")
@@ -458,7 +541,11 @@ def _multiday_rows(ctx: RunnerContext) -> tuple[list[dict[str, Any]], dict[str, 
     for raw in frame.to_dict(orient="records"):
         symbol = _symbol(_value(raw, "symbol", "emiten", "ticker"))
         detail_row = detail_map.get(symbol, {})
-        rows.append({
+        row_period = {
+            key: _value(detail_row, key, default=value)
+            for key, value in period_metadata.items()
+        }
+        rows.append({**row_period,
             "trade_date": ctx.trade_date.isoformat(),
             "symbol": symbol,
             "state_1d": _value(detail_row, "Broker_Context_1D", "state_1d", default=""),
@@ -472,15 +559,26 @@ def _multiday_rows(ctx: RunnerContext) -> tuple[list[dict[str, Any]], dict[str, 
             "missing_days": _value(raw, "missing_days", "Missing_Days", default=""),
             "data_status": _value(raw, "Data_Quality_Status", "data_status", default=""),
             "source": _value(raw, "Source", "source", default="BROKER_MULTIDAY_ENGINE"),
+            "today_pulse_date": _value(detail_row, "today_pulse_date", default=""),
+            "today_pulse_snapshot_id": _value(detail_row, "today_pulse_snapshot_id", default=""),
+            "today_pulse_status": _value(detail_row, "today_pulse_status", default=""),
+            "today_pulse_net_flow": _value(detail_row, "today_pulse_net_flow", default=""),
+            "today_pulse_buy_days": _value(detail_row, "today_pulse_buy_days", default=""),
+            "today_pulse_sell_days": _value(detail_row, "today_pulse_sell_days", default=""),
+            "today_pulse_direction": _value(detail_row, "today_pulse_direction", default=""),
+            "broker_alignment": _value(detail_row, "broker_alignment", "Broker_Period_Alignment", default=""),
         })
     validation["manifest"] = multiday_manifest
+    validation["period_metadata"] = period_metadata
     return [row for row in rows if row["symbol"]], validation, (summary_path, detail_path, manifest_path)
 
 
 def broker_multiday_payloads(ctx: RunnerContext) -> list[ReportPayload]:
     rows, validation, paths = _multiday_rows(ctx)
+    period_metadata = validation.get("period_metadata", {})
     data = {
         "trade_date": ctx.trade_date.isoformat(),
+        **period_metadata,
         "process_status": "SUCCESS" if rows else "PARTIAL",
         "rows": rows,
         "top_accumulation": [row for row in rows if "ACC" in str(row["overall_state"]).upper()][:3],
@@ -523,6 +621,7 @@ def _final_watchlist_multiday_map(ctx: RunnerContext) -> dict[str, dict[str, Any
     window_path = output_dir / "BROKER_WINDOW_COMPARISON.csv"
     summary_path = output_dir / "BROKER_MULTIDAY_SUMMARY.csv"
     detail_path = output_dir / "BROKER_MULTIDAY_DETAIL.csv"
+    manifest_path = output_dir / "BROKER_MULTIDAY_MANIFEST.json"
     if not window_path.exists() or not summary_path.exists():
         return {}
     try:
@@ -531,6 +630,24 @@ def _final_watchlist_multiday_map(ctx: RunnerContext) -> dict[str, dict[str, Any
         details = pd.read_csv(detail_path, low_memory=False) if detail_path.exists() else pd.DataFrame()
     except Exception:
         return {}
+    multiday_manifest = read_json(manifest_path) if manifest_path.exists() else {}
+    period_metadata = _broker_period_metadata(ctx, multiday_manifest=multiday_manifest)
+    period_type = str(period_metadata.get("broker_period_type", "")).upper()
+    configured_window = str(ctx.config.get("broker", {}).get("primary_window", "5D")).upper()
+    if period_type in {"1D", "3D", "5D", "10D", "20D", "CUSTOM"}:
+        target_window = period_type
+        if period_type == "CUSTOM":
+            # CUSTOM is represented explicitly when the engine supports the
+            # requested session count; old output falls back to the configured
+            # comparison row without changing the selected provenance.
+            target_window = "CUSTOM"
+            if not any(
+                str(_value(item, "Window", default="")).upper() == "CUSTOM"
+                for item in windows.to_dict(orient="records")
+            ):
+                target_window = configured_window if configured_window in {"1D", "3D", "5D", "10D", "20D"} else "5D"
+    else:
+        target_window = ""
 
     summary_map = {
         _symbol(_value(row, "Symbol", "EMITEN", "Ticker")): row
@@ -550,7 +667,8 @@ def _final_watchlist_multiday_map(ctx: RunnerContext) -> dict[str, dict[str, Any
             continue
         primary = str(_value(row, "Primary_Window", default="5D") or "5D").upper()
         window = str(_value(row, "Window", default="")).upper()
-        if window != primary:
+        expected_window = target_window or primary
+        if window != expected_window:
             continue
         summary = summary_map.get(symbol, {})
         detail = detail_map.get(symbol, {})
@@ -569,8 +687,19 @@ def _final_watchlist_multiday_map(ctx: RunnerContext) -> dict[str, dict[str, Any
             persistence = str(_value(detail, persistence_alias, default="")).upper()
             if persistence in placeholders:
                 persistence = classification
+        def period_value(key: str) -> Any:
+            return _value(
+                row,
+                key,
+                default=_value(
+                    detail,
+                    key,
+                    default=_value(summary, key, default=period_metadata.get(key, "")),
+                ),
+            )
+
         result[symbol] = {
-            "primary_window": primary,
+            "primary_window": str(period_value("broker_period_type") or primary).upper(),
             "broker_status": classification,
             # The summary Confidence is 0-100; the signed classification Score
             # is intentionally not displayed as a /100 score.
@@ -585,6 +714,31 @@ def _final_watchlist_multiday_map(ctx: RunnerContext) -> dict[str, dict[str, Any
             "distance_to_buy_cost": _value(row, "distance_to_buy_cost_pct", "Distance_To_Buy_Cost_Pct", default=""),
             "multi_day_flow": classification,
             "flow_persistence": persistence,
+            "broker_period_type": period_value("broker_period_type"),
+            "broker_period_start": period_value("broker_period_start"),
+            "broker_period_end": period_value("broker_period_end"),
+            "broker_trading_days": period_value("broker_trading_days"),
+            "broker_session_dates": period_value("broker_session_dates"),
+            "broker_snapshot_id": period_value("broker_snapshot_id"),
+            "broker_period_source": period_value("broker_period_source"),
+            "broker_coverage": period_value("broker_coverage"),
+            "broker_session_coverage": period_value("broker_session_coverage"),
+            "broker_coverage_text": period_value("broker_coverage_text"),
+            "broker_coverage_status": period_value("broker_coverage_status"),
+            "broker_freshness_status": period_value("broker_freshness_status"),
+            "today_pulse_date": _value(detail, "today_pulse_date", default=""),
+            "today_pulse_snapshot_id": _value(detail, "today_pulse_snapshot_id", default=""),
+            "today_pulse_status": _value(detail, "today_pulse_status", default=""),
+            "today_pulse_net_flow": _value(detail, "today_pulse_net_flow", default=""),
+            "today_pulse_buy_days": _value(detail, "today_pulse_buy_days", default=""),
+            "today_pulse_sell_days": _value(detail, "today_pulse_sell_days", default=""),
+            "today_pulse_direction": _value(detail, "today_pulse_direction", default=""),
+            "broker_alignment": _value(
+                detail,
+                "broker_alignment",
+                "Broker_Period_Alignment",
+                default="",
+            ),
         }
     return result
 
@@ -617,6 +771,7 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
         coverage *= 100
     zapi_summary, zapi_rows, zapi_inputs = _zapi_lineage(ctx)
     multiday_map = _final_watchlist_multiday_map(ctx)
+    global_period_metadata = _broker_period_metadata(ctx)
     rows: list[dict[str, Any]] = []
     for index, raw in enumerate(decisions.to_dict(orient="records"), start=1):
         symbol = _symbol(_value(raw, "Symbol", "EMITEN", "Ticker"))
@@ -680,6 +835,26 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             "distance_to_buy_cost": _final_watchlist_distance(multiday, raw),
             "multi_day_flow": multiday.get("multi_day_flow", ""),
             "flow_persistence": multiday.get("flow_persistence", ""),
+            "broker_period_type": multiday.get("broker_period_type", global_period_metadata.get("broker_period_type", "")),
+            "broker_period_start": multiday.get("broker_period_start", global_period_metadata.get("broker_period_start", "")),
+            "broker_period_end": multiday.get("broker_period_end", global_period_metadata.get("broker_period_end", "")),
+            "broker_trading_days": multiday.get("broker_trading_days", global_period_metadata.get("broker_trading_days", "")),
+            "broker_session_dates": multiday.get("broker_session_dates", global_period_metadata.get("broker_session_dates", [])),
+            "broker_snapshot_id": multiday.get("broker_snapshot_id", global_period_metadata.get("broker_snapshot_id", "")),
+            "broker_period_source": multiday.get("broker_period_source", global_period_metadata.get("broker_period_source", "")),
+            "broker_coverage": multiday.get("broker_coverage", global_period_metadata.get("broker_coverage", "")),
+            "broker_session_coverage": multiday.get("broker_session_coverage", global_period_metadata.get("broker_session_coverage", "")),
+            "broker_coverage_text": multiday.get("broker_coverage_text", global_period_metadata.get("broker_coverage_text", "")),
+            "broker_coverage_status": multiday.get("broker_coverage_status", global_period_metadata.get("broker_coverage_status", "")),
+            "broker_freshness_status": multiday.get("broker_freshness_status", global_period_metadata.get("broker_freshness_status", "")),
+            "today_pulse_date": multiday.get("today_pulse_date", ""),
+            "today_pulse_snapshot_id": multiday.get("today_pulse_snapshot_id", ""),
+            "today_pulse_status": multiday.get("today_pulse_status", ""),
+            "today_pulse_net_flow": multiday.get("today_pulse_net_flow", ""),
+            "today_pulse_buy_days": multiday.get("today_pulse_buy_days", ""),
+            "today_pulse_sell_days": multiday.get("today_pulse_sell_days", ""),
+            "today_pulse_direction": multiday.get("today_pulse_direction", ""),
+            "broker_alignment": multiday.get("broker_alignment", _value(raw, "broker_alignment", default="")),
             "sector_state": _value(raw, "Sector_State", "Sector_Rotation_State", default=""),
             "market_regime": _value(raw, "Market_Regime", default=""),
             # Decision_Reasons is produced by the single-session Broker Fusion
@@ -700,6 +875,7 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
         })
     data = {
         "trade_date": ctx.trade_date.isoformat(),
+        **global_period_metadata,
         "rows": rows,
         "provider": provider,
         "source_mode": mode,

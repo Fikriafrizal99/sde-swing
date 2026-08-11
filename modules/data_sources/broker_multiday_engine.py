@@ -32,6 +32,7 @@ from modules.data_sources.broker_windows import (
     compute_window_features,
     select_window_days,
 )
+from modules.broker_bridge.broker_period_context import primary_pulse_alignment
 
 
 @dataclass
@@ -52,6 +53,12 @@ class MultiDayContext:
     broker_multiday_blocker: bool
     broker_multiday_context: str
     trace: list[str] = field(default_factory=list)
+    # The fields below are metadata/context only.  They are deliberately
+    # appended after the existing engine fields so legacy constructors and the
+    # existing score/confidence calculations remain unchanged.
+    period_metadata: dict[str, Any] = field(default_factory=dict)
+    today_pulse: dict[str, Any] = field(default_factory=dict)
+    broker_period_alignment: str = "INSUFFICIENT"
 
     def to_context_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -63,6 +70,25 @@ class MultiDayContext:
             "Broker_MultiDay_Primary_Window": self.primary_window,
             "Broker_MultiDay_Trace": " | ".join(self.trace),
         }
+        if self.period_metadata:
+            out.update(self.period_metadata)
+            # Upper-case aliases make CSV/report bridges tolerant of the two
+            # conventions already present in the repository.
+            out.update({
+                "Broker_Period_Type": self.period_metadata.get("broker_period_type", ""),
+                "Broker_Period_Start": self.period_metadata.get("broker_period_start", ""),
+                "Broker_Period_End": self.period_metadata.get("broker_period_end", ""),
+                "Broker_Trading_Days": self.period_metadata.get("broker_trading_days", ""),
+                "Broker_Session_Dates": self.period_metadata.get("broker_session_dates", []),
+                "Broker_Snapshot_ID": self.period_metadata.get("broker_snapshot_id", ""),
+                "Broker_Period_Source": self.period_metadata.get("broker_period_source", ""),
+                "Broker_Coverage": self.period_metadata.get("broker_coverage", ""),
+                "Broker_Freshness_Status": self.period_metadata.get("broker_freshness_status", ""),
+            })
+        if self.today_pulse and str(self.period_metadata.get("broker_period_type", "")).upper() not in {"", "1D", "1DAY", "DAY"}:
+            out.update(self.today_pulse)
+            out["broker_alignment"] = self.broker_period_alignment
+            out["Broker_Period_Alignment"] = self.broker_period_alignment
         for window in WINDOWS:
             classification = self.classifications.get(window)
             out[f"Broker_Context_{window}"] = (
@@ -72,6 +98,15 @@ class MultiDayContext:
                 out[f"Broker_Score_{window}"] = round(classification.score, 4)
                 out[f"Broker_Confidence_{window}"] = round(classification.confidence, 2)
                 out[f"Broker_Blocker_{window}"] = bool(classification.blocker)
+        if self.primary_window not in WINDOWS:
+            classification = self.classifications.get(self.primary_window)
+            out[f"Broker_Context_{self.primary_window}"] = (
+                classification.classification if classification else "INSUFFICIENT_DATA"
+            )
+            if classification is not None:
+                out[f"Broker_Score_{self.primary_window}"] = round(classification.score, 4)
+                out[f"Broker_Confidence_{self.primary_window}"] = round(classification.confidence, 2)
+                out[f"Broker_Blocker_{self.primary_window}"] = bool(classification.blocker)
         out.update(self.alignment.to_dict())
         out.update(self.acceleration)
         out.update(self.divergence)
@@ -86,6 +121,9 @@ class MultiDayContext:
             "primary_window": self.primary_window,
             "windows": {w: f.to_dict() for w, f in self.windows.items()},
             "classifications": {w: c.to_dict() for w, c in self.classifications.items()},
+            "period_metadata": dict(self.period_metadata),
+            "today_pulse": dict(self.today_pulse),
+            "broker_period_alignment": self.broker_period_alignment,
             **self.to_context_dict(),
         }
 
@@ -107,9 +145,24 @@ def compute_multiday_context(
     current_price: float | None = None,
     window_returns_pct: dict[str, float] | None = None,
     aggregate_foreign_net: float | None = None,
+    period_metadata: dict[str, Any] | None = None,
+    today_pulse: dict[str, Any] | None = None,
 ) -> MultiDayContext:
     days = build_broker_days(broker_rows)
     window_returns_pct = window_returns_pct or {}
+    period_metadata = dict(period_metadata or {})
+    today_pulse = dict(today_pulse or {})
+    period_type = str(period_metadata.get("broker_period_type", "")).upper()
+    if period_type not in {"", "1D", "1DAY", "DAY"} and not today_pulse:
+        today_pulse = {
+            "today_pulse_date": str(period_metadata.get("broker_period_end", market_date)),
+            "today_pulse_snapshot_id": "",
+            "today_pulse_status": "UNAVAILABLE",
+            "today_pulse_net_flow": 0.0,
+            "today_pulse_buy_days": 0,
+            "today_pulse_sell_days": 0,
+            "today_pulse_direction": "INSUFFICIENT",
+        }
 
     windows: dict[str, WindowFeatures] = {}
     classifications: dict[str, ClassificationResult] = {}
@@ -125,6 +178,32 @@ def compute_multiday_context(
         windows[w] = wf
         classifications[w] = classify_window(wf)
 
+    # CUSTOM is an explicit IDX-session window, not a synthetic daily split.
+    # Reuse the exact existing feature/classification formula with an explicit
+    # session list, while keeping the legacy fixed-window output unchanged.
+    if primary_window == "CUSTOM":
+        custom_dates = [
+            str(value)[:10]
+            for value in period_metadata.get("broker_session_dates", []) or []
+            if str(value).strip()
+        ]
+        custom_count = int(
+            period_metadata.get("broker_trading_days", len(custom_dates))
+            or len(custom_dates)
+            or len(days)
+        )
+        if custom_count > 0:
+            custom_features = compute_window_features(
+                days,
+                "CUSTOM",
+                current_price=current_price,
+                as_of_date=market_date,
+                session_count=custom_count,
+                expected_dates_override=custom_dates or None,
+            )
+            windows["CUSTOM"] = custom_features
+            classifications["CUSTOM"] = classify_window(custom_features)
+
     alignment = compute_alignment(classifications, primary_window)
     acceleration = compute_acceleration_across_windows(windows).to_dict()
 
@@ -137,9 +216,21 @@ def compute_multiday_context(
     short_wf = windows.get("3D", primary_wf)
     persistence = compute_persistence(short_wf, primary_wf).to_dict()
 
+    primary_rows = (
+        primary_wf_rows(days, primary_window, market_date=market_date)
+        if primary_window in WINDOWS
+        else [
+            row
+            for day in days
+            if not period_metadata.get("broker_session_dates")
+            or str(day.market_date)[:10]
+            in {str(value)[:10] for value in period_metadata.get("broker_session_dates", []) or []}
+            for row in day.rows
+        ]
+    )
     foreign_net = sum(
         (r.get("net_value") or 0.0)
-        for r in primary_wf_rows(days, primary_window, market_date=market_date)
+        for r in primary_rows
         if str(r.get("broker_type", "")).upper() == "ASING"
     )
     foreign_protection = check_foreign_double_count(
@@ -153,6 +244,14 @@ def compute_multiday_context(
     penalty = primary_cls.penalty if primary_cls else 0.0
     blocker = any(c.blocker for c in classifications.values())
     context_label = primary_cls.classification if primary_cls else "INSUFFICIENT_DATA"
+
+    period_alignment = "INSUFFICIENT"
+    if period_type not in {"", "1D", "1DAY", "DAY"}:
+        period_alignment = primary_pulse_alignment(
+            primary_wf.cumulative_net_value if primary_wf else None,
+            today_pulse.get("today_pulse_net_flow"),
+            pulse_status=str(today_pulse.get("today_pulse_status", "UNAVAILABLE")),
+        )
 
     trace: list[str] = []
     trace.append(f"primary={primary_window} score={score:.1f} conf={confidence:.0f}")
@@ -179,6 +278,9 @@ def compute_multiday_context(
         broker_multiday_blocker=blocker,
         broker_multiday_context=context_label,
         trace=trace,
+        period_metadata=period_metadata,
+        today_pulse=today_pulse,
+        broker_period_alignment=period_alignment,
     )
 
 

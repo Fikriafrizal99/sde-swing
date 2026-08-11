@@ -181,6 +181,8 @@ def select_window_days(
     window: str,
     *,
     as_of_date: str | None = None,
+    session_count: int | None = None,
+    expected_dates_override: list[str] | None = None,
 ) -> tuple[list[BrokerDay], list[str]]:
     """Select broker observations for one window.
 
@@ -188,13 +190,15 @@ def select_window_days(
     dates are eligible.  Without it, the previous N-observation behaviour is
     retained for backward-compatible helpers/tests and historical utilities.
     """
-    expected = WINDOWS[window]
+    expected = int(session_count) if session_count is not None else WINDOWS[window]
+    if expected <= 0:
+        raise ValueError("BROKER_WINDOW_SESSION_COUNT_INVALID")
     unique = _unique_days(days)
     if as_of_date is None:
         ordered = unique[-expected:]
         return ordered, [day.market_date for day in ordered]
 
-    expected_dates = expected_session_dates(str(as_of_date), expected)
+    expected_dates = list(expected_dates_override or expected_session_dates(str(as_of_date), expected))
     by_date = {day.market_date: day for day in unique}
     selected = [by_date[session] for session in expected_dates if session in by_date]
     return selected, expected_dates
@@ -267,9 +271,17 @@ def compute_window_features(
     *,
     current_price: float | None = None,
     as_of_date: str | None = None,
+    session_count: int | None = None,
+    expected_dates_override: list[str] | None = None,
 ) -> WindowFeatures:
-    expected = WINDOWS[window]
-    ordered, expected_dates = select_window_days(days, window, as_of_date=as_of_date)
+    expected = int(session_count) if session_count is not None else WINDOWS[window]
+    ordered, expected_dates = select_window_days(
+        days,
+        window,
+        as_of_date=as_of_date,
+        session_count=expected,
+        expected_dates_override=expected_dates_override,
+    )
     available = len(ordered)
     coverage = available / expected if expected else 0.0
     if as_of_date is None:

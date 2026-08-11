@@ -49,6 +49,26 @@ CONTEXT_COLUMNS = (
     "Broker_Context_Confidence",
     "Broker_Context_Alignment",
     "Broker_MultiDay_Trace",
+    "broker_period_type",
+    "broker_period_start",
+    "broker_period_end",
+    "broker_trading_days",
+    "broker_session_dates",
+    "broker_snapshot_id",
+    "broker_period_source",
+    "broker_coverage",
+    "broker_session_coverage",
+    "broker_coverage_text",
+    "broker_coverage_status",
+    "broker_freshness_status",
+    "today_pulse_date",
+    "today_pulse_snapshot_id",
+    "today_pulse_status",
+    "today_pulse_net_flow",
+    "today_pulse_buy_days",
+    "today_pulse_sell_days",
+    "today_pulse_direction",
+    "broker_alignment",
 )
 
 PROTECTED_COLUMNS = frozenset({
@@ -131,10 +151,13 @@ def build_contexts_for_symbols(
     current_price_by_symbol: dict[str, float] | None = None,
     returns_by_symbol: dict[str, dict[str, float]] | None = None,
     aggregate_foreign_by_symbol: dict[str, float] | None = None,
+    period_metadata: dict[str, Any] | None = None,
+    today_pulse_by_symbol: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, MultiDayContext]:
     current_price_by_symbol = current_price_by_symbol or {}
     returns_by_symbol = returns_by_symbol or {}
     aggregate_foreign_by_symbol = aggregate_foreign_by_symbol or {}
+    today_pulse_by_symbol = today_pulse_by_symbol or {}
     out: dict[str, MultiDayContext] = {}
     # Production callers must anchor every symbol to the technical job date.
     # Falling back to the latest observed raw date remains available for legacy
@@ -152,6 +175,8 @@ def build_contexts_for_symbols(
             current_price=current_price_by_symbol.get(symbol),
             window_returns_pct=returns_by_symbol.get(symbol),
             aggregate_foreign_net=aggregate_foreign_by_symbol.get(symbol),
+            period_metadata=period_metadata,
+            today_pulse=today_pulse_by_symbol.get(symbol),
         )
     return out
 
