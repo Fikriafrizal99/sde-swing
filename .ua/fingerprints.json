@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
-  "gitCommitHash": "db7e514530f137cfe8ef6e8fe249869268a7b151",
-  "generatedAt": "2026-08-10T16:41:04.406Z",
+  "gitCommitHash": "eaa58d46ed72fc7c2187e352588185f66c1f9896",
+  "generatedAt": "2026-08-11T11:28:35.696Z",
   "files": {
     ".github/workflows/ci.yml": {
       "filePath": ".github/workflows/ci.yml",
@@ -22,16 +22,6 @@
       "exports": [],
       "totalLines": 110,
       "hasStructuralAnalysis": true
-    },
-    ".ua/.understandignore": {
-      "filePath": ".ua/.understandignore",
-      "contentHash": "4d243b57386233441783aea475437e13d9c15d90ef43cfc3bb3d031b27f96430",
-      "functions": [],
-      "classes": [],
-      "imports": [],
-      "exports": [],
-      "totalLines": 120,
-      "hasStructuralAnalysis": false
     },
     "CHECK_SDE_STATUS.bat": {
       "filePath": "CHECK_SDE_STATUS.bat",
@@ -1047,12 +1037,12 @@
     },
     "maintenance/PERFORMANCE_MENU.bat": {
       "filePath": "maintenance/PERFORMANCE_MENU.bat",
-      "contentHash": "21beaa94ebd393c23c75a9309d09d3b5ad11f5f975f826f7f1afcbc875983523",
+      "contentHash": "820bcadb2bab6621581d014dad3400cdd98df12e7fc0bd0b95ce2fbdcf2e96f2",
       "functions": [],
       "classes": [],
       "imports": [],
       "exports": [],
-      "totalLines": 194,
+      "totalLines": 208,
       "hasStructuralAnalysis": false
     },
     "maintenance/PORTFOLIO_MENU.bat": {
@@ -1618,9 +1608,353 @@
       "totalLines": 2,
       "hasStructuralAnalysis": true
     },
+    "modules/analytics/execution_integrity.py": {
+      "filePath": "modules/analytics/execution_integrity.py",
+      "contentHash": "5bf51a3ea35fce04374fe244545d99c554385b8baf1e0c56d13610558409b3e2",
+      "functions": [
+        {
+          "name": "_number",
+          "params": [
+            "value"
+          ],
+          "returnType": "float | None",
+          "exported": true,
+          "lineCount": 6
+        },
+        {
+          "name": "validate_plan_geometry",
+          "params": [
+            "entry",
+            "stop",
+            "tp1",
+            "tp2"
+          ],
+          "returnType": "PlanGeometry",
+          "exported": true,
+          "lineCount": 33
+        },
+        {
+          "name": "target_is_profitable",
+          "params": [
+            "entry",
+            "target"
+          ],
+          "returnType": "bool",
+          "exported": true,
+          "lineCount": 9
+        },
+        {
+          "name": "economic_outcome",
+          "params": [
+            "realized_return_pct"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 5
+        },
+        {
+          "name": "outcome_consistency",
+          "params": [
+            "final_outcome",
+            "realized_return_pct"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 12
+        }
+      ],
+      "classes": [
+        {
+          "name": "PlanGeometry",
+          "methods": [],
+          "properties": [
+            "valid",
+            "status",
+            "reasons"
+          ],
+          "exported": true,
+          "lineCount": 4
+        }
+      ],
+      "imports": [
+        {
+          "source": "math",
+          "specifiers": [
+            "math"
+          ]
+        },
+        {
+          "source": "dataclasses",
+          "specifiers": [
+            "dataclass"
+          ]
+        },
+        {
+          "source": "typing",
+          "specifiers": [
+            "Any"
+          ]
+        }
+      ],
+      "exports": [
+        "PlanGeometry",
+        "_number",
+        "validate_plan_geometry",
+        "target_is_profitable",
+        "economic_outcome",
+        "outcome_consistency"
+      ],
+      "totalLines": 95,
+      "hasStructuralAnalysis": true
+    },
+    "modules/analytics/exit_efficiency.py": {
+      "filePath": "modules/analytics/exit_efficiency.py",
+      "contentHash": "bdbeb073d3e9bdf7695a04dad23dc4818f69612a96c5639ca22de3ce88dda3b7",
+      "functions": [
+        {
+          "name": "_number",
+          "params": [
+            "value"
+          ],
+          "returnType": "float | None",
+          "exported": true,
+          "lineCount": 6
+        },
+        {
+          "name": "_pct",
+          "params": [
+            "price",
+            "base"
+          ],
+          "returnType": "float | None",
+          "exported": true,
+          "lineCount": 6
+        },
+        {
+          "name": "_median",
+          "params": [
+            "series"
+          ],
+          "returnType": "float | None",
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "_mean",
+          "params": [
+            "series"
+          ],
+          "returnType": "float | None",
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "_safe_rate",
+          "params": [
+            "count",
+            "total"
+          ],
+          "returnType": "float | None",
+          "exported": true,
+          "lineCount": 2
+        },
+        {
+          "name": "_open_read_only",
+          "params": [
+            "db_path"
+          ],
+          "returnType": "sqlite3.Connection",
+          "exported": true,
+          "lineCount": 7
+        },
+        {
+          "name": "_require_table",
+          "params": [
+            "conn",
+            "name"
+          ],
+          "returnType": "None",
+          "exported": true,
+          "lineCount": 7
+        },
+        {
+          "name": "load_source",
+          "params": [
+            "db_path"
+          ],
+          "returnType": "tuple[pd.DataFrame, pd.DataFrame]",
+          "exported": true,
+          "lineCount": 41
+        },
+        {
+          "name": "_peak_return",
+          "params": [
+            "frame",
+            "entry"
+          ],
+          "returnType": "float | None",
+          "exported": true,
+          "lineCount": 5
+        },
+        {
+          "name": "_first_touch_and_upside",
+          "params": [
+            "maxhold",
+            "entry_date",
+            "entry_price",
+            "target"
+          ],
+          "returnType": "tuple[str, float | None]",
+          "exported": true,
+          "lineCount": 25
+        },
+        {
+          "name": "_post_exit_metrics",
+          "params": [
+            "prices",
+            "exit_date",
+            "entry_price",
+            "exit_price",
+            "sessions"
+          ],
+          "returnType": "tuple[int, bool, float | None, float | None]",
+          "exported": true,
+          "lineCount": 18
+        },
+        {
+          "name": "build_trade_frame",
+          "params": [
+            "ledger",
+            "prices"
+          ],
+          "returnType": "pd.DataFrame",
+          "exported": true,
+          "lineCount": 140
+        },
+        {
+          "name": "build_summary",
+          "params": [
+            "trades",
+            "prices"
+          ],
+          "returnType": "dict[str, Any]",
+          "exported": true,
+          "lineCount": 76
+        },
+        {
+          "name": "build_by_setup",
+          "params": [
+            "trades"
+          ],
+          "returnType": "pd.DataFrame",
+          "exported": true,
+          "lineCount": 22
+        },
+        {
+          "name": "run_analysis",
+          "params": [
+            "db_path",
+            "output_dir"
+          ],
+          "returnType": "tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]",
+          "exported": true,
+          "lineCount": 28
+        },
+        {
+          "name": "_fmt",
+          "params": [
+            "value",
+            "suffix"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "print_report",
+          "params": [
+            "trades",
+            "by_setup",
+            "summary",
+            "output_dir"
+          ],
+          "returnType": "None",
+          "exported": true,
+          "lineCount": 63
+        },
+        {
+          "name": "main",
+          "params": [],
+          "returnType": "int",
+          "exported": true,
+          "lineCount": 9
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "argparse",
+          "specifiers": [
+            "argparse"
+          ]
+        },
+        {
+          "source": "math",
+          "specifiers": [
+            "math"
+          ]
+        },
+        {
+          "source": "sqlite3",
+          "specifiers": [
+            "sqlite3"
+          ]
+        },
+        {
+          "source": "pathlib",
+          "specifiers": [
+            "Path"
+          ]
+        },
+        {
+          "source": "typing",
+          "specifiers": [
+            "Any"
+          ]
+        },
+        {
+          "source": "pandas",
+          "specifiers": [
+            "pd"
+          ]
+        }
+      ],
+      "exports": [
+        "_number",
+        "_pct",
+        "_median",
+        "_mean",
+        "_safe_rate",
+        "_open_read_only",
+        "_require_table",
+        "load_source",
+        "_peak_return",
+        "_first_touch_and_upside",
+        "_post_exit_metrics",
+        "build_trade_frame",
+        "build_summary",
+        "build_by_setup",
+        "run_analysis",
+        "_fmt",
+        "print_report",
+        "main"
+      ],
+      "totalLines": 545,
+      "hasStructuralAnalysis": true
+    },
     "modules/analytics/outcome_tracker.py": {
       "filePath": "modules/analytics/outcome_tracker.py",
-      "contentHash": "1d9dcfec9c86179c26be79a107d3621cda248ca036ed0057c904bbed5686ce57",
+      "contentHash": "7b6795dca7880dc821d436c1e4b7b30866533ff946f823fb0484b232e116ea51",
       "functions": [
         {
           "name": "now_text",
@@ -1939,7 +2273,7 @@
           ],
           "returnType": "dict[str, Any]",
           "exported": true,
-          "lineCount": 150
+          "lineCount": 185
         },
         {
           "name": "update_outcomes",
@@ -2329,6 +2663,14 @@
           "specifiers": [
             "load_environment_file"
           ]
+        },
+        {
+          "source": "modules.analytics.execution_integrity",
+          "specifiers": [
+            "economic_outcome",
+            "target_is_profitable",
+            "validate_plan_geometry"
+          ]
         }
       ],
       "exports": [
@@ -2393,7 +2735,7 @@
         "make_parser",
         "main"
       ],
-      "totalLines": 1895,
+      "totalLines": 1935,
       "hasStructuralAnalysis": true
     },
     "modules/analytics/profile_shadow.py": {
@@ -2942,7 +3284,7 @@
     },
     "modules/broker_bridge/broker_period_context.py": {
       "filePath": "modules/broker_bridge/broker_period_context.py",
-      "contentHash": "0b1eabbfd73284ce49ac6ac0a04821af1d15aa636c66cab9303f57d856e84cee",
+      "contentHash": "a994901ee925dc8bb7c1ac1865e50f5cd7b1eb4de4452dfd1634ac562bd14f76",
       "functions": [
         {
           "name": "_as_date",
@@ -3014,7 +3356,7 @@
           ],
           "returnType": "tuple[bool, str, dict[str, Any]]",
           "exported": true,
-          "lineCount": 65
+          "lineCount": 92
         },
         {
           "name": "find_matching_export",
@@ -3074,7 +3416,7 @@
           ],
           "returnType": "dict[str, Any]",
           "exported": true,
-          "lineCount": 70
+          "lineCount": 96
         },
         {
           "name": "list_reusable_snapshots",
@@ -3084,7 +3426,7 @@
           ],
           "returnType": "list[dict[str, Any]]",
           "exported": true,
-          "lineCount": 24
+          "lineCount": 75
         },
         {
           "name": "atomic_copy",
@@ -3211,7 +3553,7 @@
         "list_reusable_snapshots",
         "atomic_copy"
       ],
-      "totalLines": 418,
+      "totalLines": 522,
       "hasStructuralAnalysis": true
     },
     "modules/broker_bridge/broker_raw.py": {
@@ -5870,7 +6212,7 @@
     },
     "modules/data_sources/decision_bridge.py": {
       "filePath": "modules/data_sources/decision_bridge.py",
-      "contentHash": "ae5f8d1bb7de083eb30728d9747a23db742be3fa4d1534b5bc309195421c5382",
+      "contentHash": "c7fd0931f87a18979dda30ac6ab7dc7553cd9b1adf8067160b2c31befb28b72c",
       "functions": [
         {
           "name": "attach_multiday_context",
@@ -5897,13 +6239,14 @@
           "params": [
             "broker_rows_by_symbol",
             "primary_window",
+            "as_of_date",
             "current_price_by_symbol",
             "returns_by_symbol",
             "aggregate_foreign_by_symbol"
           ],
           "returnType": "dict[str, MultiDayContext]",
           "exported": true,
-          "lineCount": 27
+          "lineCount": 31
         },
         {
           "name": "_framing_window",
@@ -6002,7 +6345,7 @@
         "run_shadow_comparison",
         "_majority"
       ],
-      "totalLines": 241,
+      "totalLines": 245,
       "hasStructuralAnalysis": true
     },
     "modules/data_sources/health.py": {
@@ -9624,7 +9967,7 @@
     },
     "modules/job_runner/core.py": {
       "filePath": "modules/job_runner/core.py",
-      "contentHash": "8144a33abce9a8e6b4fde5b62ec2e60e000ffc91da73c8946977544156a3fc9b",
+      "contentHash": "5a3fac8f27f997dd5babb1e0e85f087653286b924bfc9a3f69db58c32bb848b0",
       "functions": [
         {
           "name": "_post_market_evaluation_datetime",
@@ -9784,7 +10127,7 @@
           ],
           "returnType": "dict[str, Any]",
           "exported": true,
-          "lineCount": 97
+          "lineCount": 100
         },
         {
           "name": "_write_broker_readiness",
@@ -9864,7 +10207,7 @@
           ],
           "returnType": "dict[str, Any]",
           "exported": true,
-          "lineCount": 143
+          "lineCount": 147
         },
         {
           "name": "attach_broker_multiday_context",
@@ -10019,7 +10362,7 @@
         "attach_broker_multiday_context",
         "run_final_from_snapshot"
       ],
-      "totalLines": 1695,
+      "totalLines": 1702,
       "hasStructuralAnalysis": true
     },
     "modules/job_runner/delivery.py": {
@@ -16682,7 +17025,7 @@
     },
     "modules/telegram/__init__.py": {
       "filePath": "modules/telegram/__init__.py",
-      "contentHash": "f8dbc5b4573d41704febb99d5e69be19e0b6697d859e71eb63a464c04b80f73c",
+      "contentHash": "c6600ae3630884016142f2eb81729a1da58d9972c9a01cdc0d6b2a1fd6207ffc",
       "functions": [],
       "classes": [],
       "imports": [
@@ -16690,6 +17033,12 @@
           "source": ".",
           "specifiers": [
             "_daily_report_ui"
+          ]
+        },
+        {
+          "source": ".final_watchlist_ui",
+          "specifiers": [
+            "_final_watchlist_formatter"
           ]
         },
         {
@@ -16706,7 +17055,7 @@
         }
       ],
       "exports": [],
-      "totalLines": 17,
+      "totalLines": 24,
       "hasStructuralAnalysis": true
     },
     "modules/telegram/daily_report_ui.py": {
@@ -17648,6 +17997,229 @@
         "generate_final_watchlist_chart"
       ],
       "totalLines": 541,
+      "hasStructuralAnalysis": true
+    },
+    "modules/telegram/final_watchlist_ui.py": {
+      "filePath": "modules/telegram/final_watchlist_ui.py",
+      "contentHash": "b5c99ed8b7d3e56fee4755bb12cf9091f1273c82b1c8194f0c609d12f8c8c219",
+      "functions": [
+        {
+          "name": "_raw",
+          "params": [
+            "value"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "_pick",
+          "params": [
+            "row",
+            "default"
+          ],
+          "returnType": "Any",
+          "exported": true,
+          "lineCount": 7
+        },
+        {
+          "name": "_num",
+          "params": [
+            "value"
+          ],
+          "returnType": "float | None",
+          "exported": true,
+          "lineCount": 10
+        },
+        {
+          "name": "_idx_tick_size",
+          "params": [
+            "price"
+          ],
+          "returnType": "float",
+          "exported": true,
+          "lineCount": 11
+        },
+        {
+          "name": "_price",
+          "params": [
+            "value",
+            "fallback"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 7
+        },
+        {
+          "name": "_enum",
+          "params": [
+            "value",
+            "fallback",
+            "upper",
+            "lower"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 16
+        },
+        {
+          "name": "_score",
+          "params": [
+            "value"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "_confidence",
+          "params": [
+            "value"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 7
+        },
+        {
+          "name": "_pct",
+          "params": [
+            "value",
+            "concentration"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 7
+        },
+        {
+          "name": "_money",
+          "params": [
+            "value",
+            "signed"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 15
+        },
+        {
+          "name": "_rr",
+          "params": [
+            "value"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "_day_count",
+          "params": [
+            "value"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 3
+        },
+        {
+          "name": "_participants",
+          "params": [
+            "value"
+          ],
+          "returnType": "list[str]",
+          "exported": true,
+          "lineCount": 35
+        },
+        {
+          "name": "_inside",
+          "params": [
+            "value",
+            "low",
+            "high"
+          ],
+          "returnType": "bool",
+          "exported": true,
+          "lineCount": 2
+        },
+        {
+          "name": "_interpretive_reason",
+          "params": [
+            "row"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 119
+        },
+        {
+          "name": "_technical_status",
+          "params": [
+            "row"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 8
+        },
+        {
+          "name": "format_watchlist_detail",
+          "params": [
+            "row"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 116
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "html",
+          "specifiers": [
+            "html"
+          ]
+        },
+        {
+          "source": "json",
+          "specifiers": [
+            "json"
+          ]
+        },
+        {
+          "source": "math",
+          "specifiers": [
+            "math"
+          ]
+        },
+        {
+          "source": "re",
+          "specifiers": [
+            "re"
+          ]
+        },
+        {
+          "source": "typing",
+          "specifiers": [
+            "Any",
+            "Mapping"
+          ]
+        }
+      ],
+      "exports": [
+        "_raw",
+        "_pick",
+        "_num",
+        "_idx_tick_size",
+        "_price",
+        "_enum",
+        "_score",
+        "_confidence",
+        "_pct",
+        "_money",
+        "_rr",
+        "_day_count",
+        "_participants",
+        "_inside",
+        "_interpretive_reason",
+        "_technical_status",
+        "format_watchlist_detail"
+      ],
+      "totalLines": 429,
       "hasStructuralAnalysis": true
     },
     "modules/telegram/formatters.py": {
@@ -21491,12 +22063,12 @@
     },
     "scheduler/SCHEDULE_FINAL_WATCHLIST.bat": {
       "filePath": "scheduler/SCHEDULE_FINAL_WATCHLIST.bat",
-      "contentHash": "e9a6a632db770d4c304279247f05fe024cc181874cb5b4232955eabb57c1d673",
+      "contentHash": "52c84778ddc03ce861d2232d685306c5c15af62de5e24b92faead3a8ce6e6585",
       "functions": [],
       "classes": [],
       "imports": [],
       "exports": [],
-      "totalLines": 9,
+      "totalLines": 11,
       "hasStructuralAnalysis": false
     },
     "scheduler/SCHEDULE_MARKET_OUTLOOK.bat": {
@@ -22114,7 +22686,7 @@
     },
     "tests/test_broker_period_bridge.py": {
       "filePath": "tests/test_broker_period_bridge.py",
-      "contentHash": "6635cb2a6f503d4fa9af8cd5c23b860ed1146b40fb9761598c66696941cfc4e8",
+      "contentHash": "32bac9b153949adb69a2f6e7c93a7dcc84eda8e9b9a4f345ba4f6297241734dd",
       "functions": [
         {
           "name": "_broker_row",
@@ -22157,6 +22729,14 @@
           "lineCount": 15
         },
         {
+          "name": "test_summary_export_rejects_invalid_rows_and_unexpected_symbols",
+          "params": [
+            "tmp_path"
+          ],
+          "exported": true,
+          "lineCount": 20
+        },
+        {
           "name": "test_aggregate_snapshot_is_not_daily_history_eligible",
           "params": [
             "tmp_path"
@@ -22171,6 +22751,30 @@
           ],
           "exported": true,
           "lineCount": 31
+        },
+        {
+          "name": "test_production_bridge_keeps_explicit_trade_date_anchor",
+          "params": [
+            "tmp_path"
+          ],
+          "exported": true,
+          "lineCount": 21
+        },
+        {
+          "name": "test_snapshot_requires_commit_marker_for_reuse_and_separates_raw_identity",
+          "params": [
+            "tmp_path"
+          ],
+          "exported": true,
+          "lineCount": 40
+        },
+        {
+          "name": "test_bridge_run_lock_rejects_concurrent_process",
+          "params": [
+            "tmp_path"
+          ],
+          "exported": true,
+          "lineCount": 13
         }
       ],
       "classes": [],
@@ -22198,6 +22802,7 @@
           "specifiers": [
             "fixed_period_spec",
             "inspect_summary_export",
+            "list_reusable_snapshots",
             "persist_snapshot"
           ]
         },
@@ -22209,8 +22814,15 @@
           ]
         },
         {
+          "source": "modules.data_sources.decision_bridge",
+          "specifiers": [
+            "build_contexts_for_symbols"
+          ]
+        },
+        {
           "source": "tools.run_final_watchlist_broker_period",
           "specifiers": [
+            "BridgeRunLock",
             "CanonicalTransaction",
             "recover_unfinished_transactions"
           ]
@@ -22222,10 +22834,14 @@
         "test_fixed_3d_and_5d_use_actual_idx_sessions",
         "test_explicit_idx_window_does_not_compress_missing_session",
         "test_summary_export_must_match_selected_range",
+        "test_summary_export_rejects_invalid_rows_and_unexpected_symbols",
         "test_aggregate_snapshot_is_not_daily_history_eligible",
-        "test_unfinished_canonical_transaction_auto_recovers_old_files"
+        "test_unfinished_canonical_transaction_auto_recovers_old_files",
+        "test_production_bridge_keeps_explicit_trade_date_anchor",
+        "test_snapshot_requires_commit_marker_for_reuse_and_separates_raw_identity",
+        "test_bridge_run_lock_rejects_concurrent_process"
       ],
-      "totalLines": 161,
+      "totalLines": 266,
       "hasStructuralAnalysis": true
     },
     "tests/test_broker_period_performance.py": {
@@ -22418,7 +23034,7 @@
     },
     "tests/test_enhanced_daily_reports.py": {
       "filePath": "tests/test_enhanced_daily_reports.py",
-      "contentHash": "8e165ad160c3a6b1b3b528cb731b09d8be6c886be95588b208df8c6427dfb3c9",
+      "contentHash": "c2f5eba493edd74771e60c72c67a74d9cfb4ac1d0785d36c574aa30142b7e535",
       "functions": [
         {
           "name": "_watchlist_row",
@@ -22850,6 +23466,160 @@
       "totalLines": 95,
       "hasStructuralAnalysis": true
     },
+    "tests/test_exit_efficiency.py": {
+      "filePath": "tests/test_exit_efficiency.py",
+      "contentHash": "dc6a8960becb46756fd36b60b48336b7594f03ad68f975bca706d059167ca5e3",
+      "functions": [
+        {
+          "name": "_write_close_above_signal",
+          "params": [
+            "root"
+          ],
+          "returnType": "tuple[Path, Path]",
+          "exported": true,
+          "lineCount": 28
+        },
+        {
+          "name": "_write_symbol_prices",
+          "params": [
+            "root",
+            "symbol",
+            "rows"
+          ],
+          "returnType": "None",
+          "exported": true,
+          "lineCount": 5
+        },
+        {
+          "name": "test_new_trigger_is_invalidated_when_actual_entry_is_above_targets",
+          "params": [
+            "tmp_path"
+          ],
+          "returnType": "None",
+          "exported": true,
+          "lineCount": 30
+        },
+        {
+          "name": "test_legacy_open_ignores_stale_tp1_but_can_close_on_valid_tp2",
+          "params": [
+            "tmp_path"
+          ],
+          "returnType": "None",
+          "exported": true,
+          "lineCount": 53
+        },
+        {
+          "name": "test_integrity_helpers_follow_actual_economic_result",
+          "params": [],
+          "returnType": "None",
+          "exported": true,
+          "lineCount": 9
+        },
+        {
+          "name": "_make_exit_efficiency_db",
+          "params": [
+            "path"
+          ],
+          "returnType": "None",
+          "exported": true,
+          "lineCount": 79
+        },
+        {
+          "name": "_sha256",
+          "params": [
+            "path"
+          ],
+          "returnType": "str",
+          "exported": true,
+          "lineCount": 2
+        },
+        {
+          "name": "test_exit_efficiency_is_read_only_and_flags_historical_conflict",
+          "params": [
+            "tmp_path"
+          ],
+          "returnType": "None",
+          "exported": true,
+          "lineCount": 32
+        },
+        {
+          "name": "test_performance_menu_exposes_exit_efficiency_without_renumbering",
+          "params": [],
+          "returnType": "None",
+          "exported": true,
+          "lineCount": 8
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "hashlib",
+          "specifiers": [
+            "hashlib"
+          ]
+        },
+        {
+          "source": "sqlite3",
+          "specifiers": [
+            "sqlite3"
+          ]
+        },
+        {
+          "source": "pathlib",
+          "specifiers": [
+            "Path"
+          ]
+        },
+        {
+          "source": "pandas",
+          "specifiers": [
+            "pd"
+          ]
+        },
+        {
+          "source": "pytest",
+          "specifiers": [
+            "pytest"
+          ]
+        },
+        {
+          "source": "modules.analytics.execution_integrity",
+          "specifiers": [
+            "economic_outcome",
+            "outcome_consistency",
+            "validate_plan_geometry"
+          ]
+        },
+        {
+          "source": "modules.analytics.exit_efficiency",
+          "specifiers": [
+            "run_analysis"
+          ]
+        },
+        {
+          "source": "modules.analytics.outcome_tracker",
+          "specifiers": [
+            "connect",
+            "pending_lifecycle_events",
+            "register_decision_file",
+            "update_outcomes"
+          ]
+        }
+      ],
+      "exports": [
+        "_write_close_above_signal",
+        "_write_symbol_prices",
+        "test_new_trigger_is_invalidated_when_actual_entry_is_above_targets",
+        "test_legacy_open_ignores_stale_tp1_but_can_close_on_valid_tp2",
+        "test_integrity_helpers_follow_actual_economic_result",
+        "_make_exit_efficiency_db",
+        "_sha256",
+        "test_exit_efficiency_is_read_only_and_flags_historical_conflict",
+        "test_performance_menu_exposes_exit_efficiency_without_renumbering"
+      ],
+      "totalLines": 286,
+      "hasStructuralAnalysis": true
+    },
     "tests/test_final_watchlist_best_five.py": {
       "filePath": "tests/test_final_watchlist_best_five.py",
       "contentHash": "ada1fd16e687658867c5260c1c8571bc834c6224ca98ba59218d00bdde5c8354",
@@ -22974,9 +23744,63 @@
       "totalLines": 56,
       "hasStructuralAnalysis": true
     },
+    "tests/test_final_watchlist_interpretive_reason.py": {
+      "filePath": "tests/test_final_watchlist_interpretive_reason.py",
+      "contentHash": "d0a8fca6c362b89590e12e15826e9fc1920d723788e5856c432754fb974929b4",
+      "functions": [
+        {
+          "name": "_hrum_row",
+          "params": [],
+          "returnType": "dict",
+          "exported": true,
+          "lineCount": 40
+        },
+        {
+          "name": "test_package_runtime_uses_interpretive_final_watchlist_contract",
+          "params": [],
+          "exported": true,
+          "lineCount": 5
+        },
+        {
+          "name": "test_hrum_card_is_compact_and_reason_explains_why_wait",
+          "params": [],
+          "exported": true,
+          "lineCount": 19
+        },
+        {
+          "name": "test_insufficient_broker_is_explained_as_missing_evidence_not_distribution",
+          "params": [],
+          "exported": true,
+          "lineCount": 30
+        }
+      ],
+      "classes": [],
+      "imports": [
+        {
+          "source": "modules.telegram",
+          "specifiers": [
+            "_daily_report_ui"
+          ]
+        },
+        {
+          "source": "modules.telegram.final_watchlist_ui",
+          "specifiers": [
+            "format_watchlist_detail"
+          ]
+        }
+      ],
+      "exports": [
+        "_hrum_row",
+        "test_package_runtime_uses_interpretive_final_watchlist_contract",
+        "test_hrum_card_is_compact_and_reason_explains_why_wait",
+        "test_insufficient_broker_is_explained_as_missing_evidence_not_distribution"
+      ],
+      "totalLines": 107,
+      "hasStructuralAnalysis": true
+    },
     "tests/test_final_watchlist_presentation.py": {
       "filePath": "tests/test_final_watchlist_presentation.py",
-      "contentHash": "f2ae9a025c5dd6022870b43914698586772af8a28f85dec2a9976c08815c84f1",
+      "contentHash": "8992876ec2a9cb82f56355a948f5483269e80ee5b9dde3854dae825884fe4be6",
       "functions": [
         {
           "name": "full_row",
@@ -22988,13 +23812,13 @@
           "name": "test_final_watchlist_format_is_exact_and_bold",
           "params": [],
           "exported": true,
-          "lineCount": 23
+          "lineCount": 25
         },
         {
           "name": "test_idx_tick_rounding_for_final_watchlist_display",
           "params": [],
           "exported": true,
-          "lineCount": 36
+          "lineCount": 35
         },
         {
           "name": "test_long_final_watchlist_is_compacted_to_single_photo_caption",
@@ -23134,7 +23958,7 @@
         "DummyInterpreter",
         "test_final_watchlist_keeps_all_rows_in_csv_but_only_top_five_details"
       ],
-      "totalLines": 318,
+      "totalLines": 319,
       "hasStructuralAnalysis": true
     },
     "tests/test_full_manual_terminal_lifecycle.py": {
@@ -26491,7 +27315,7 @@
     },
     "tests/test_scheduler_hardening.py": {
       "filePath": "tests/test_scheduler_hardening.py",
-      "contentHash": "ec5a134bb6d5815e51bed3b01c95d1daa9eda5cd7f2c72999abfa52b5ba2633b",
+      "contentHash": "6c0cca1729c1c5da4365bcdfcd540a8e7ac22ff1891e1c2f4ddd5224761b6d4c",
       "functions": [
         {
           "name": "make_ctx",
@@ -26555,7 +27379,7 @@
           ],
           "properties": [],
           "exported": true,
-          "lineCount": 386
+          "lineCount": 388
         }
       ],
       "imports": [
@@ -26675,7 +27499,7 @@
         "write_broker",
         "SchedulerHardeningTests"
       ],
-      "totalLines": 514,
+      "totalLines": 516,
       "hasStructuralAnalysis": true
     },
     "tests/test_sde_job_runner.py": {
@@ -28152,7 +28976,7 @@
     },
     "tests/test_v161_report_and_bat_structure.py": {
       "filePath": "tests/test_v161_report_and_bat_structure.py",
-      "contentHash": "02f28b2490afd4a515e1ffd78b02184f76ff2332fef92bab85abd52027ac35b0",
+      "contentHash": "6a84ca6d50082daf013d61e4c0e031592ab2c93f7abb87cc3fafc744e0113c56",
       "functions": [
         {
           "name": "make_ctx",
@@ -28174,11 +28998,12 @@
             "test_broker_raw_dry_run_does_not_copy_download",
             "test_root_only_contains_daily_bat_files_and_single_v17_launcher",
             "test_control_panel_uses_blocked_if_statements",
-            "test_scheduler_xml_targets_noninteractive_scheduler_launchers"
+            "test_scheduler_xml_targets_noninteractive_scheduler_launchers",
+            "test_final_watchlist_scheduler_uses_noninteractive_broker_period_bridge"
           ],
           "properties": [],
           "exported": true,
-          "lineCount": 82
+          "lineCount": 88
         }
       ],
       "imports": [
@@ -28243,7 +29068,7 @@
         "make_ctx",
         "V161ReportAndBatStructureTests"
       ],
-      "totalLines": 138,
+      "totalLines": 144,
       "hasStructuralAnalysis": true
     },
     "tests/test_v170_multisource_enrichment.py": {
@@ -28377,7 +29202,7 @@
     },
     "tests/test_v170_telegram_contract.py": {
       "filePath": "tests/test_v170_telegram_contract.py",
-      "contentHash": "b6659d2a344e1cc418621343c9fe9a4cdd51dce00d201171d23d68b684af6592",
+      "contentHash": "8e81ca3306c4b3b6ca836a470fd1e7143e4087898f7a8bf8bf1afd90658a7eff",
       "functions": [
         {
           "name": "test_shared_formatter_contract_is_human_and_bounded",
@@ -28391,7 +29216,7 @@
           "params": [],
           "returnType": "None",
           "exported": true,
-          "lineCount": 37
+          "lineCount": 39
         },
         {
           "name": "test_professional_signal_downgrades_ready_when_rr_is_not_valid",
@@ -28436,7 +29261,7 @@
         "test_detail_reports_escape_dynamic_values_and_do_not_expose_raw_arrays",
         "test_professional_signal_downgrades_ready_when_rr_is_not_valid"
       ],
-      "totalLines": 67,
+      "totalLines": 69,
       "hasStructuralAnalysis": true
     },
     "tests/test_yahoo_incremental_refresh.py": {
@@ -30776,7 +31601,7 @@
     },
     "tools/run_final_watchlist_broker_period.py": {
       "filePath": "tools/run_final_watchlist_broker_period.py",
-      "contentHash": "86c810c2e7ed3283a754ee97c23e21815f4d7a9a32316366e9a8e9ed78db62ee",
+      "contentHash": "39c0758ff743b0d3a828a13233d364de2a2dbf1aeb83fb445623b93fb350e1ba",
       "functions": [
         {
           "name": "resolve_project",
@@ -30921,10 +31746,22 @@
           "params": [],
           "returnType": "int",
           "exported": true,
-          "lineCount": 159
+          "lineCount": 172
         }
       ],
       "classes": [
+        {
+          "name": "BridgeRunLock",
+          "methods": [
+            "__init__",
+            "_pid_is_alive",
+            "acquire",
+            "release"
+          ],
+          "properties": [],
+          "exported": true,
+          "lineCount": 71
+        },
         {
           "name": "CanonicalTransaction",
           "methods": [
@@ -31029,6 +31866,7 @@
         "read_json",
         "atomic_write_json",
         "atomic_mask",
+        "BridgeRunLock",
         "CanonicalTransaction",
         "recover_unfinished_transactions",
         "parse_args",
@@ -31042,7 +31880,7 @@
         "capture_performance",
         "main"
       ],
-      "totalLines": 478,
+      "totalLines": 564,
       "hasStructuralAnalysis": true
     },
     "tools/run_full_daily_broker_period.py": {

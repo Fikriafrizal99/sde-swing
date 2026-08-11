@@ -1,6 +1,6 @@
 {
   "scriptCompleted": true,
-  "contentDigest": "ff0bfce5e1367ff0c45c7508a00006d7055d3f17920bfbb8eb49f9be7905c9bf",
+  "contentDigest": "8041f628ac6fc5e04f5848682ef024fffd6170696dce96509b929770799a10f0",
   "files": [
     {
       "path": ".github/workflows/ci.yml",
@@ -575,7 +575,7 @@
     {
       "path": "maintenance/PERFORMANCE_MENU.bat",
       "language": "batch",
-      "sizeLines": 193,
+      "sizeLines": 207,
       "fileCategory": "script"
     },
     {
@@ -669,9 +669,21 @@
       "fileCategory": "code"
     },
     {
+      "path": "modules/analytics/execution_integrity.py",
+      "language": "python",
+      "sizeLines": 94,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/analytics/exit_efficiency.py",
+      "language": "python",
+      "sizeLines": 544,
+      "fileCategory": "code"
+    },
+    {
       "path": "modules/analytics/outcome_tracker.py",
       "language": "python",
-      "sizeLines": 1894,
+      "sizeLines": 1934,
       "fileCategory": "code"
     },
     {
@@ -1007,7 +1019,7 @@
     {
       "path": "modules/job_runner/core.py",
       "language": "python",
-      "sizeLines": 1698,
+      "sizeLines": 1701,
       "fileCategory": "code"
     },
     {
@@ -1247,7 +1259,7 @@
     {
       "path": "modules/telegram/__init__.py",
       "language": "python",
-      "sizeLines": 16,
+      "sizeLines": 23,
       "fileCategory": "code"
     },
     {
@@ -1260,6 +1272,12 @@
       "path": "modules/telegram/final_watchlist_chart.py",
       "language": "python",
       "sizeLines": 540,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/telegram/final_watchlist_ui.py",
+      "language": "python",
+      "sizeLines": 428,
       "fileCategory": "code"
     },
     {
@@ -1647,6 +1665,12 @@
       "fileCategory": "code"
     },
     {
+      "path": "tests/test_exit_efficiency.py",
+      "language": "python",
+      "sizeLines": 285,
+      "fileCategory": "code"
+    },
+    {
       "path": "tests/test_final_watchlist_best_five.py",
       "language": "python",
       "sizeLines": 76,
@@ -1659,9 +1683,15 @@
       "fileCategory": "code"
     },
     {
+      "path": "tests/test_final_watchlist_interpretive_reason.py",
+      "language": "python",
+      "sizeLines": 106,
+      "fileCategory": "code"
+    },
+    {
       "path": "tests/test_final_watchlist_presentation.py",
       "language": "python",
-      "sizeLines": 317,
+      "sizeLines": 318,
       "fileCategory": "code"
     },
     {
@@ -1835,7 +1865,7 @@
     {
       "path": "tests/test_scheduler_hardening.py",
       "language": "python",
-      "sizeLines": 513,
+      "sizeLines": 515,
       "fileCategory": "code"
     },
     {
@@ -1943,7 +1973,7 @@
     {
       "path": "tests/test_v170_telegram_contract.py",
       "language": "python",
-      "sizeLines": 66,
+      "sizeLines": 68,
       "fileCategory": "code"
     },
     {
@@ -2127,18 +2157,18 @@
       "fileCategory": "code"
     }
   ],
-  "totalFiles": 354,
+  "totalFiles": 359,
   "filteredByIgnore": 0,
   "estimatedComplexity": "large",
   "stats": {
-    "filesScanned": 354,
+    "filesScanned": 359,
     "byCategory": {
       "infra": 2,
       "script": 29,
       "docs": 86,
       "config": 21,
       "data": 15,
-      "code": 201
+      "code": 206
     },
     "byLanguage": {
       "yaml": 2,
@@ -2147,7 +2177,7 @@
       "json": 20,
       "csv": 15,
       "txt": 19,
-      "python": 198,
+      "python": 203,
       "config": 1,
       "javascript": 3
     }
