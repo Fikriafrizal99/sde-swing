@@ -10,6 +10,13 @@ config/*local*.json
 
 # Python
 .venv/
+
+# Understand-Anything generated graph scratch and review overlays
+.ua/.trash-*/
+.ua/tmp/
+.ua/intermediate/*
+!.ua/intermediate/scan-result.json
+.ua/diff-overlay.json
 venv/
 __pycache__/
 *.py[cod]

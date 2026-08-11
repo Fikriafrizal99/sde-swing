@@ -1,0 +1,2155 @@
+{
+  "scriptCompleted": true,
+  "contentDigest": "ff0bfce5e1367ff0c45c7508a00006d7055d3f17920bfbb8eb49f9be7905c9bf",
+  "files": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "language": "yaml",
+      "sizeLines": 57,
+      "fileCategory": "infra"
+    },
+    {
+      "path": ".github/workflows/hotfix-exit-volume.yml",
+      "language": "yaml",
+      "sizeLines": 109,
+      "fileCategory": "infra"
+    },
+    {
+      "path": "CHECK_SDE_STATUS.bat",
+      "language": "batch",
+      "sizeLines": 22,
+      "fileCategory": "script"
+    },
+    {
+      "path": "PIPELINE_VALIDATION_REPORT.md",
+      "language": "markdown",
+      "sizeLines": 472,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "README.md",
+      "language": "markdown",
+      "sizeLines": 136,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "RELEASE_MANIFEST.json",
+      "language": "json",
+      "sizeLines": 48,
+      "fileCategory": "config"
+    },
+    {
+      "path": "RUN_FINAL_WATCHLIST.bat",
+      "language": "batch",
+      "sizeLines": 72,
+      "fileCategory": "script"
+    },
+    {
+      "path": "RUN_MARKET_OUTLOOK.bat",
+      "language": "batch",
+      "sizeLines": 111,
+      "fileCategory": "script"
+    },
+    {
+      "path": "RUN_POST_MARKET.bat",
+      "language": "batch",
+      "sizeLines": 111,
+      "fileCategory": "script"
+    },
+    {
+      "path": "RUN_SDE.bat",
+      "language": "batch",
+      "sizeLines": 86,
+      "fileCategory": "script"
+    },
+    {
+      "path": "config/data_sources.json",
+      "language": "json",
+      "sizeLines": 153,
+      "fileCategory": "config"
+    },
+    {
+      "path": "config/global_market.json",
+      "language": "json",
+      "sizeLines": 162,
+      "fileCategory": "config"
+    },
+    {
+      "path": "config/idx_fca_exclusions.json",
+      "language": "json",
+      "sizeLines": 184,
+      "fileCategory": "config"
+    },
+    {
+      "path": "config/pipeline.json",
+      "language": "json",
+      "sizeLines": 316,
+      "fileCategory": "config"
+    },
+    {
+      "path": "config/scheduler.json",
+      "language": "json",
+      "sizeLines": 155,
+      "fileCategory": "config"
+    },
+    {
+      "path": "config/trading_calendar.json",
+      "language": "json",
+      "sizeLines": 126,
+      "fileCategory": "config"
+    },
+    {
+      "path": "data/archive/broker_portfolio_backfill/2026-08-06/BROKER_SUMMARY_BACKFILL_2026-08-06.csv",
+      "language": "csv",
+      "sizeLines": 3,
+      "fileCategory": "data"
+    },
+    {
+      "path": "data/archive/broker_portfolio_backfill/2026-08-06/BROKER_SUMMARY_BACKFILL_2026-08-06.manifest.json",
+      "language": "json",
+      "sizeLines": 10,
+      "fileCategory": "config"
+    },
+    {
+      "path": "data/archive/broker_portfolio_backfill/2026-08-07/BROKER_SUMMARY_BACKFILL_2026-08-07.csv",
+      "language": "csv",
+      "sizeLines": 4,
+      "fileCategory": "data"
+    },
+    {
+      "path": "data/archive/broker_portfolio_backfill/2026-08-07/BROKER_SUMMARY_BACKFILL_2026-08-07.manifest.json",
+      "language": "json",
+      "sizeLines": 10,
+      "fileCategory": "config"
+    },
+    {
+      "path": "docs/ARCHITECTURE.md",
+      "language": "markdown",
+      "sizeLines": 15,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/CONFIGURATION.md",
+      "language": "markdown",
+      "sizeLines": 18,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/DATA_SOURCES.md",
+      "language": "markdown",
+      "sizeLines": 42,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/LEGACY_FILE_MANIFEST.md",
+      "language": "markdown",
+      "sizeLines": 15,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/MIGRATION_V1_6_TO_V1_7.md",
+      "language": "markdown",
+      "sizeLines": 12,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/README.md",
+      "language": "markdown",
+      "sizeLines": 9,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/RUNTIME_JOBS.md",
+      "language": "markdown",
+      "sizeLines": 12,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/STAGE1_STABILIZATION_REPORT_20260803.md",
+      "language": "markdown",
+      "sizeLines": 157,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/STAGE2_GAP_CLOSURE_REPORT_20260803.md",
+      "language": "markdown",
+      "sizeLines": 15,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/STAGE2_MODERATE_CALIBRATION_REPORT_20260803.md",
+      "language": "markdown",
+      "sizeLines": 295,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/STAGE3_MULTISOURCE_ARCHITECTURE_REPORT_20260803.md",
+      "language": "markdown",
+      "sizeLines": 210,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/STAGE3_RUNTIME_INTEGRATION_REPORT_20260803.md",
+      "language": "markdown",
+      "sizeLines": 217,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/TELEGRAM_ROUTING.md",
+      "language": "markdown",
+      "sizeLines": 12,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/TROUBLESHOOTING.md",
+      "language": "markdown",
+      "sizeLines": 19,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/ANALYTICS_SWING_GUIDE.md",
+      "language": "markdown",
+      "sizeLines": 35,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/AUDIT_REFERENCE_SWING_V1_1.md",
+      "language": "markdown",
+      "sizeLines": 25,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/BROKER_DATE_CONTROL_GUIDE.md",
+      "language": "markdown",
+      "sizeLines": 40,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/CARA_PAKAI_SDE_V1_3.md",
+      "language": "markdown",
+      "sizeLines": 132,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/CARA_PAKAI_SDE_V1_4.md",
+      "language": "markdown",
+      "sizeLines": 122,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/CARA_PAKAI_SDE_V1_5_TELEGRAM_UI.md",
+      "language": "markdown",
+      "sizeLines": 163,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/CARA_PAKAI_SDE_V1_6_1.md",
+      "language": "markdown",
+      "sizeLines": 100,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/CHANGELOG_SDE_SWING_V1_2_SAFE.md",
+      "language": "markdown",
+      "sizeLines": 72,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/CHANGELOG_SDE_SWING_V1_5_1_FINAL_WATCHLIST_CLICK_FIX.md",
+      "language": "markdown",
+      "sizeLines": 18,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/CHANGELOG_SDE_SWING_V1_5_2_BAT_E2E_CLICK_FIX.md",
+      "language": "markdown",
+      "sizeLines": 43,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/CHANGELOG_SDE_SWING_V1_5_3_REPORT_DELIVERY_RECOVERY_FIX.md",
+      "language": "markdown",
+      "sizeLines": 41,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/CHANGELOG_SDE_SWING_V1_5_4_TELEGRAM_CONSISTENCY_FIX.md",
+      "language": "markdown",
+      "sizeLines": 38,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/CHANGELOG_SDE_SWING_V1_5_TELEGRAM_UI.md",
+      "language": "markdown",
+      "sizeLines": 28,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/CHANGELOG_SDE_SWING_V1_6_0_SIGNAL_QUALITY_ENTRY_READINESS.md",
+      "language": "markdown",
+      "sizeLines": 66,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/CHANGELOG_SDE_SWING_V1_6_1_TELEGRAM_BROKER_DETAIL_CONTROL_PANEL.md",
+      "language": "markdown",
+      "sizeLines": 63,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/CLEANUP_GUIDE.txt",
+      "language": "txt",
+      "sizeLines": 12,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/DATABASE_DEDUPLICATION_REPORT.md",
+      "language": "markdown",
+      "sizeLines": 27,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/DATABASE_SCHEMA_SWING.md",
+      "language": "markdown",
+      "sizeLines": 37,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/DATA_LINEAGE_SWING.md",
+      "language": "markdown",
+      "sizeLines": 36,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/GLOBAL_MARKET_YAHOO_IMPLEMENTATION_REPORT.md",
+      "language": "markdown",
+      "sizeLines": 162,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/GLOBAL_MARKET_YAHOO_TEST_REPORT.md",
+      "language": "markdown",
+      "sizeLines": 109,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/IMPLEMENTATION_REPORT_PHASE_1.md",
+      "language": "markdown",
+      "sizeLines": 67,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/IMPLEMENTATION_REPORT_SWING_V1_1.md",
+      "language": "markdown",
+      "sizeLines": 56,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/LIVE_TEST_GUIDE.md",
+      "language": "markdown",
+      "sizeLines": 8,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/MANIFEST_SHA256.txt",
+      "language": "txt",
+      "sizeLines": 652,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/README_FIX.txt",
+      "language": "txt",
+      "sizeLines": 21,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/README_HOTFIX_TASK_SCHEDULER_ENCODING_V2.md",
+      "language": "markdown",
+      "sizeLines": 28,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/README_HOTFIX_TASK_SCHEDULER_IMPORT_401.md",
+      "language": "markdown",
+      "sizeLines": 33,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/README_INSTALL.txt",
+      "language": "txt",
+      "sizeLines": 25,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/README_MULAI_DI_SINI.txt",
+      "language": "txt",
+      "sizeLines": 37,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/README_PATCH_COMPACT_FINAL_WATCHLIST.txt",
+      "language": "txt",
+      "sizeLines": 13,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/README_PATCH_MARKET_OUTLOOK_REGIME.txt",
+      "language": "txt",
+      "sizeLines": 38,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/README_PATCH_V1_6_1_BROKER_BREAK.txt",
+      "language": "txt",
+      "sizeLines": 39,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/README_PATCH_V1_6_1_BROKER_RAW_COVERAGE_TOP3.txt",
+      "language": "txt",
+      "sizeLines": 72,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/README_PATCH_V1_6_1_OUTCOME_TRACKER.txt",
+      "language": "txt",
+      "sizeLines": 92,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/README_PATCH_V1_6_2_ADAPTIVE_FINAL_WATCHLIST_NO_BUY.txt",
+      "language": "txt",
+      "sizeLines": 48,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/REGRESSION_TEST_REPORT_SWING_V1_1.md",
+      "language": "markdown",
+      "sizeLines": 87,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/SDE_JOB_SCHEDULER_AUDIT.md",
+      "language": "markdown",
+      "sizeLines": 110,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/SDE_SCHEDULER_HARDENING_AUDIT.md",
+      "language": "markdown",
+      "sizeLines": 61,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/SDE_SCHEDULER_HARDENING_REPORT.md",
+      "language": "markdown",
+      "sizeLines": 178,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/SDE_SCHEDULER_IMPLEMENTATION_REPORT.md",
+      "language": "markdown",
+      "sizeLines": 103,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/SDE_SCHEDULER_TEST_REPORT.md",
+      "language": "markdown",
+      "sizeLines": 149,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/SDE_V1_6_0_SIGNAL_QUALITY_AUDIT.md",
+      "language": "markdown",
+      "sizeLines": 119,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/SDE_V1_6_1_TELEGRAM_BAT_AUDIT.md",
+      "language": "markdown",
+      "sizeLines": 71,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/TELEGRAM_SWING_MESSAGE_GUIDE.md",
+      "language": "markdown",
+      "sizeLines": 45,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/TELEGRAM_UI_IMPLEMENTATION_REPORT.md",
+      "language": "markdown",
+      "sizeLines": 125,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/TELEGRAM_UI_TEST_REPORT.md",
+      "language": "markdown",
+      "sizeLines": 100,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/VALIDATION_REPORT.txt",
+      "language": "txt",
+      "sizeLines": 15,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/WINDOWS_TASK_SCHEDULER_GUIDE.md",
+      "language": "markdown",
+      "sizeLines": 61,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/WINDOWS_TASK_SCHEDULER_GUIDE_V2.md",
+      "language": "markdown",
+      "sizeLines": 93,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/archive/v1.1/YAHOO_REFRESH_IMPLEMENTATION_REPORT.md",
+      "language": "markdown",
+      "sizeLines": 110,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "generate_task_scheduler_xml.py",
+      "language": "python",
+      "sizeLines": 152,
+      "fileCategory": "code"
+    },
+    {
+      "path": "maintenance/BACKFILL_PORTFOLIO_BROKER.bat",
+      "language": "batch",
+      "sizeLines": 133,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/BROKER_MENU.bat",
+      "language": "batch",
+      "sizeLines": 69,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/CHECK_SDE_STATUS.bat",
+      "language": "batch",
+      "sizeLines": 23,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/CONFIGURE_TELEGRAM_TOPICS.bat",
+      "language": "batch",
+      "sizeLines": 162,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/DAILY_OPERATIONS_MENU.bat",
+      "language": "batch",
+      "sizeLines": 70,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/GENERATE_SCHEDULER_XML.bat",
+      "language": "batch",
+      "sizeLines": 20,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/GET_CHAT_ID.bat",
+      "language": "batch",
+      "sizeLines": 10,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/INSTALL_REQUIREMENTS.bat",
+      "language": "batch",
+      "sizeLines": 14,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/MAINTENANCE_MENU.bat",
+      "language": "batch",
+      "sizeLines": 52,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/PERFORMANCE_MENU.bat",
+      "language": "batch",
+      "sizeLines": 193,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/PORTFOLIO_MENU.bat",
+      "language": "batch",
+      "sizeLines": 48,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/RECORD_BUY_SIGNALS.bat",
+      "language": "batch",
+      "sizeLines": 40,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/RECORD_PORTFOLIO_BUY.bat",
+      "language": "batch",
+      "sizeLines": 198,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/RELEASE_VALIDATION.bat",
+      "language": "batch",
+      "sizeLines": 10,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/REPAIR_YAHOO_RUNTIME.bat",
+      "language": "batch",
+      "sizeLines": 62,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/RESET_RUNTIME.bat",
+      "language": "batch",
+      "sizeLines": 12,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/RUN_POSITION_MANAGEMENT.bat",
+      "language": "batch",
+      "sizeLines": 89,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/SYSTEM_MENU.bat",
+      "language": "batch",
+      "sizeLines": 73,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/TEST_TELEGRAM.bat",
+      "language": "batch",
+      "sizeLines": 10,
+      "fileCategory": "script"
+    },
+    {
+      "path": "maintenance/VERIFY_MANIFEST.bat",
+      "language": "batch",
+      "sizeLines": 10,
+      "fileCategory": "script"
+    },
+    {
+      "path": "master_pipeline.py",
+      "language": "python",
+      "sizeLines": 623,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/ai_interpretation/__init__.py",
+      "language": "python",
+      "sizeLines": 32,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/ai_interpretation/gemini_interpreter.py",
+      "language": "python",
+      "sizeLines": 397,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/ai_interpretation/groq_interpreter.py",
+      "language": "python",
+      "sizeLines": 264,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/analytics/__init__.py",
+      "language": "python",
+      "sizeLines": 1,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/analytics/outcome_tracker.py",
+      "language": "python",
+      "sizeLines": 1894,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/analytics/profile_shadow.py",
+      "language": "python",
+      "sizeLines": 256,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/backtesting/README.md",
+      "language": "markdown",
+      "sizeLines": 18,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "modules/backtesting/backtest_engine.py",
+      "language": "python",
+      "sizeLines": 451,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/broker_bridge/broker_navigator_export.py",
+      "language": "python",
+      "sizeLines": 243,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/broker_bridge/broker_period_context.py",
+      "language": "python",
+      "sizeLines": 521,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/broker_bridge/broker_raw.py",
+      "language": "python",
+      "sizeLines": 216,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/broker_bridge/wait_for_broker_export.py",
+      "language": "python",
+      "sizeLines": 366,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/broker_fusion/broker_fusion.py",
+      "language": "python",
+      "sizeLines": 535,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/broker_fusion/foreign_flow.py",
+      "language": "python",
+      "sizeLines": 100,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/candidate_selector/README.md",
+      "language": "markdown",
+      "sizeLines": 25,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "modules/candidate_selector/technical_candidate_selector.py",
+      "language": "python",
+      "sizeLines": 798,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_preprocessor/stockbit_preprocessor.py",
+      "language": "python",
+      "sizeLines": 178,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/__init__.py",
+      "language": "python",
+      "sizeLines": 22,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/base.py",
+      "language": "python",
+      "sizeLines": 133,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/broker_analytics.py",
+      "language": "python",
+      "sizeLines": 461,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/broker_history.py",
+      "language": "python",
+      "sizeLines": 154,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/broker_multiday_engine.py",
+      "language": "python",
+      "sizeLines": 196,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/broker_multiday_output.py",
+      "language": "python",
+      "sizeLines": 142,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/broker_windows.py",
+      "language": "python",
+      "sizeLines": 352,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/canonical.py",
+      "language": "python",
+      "sizeLines": 314,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/config.py",
+      "language": "python",
+      "sizeLines": 208,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/conflict_resolver.py",
+      "language": "python",
+      "sizeLines": 267,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/constants.py",
+      "language": "python",
+      "sizeLines": 126,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/data_quality.py",
+      "language": "python",
+      "sizeLines": 345,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/decision_bridge.py",
+      "language": "python",
+      "sizeLines": 244,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/health.py",
+      "language": "python",
+      "sizeLines": 122,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/manager.py",
+      "language": "python",
+      "sizeLines": 6,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/router.py",
+      "language": "python",
+      "sizeLines": 172,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/stockbit_adapter.py",
+      "language": "python",
+      "sizeLines": 145,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/yahoo_zapi_validator.py",
+      "language": "python",
+      "sizeLines": 643,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/data_sources/zapi_idx_adapter.py",
+      "language": "python",
+      "sizeLines": 979,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/database/swing_history_db.py",
+      "language": "python",
+      "sizeLines": 981,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/decision/__init__.py",
+      "language": "python",
+      "sizeLines": 5,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/decision/adapter.py",
+      "language": "python",
+      "sizeLines": 32,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/decision/candidate.py",
+      "language": "python",
+      "sizeLines": 113,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/decision/exchange_status.py",
+      "language": "python",
+      "sizeLines": 166,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/decision_engine/README.txt",
+      "language": "txt",
+      "sizeLines": 23,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "modules/decision_engine/decision_engine.py",
+      "language": "python",
+      "sizeLines": 235,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/decision_engine/moderate_profiles.py",
+      "language": "python",
+      "sizeLines": 452,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/decision_engine/smart_selective_v162.py",
+      "language": "python",
+      "sizeLines": 292,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/entry_plan_validator/__init__.py",
+      "language": "python",
+      "sizeLines": 5,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/entry_plan_validator/validator.py",
+      "language": "python",
+      "sizeLines": 113,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/exit_engine/README.md",
+      "language": "markdown",
+      "sizeLines": 24,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "modules/exit_engine/exit_engine.py",
+      "language": "python",
+      "sizeLines": 886,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/global_market/__init__.py",
+      "language": "python",
+      "sizeLines": 2,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/global_market/global_market_registry.py",
+      "language": "python",
+      "sizeLines": 53,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/global_market/global_market_scoring.py",
+      "language": "python",
+      "sizeLines": 62,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/global_market/global_market_snapshot.py",
+      "language": "python",
+      "sizeLines": 238,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/global_market/global_market_validator.py",
+      "language": "python",
+      "sizeLines": 163,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/global_market/yahoo_global_market_provider.py",
+      "language": "python",
+      "sizeLines": 129,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/historical_downloader/README.txt",
+      "language": "txt",
+      "sizeLines": 13,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "modules/historical_downloader/Stockbit_Watchlist_2026-07-19_normalized.csv",
+      "language": "csv",
+      "sizeLines": 891,
+      "fileCategory": "data"
+    },
+    {
+      "path": "modules/historical_downloader/historical_downloader.py",
+      "language": "python",
+      "sizeLines": 1716,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/historical_downloader/post_market_resilient_downloader.py",
+      "language": "python",
+      "sizeLines": 128,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/job_runner/__init__.py",
+      "language": "python",
+      "sizeLines": 2,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/job_runner/core.py",
+      "language": "python",
+      "sizeLines": 1698,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/job_runner/delivery.py",
+      "language": "python",
+      "sizeLines": 545,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/job_runner/enhanced_daily_reports.py",
+      "language": "python",
+      "sizeLines": 1197,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/job_runner/enhanced_runtime_bridge.py",
+      "language": "python",
+      "sizeLines": 858,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/job_runner/report_validation.py",
+      "language": "python",
+      "sizeLines": 630,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/job_runner/reports.py",
+      "language": "python",
+      "sizeLines": 516,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/job_runner/runtime.py",
+      "language": "python",
+      "sizeLines": 530,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/market_calendar/__init__.py",
+      "language": "python",
+      "sizeLines": 3,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/market_calendar/idx_calendar.py",
+      "language": "python",
+      "sizeLines": 51,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/market_data/__init__.py",
+      "language": "python",
+      "sizeLines": 1,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/market_data/market_outlook_regime.py",
+      "language": "python",
+      "sizeLines": 328,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/market_data/sector_rotation.py",
+      "language": "python",
+      "sizeLines": 166,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/market_data/update_ihsg.py",
+      "language": "python",
+      "sizeLines": 112,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/market_data/zapi_enrichment.py",
+      "language": "python",
+      "sizeLines": 518,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/market_data/zapi_sector_metadata.py",
+      "language": "python",
+      "sizeLines": 207,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/news/__init__.py",
+      "language": "python",
+      "sizeLines": 1,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/news/news_monitor.py",
+      "language": "python",
+      "sizeLines": 813,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/news/news_monitor_market_impact.py",
+      "language": "python",
+      "sizeLines": 1033,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/portfolio/broker_history_context.py",
+      "language": "python",
+      "sizeLines": 479,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/portfolio/broker_portfolio_backfill.py",
+      "language": "python",
+      "sizeLines": 528,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/portfolio/edit_position.py",
+      "language": "python",
+      "sizeLines": 245,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/portfolio/manual_position_plan.py",
+      "language": "python",
+      "sizeLines": 270,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/portfolio/portfolio_delivery_status.py",
+      "language": "python",
+      "sizeLines": 81,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/portfolio/portfolio_report_interpreter.py",
+      "language": "python",
+      "sizeLines": 124,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/portfolio/position_management_engine.py",
+      "language": "python",
+      "sizeLines": 884,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/portfolio/position_management_runtime.py",
+      "language": "python",
+      "sizeLines": 668,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/portfolio/refresh_open_positions.py",
+      "language": "python",
+      "sizeLines": 205,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/runtime/__init__.py",
+      "language": "python",
+      "sizeLines": 20,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/runtime/artifacts.py",
+      "language": "python",
+      "sizeLines": 39,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/runtime/context.py",
+      "language": "python",
+      "sizeLines": 152,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/runtime/data_source_manager.py",
+      "language": "python",
+      "sizeLines": 399,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/runtime/jobs.py",
+      "language": "python",
+      "sizeLines": 130,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/runtime/status.py",
+      "language": "python",
+      "sizeLines": 112,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/runtime_config.py",
+      "language": "python",
+      "sizeLines": 233,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/snapshots/__init__.py",
+      "language": "python",
+      "sizeLines": 3,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/snapshots/builder.py",
+      "language": "python",
+      "sizeLines": 57,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/technical_feature_engine/README.md",
+      "language": "markdown",
+      "sizeLines": 18,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "modules/technical_feature_engine/post_market_validated_runner.py",
+      "language": "python",
+      "sizeLines": 210,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/technical_feature_engine/technical_feature_engine.py",
+      "language": "python",
+      "sizeLines": 384,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/telegram/README.txt",
+      "language": "txt",
+      "sizeLines": 22,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "modules/telegram/__init__.py",
+      "language": "python",
+      "sizeLines": 16,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/telegram/daily_report_ui.py",
+      "language": "python",
+      "sizeLines": 1395,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/telegram/final_watchlist_chart.py",
+      "language": "python",
+      "sizeLines": 540,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/telegram/formatters.py",
+      "language": "python",
+      "sizeLines": 286,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/telegram/get_chat_id.py",
+      "language": "python",
+      "sizeLines": 107,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/telegram/idx_price.py",
+      "language": "python",
+      "sizeLines": 93,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/telegram/market_outlook_ui.py",
+      "language": "python",
+      "sizeLines": 357,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/telegram/post_market_ui.py",
+      "language": "python",
+      "sizeLines": 307,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/telegram/professional_ui.py",
+      "language": "python",
+      "sizeLines": 1938,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/telegram/router.py",
+      "language": "python",
+      "sizeLines": 114,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/telegram/swing_report_builder.py",
+      "language": "python",
+      "sizeLines": 719,
+      "fileCategory": "code"
+    },
+    {
+      "path": "modules/telegram/telegram_bot.py",
+      "language": "python",
+      "sizeLines": 614,
+      "fileCategory": "code"
+    },
+    {
+      "path": "prepare_sde_swing_audit.py",
+      "language": "python",
+      "sizeLines": 632,
+      "fileCategory": "code"
+    },
+    {
+      "path": "pytest.ini",
+      "language": "config",
+      "sizeLines": 6,
+      "fileCategory": "config"
+    },
+    {
+      "path": "reports/E2E_VALIDATION_REPORT.json",
+      "language": "json",
+      "sizeLines": 72,
+      "fileCategory": "config"
+    },
+    {
+      "path": "reports/E2E_VALIDATION_REPORT.md",
+      "language": "markdown",
+      "sizeLines": 28,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "reports/FILE_USAGE_AUDIT.json",
+      "language": "json",
+      "sizeLines": 33,
+      "fileCategory": "config"
+    },
+    {
+      "path": "reports/FILE_USAGE_AUDIT.md",
+      "language": "markdown",
+      "sizeLines": 124,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "reports/MARKET_OUTLOOK_POST_MARKET_FAILURE_AUDIT_V1_5_3.md",
+      "language": "markdown",
+      "sizeLines": 70,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "reports/PRE_CLEANUP_DATA_AUDIT.json",
+      "language": "json",
+      "sizeLines": 42,
+      "fileCategory": "config"
+    },
+    {
+      "path": "reports/RELEASE_CHANGE_REPORT.md",
+      "language": "markdown",
+      "sizeLines": 95,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "reports/TELEGRAM_OUTPUT_AUDIT_2026_07_27_V1_5_4.md",
+      "language": "markdown",
+      "sizeLines": 40,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "reports/V1_6_0_RELEASE_VALIDATION/E2E_VALIDATION_REPORT.json",
+      "language": "json",
+      "sizeLines": 104,
+      "fileCategory": "config"
+    },
+    {
+      "path": "reports/V1_6_0_RELEASE_VALIDATION/E2E_VALIDATION_REPORT.md",
+      "language": "markdown",
+      "sizeLines": 45,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "reports/V1_6_0_RELEASE_VALIDATION/TELEGRAM_WATCHLIST_PREVIEW_V1_6_0.txt",
+      "language": "txt",
+      "sizeLines": 54,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "reports/V1_6_1_TELEGRAM_FORMAT_PREVIEW.txt",
+      "language": "txt",
+      "sizeLines": 163,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "requirements.txt",
+      "language": "txt",
+      "sizeLines": 5,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "run_sde_job.py",
+      "language": "python",
+      "sizeLines": 1299,
+      "fileCategory": "code"
+    },
+    {
+      "path": "run_sde_job_integrated.py",
+      "language": "python",
+      "sizeLines": 383,
+      "fileCategory": "code"
+    },
+    {
+      "path": "scheduler/SCHEDULE_FINAL_WATCHLIST.bat",
+      "language": "batch",
+      "sizeLines": 10,
+      "fileCategory": "script"
+    },
+    {
+      "path": "scheduler/SCHEDULE_MARKET_OUTLOOK.bat",
+      "language": "batch",
+      "sizeLines": 8,
+      "fileCategory": "script"
+    },
+    {
+      "path": "scheduler/SCHEDULE_POST_MARKET.bat",
+      "language": "batch",
+      "sizeLines": 8,
+      "fileCategory": "script"
+    },
+    {
+      "path": "swing_utils.py",
+      "language": "python",
+      "sizeLines": 232,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tampermonkey/Stockbit_Broker_Portfolio_Backfill_v1.user.js",
+      "language": "javascript",
+      "sizeLines": 612,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tampermonkey/Stockbit_Broker_Portfolio_Backfill_v2.user.js",
+      "language": "javascript",
+      "sizeLines": 457,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tampermonkey/Stockbit_Broker_Summary_Auto_Navigator_v3.1.user.js",
+      "language": "javascript",
+      "sizeLines": 517,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/fixtures/README.md",
+      "language": "markdown",
+      "sizeLines": 18,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "tests/fixtures/broker/complete_30/BROKER_SUMMARY_COMBINED_20260720.csv",
+      "language": "csv",
+      "sizeLines": 32,
+      "fileCategory": "data"
+    },
+    {
+      "path": "tests/fixtures/broker/date_mismatch/BROKER_SUMMARY_COMBINED_20260718.csv",
+      "language": "csv",
+      "sizeLines": 4,
+      "fileCategory": "data"
+    },
+    {
+      "path": "tests/fixtures/broker/date_mismatch/README.txt",
+      "language": "txt",
+      "sizeLines": 2,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "tests/fixtures/broker/duplicate_symbols/BROKER_SUMMARY_COMBINED_20260720.csv",
+      "language": "csv",
+      "sizeLines": 5,
+      "fileCategory": "data"
+    },
+    {
+      "path": "tests/fixtures/broker/incompatible_batch/BROKER_SUMMARY_BAD_COLUMNS.csv",
+      "language": "csv",
+      "sizeLines": 3,
+      "fileCategory": "data"
+    },
+    {
+      "path": "tests/fixtures/broker/missing_symbols/BROKER_SUMMARY_COMBINED_20260720.csv",
+      "language": "csv",
+      "sizeLines": 3,
+      "fileCategory": "data"
+    },
+    {
+      "path": "tests/fixtures/broker/partial_15_part_1/BROKER_SUMMARY_COMBINED_20260720_PART1.csv",
+      "language": "csv",
+      "sizeLines": 17,
+      "fileCategory": "data"
+    },
+    {
+      "path": "tests/fixtures/broker/partial_15_part_2/BROKER_SUMMARY_COMBINED_20260720_PART2.csv",
+      "language": "csv",
+      "sizeLines": 17,
+      "fileCategory": "data"
+    },
+    {
+      "path": "tests/fixtures/broker/unexpected_symbols/BROKER_SUMMARY_COMBINED_20260720.csv",
+      "language": "csv",
+      "sizeLines": 5,
+      "fileCategory": "data"
+    },
+    {
+      "path": "tests/fixtures/yahoo/no_new_valid_candle/BBCA.csv",
+      "language": "csv",
+      "sizeLines": 3,
+      "fileCategory": "data"
+    },
+    {
+      "path": "tests/fixtures/yahoo/partial_latest_candle/BBCA.csv",
+      "language": "csv",
+      "sizeLines": 4,
+      "fileCategory": "data"
+    },
+    {
+      "path": "tests/fixtures/yahoo/provider_failed/README.md",
+      "language": "markdown",
+      "sizeLines": 6,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "tests/fixtures/yahoo/stale_data/BBCA.csv",
+      "language": "csv",
+      "sizeLines": 4,
+      "fileCategory": "data"
+    },
+    {
+      "path": "tests/fixtures/yahoo/valid_closed_candle/BBCA.csv",
+      "language": "csv",
+      "sizeLines": 8,
+      "fileCategory": "data"
+    },
+    {
+      "path": "tests/fixtures/zapi_idx/broker_summary.json",
+      "language": "json",
+      "sizeLines": 19,
+      "fileCategory": "config"
+    },
+    {
+      "path": "tests/fixtures/zapi_idx/companies.json",
+      "language": "json",
+      "sizeLines": 21,
+      "fileCategory": "config"
+    },
+    {
+      "path": "tests/fixtures/zapi_idx/index_summary.json",
+      "language": "json",
+      "sizeLines": 23,
+      "fileCategory": "config"
+    },
+    {
+      "path": "tests/fixtures/zapi_idx/market_activity.json",
+      "language": "json",
+      "sizeLines": 26,
+      "fileCategory": "config"
+    },
+    {
+      "path": "tests/fixtures/zapi_idx/securities.json",
+      "language": "json",
+      "sizeLines": 17,
+      "fileCategory": "config"
+    },
+    {
+      "path": "tests/fixtures/zapi_idx/stock_summary.json",
+      "language": "json",
+      "sizeLines": 35,
+      "fileCategory": "config"
+    },
+    {
+      "path": "tests/fixtures/zapi_idx/stock_summary_live_20260803.json",
+      "language": "json",
+      "sizeLines": 30,
+      "fileCategory": "config"
+    },
+    {
+      "path": "tests/test_broker_fusion_partial.py",
+      "language": "python",
+      "sizeLines": 56,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_broker_period_bridge.py",
+      "language": "python",
+      "sizeLines": 265,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_broker_period_performance.py",
+      "language": "python",
+      "sizeLines": 145,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_broker_raw_coverage_patch.py",
+      "language": "python",
+      "sizeLines": 122,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_control_center_launcher.py",
+      "language": "python",
+      "sizeLines": 66,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_enhanced_daily_reports.py",
+      "language": "python",
+      "sizeLines": 447,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_enhanced_runtime_integration.py",
+      "language": "python",
+      "sizeLines": 205,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_evaluation_telegram_cards.py",
+      "language": "python",
+      "sizeLines": 175,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_exchange_status_dtype_safety.py",
+      "language": "python",
+      "sizeLines": 94,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_final_watchlist_best_five.py",
+      "language": "python",
+      "sizeLines": 76,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_final_watchlist_fact_consistency.py",
+      "language": "python",
+      "sizeLines": 55,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_final_watchlist_presentation.py",
+      "language": "python",
+      "sizeLines": 317,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_full_manual_terminal_lifecycle.py",
+      "language": "python",
+      "sizeLines": 233,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_global_market.py",
+      "language": "python",
+      "sizeLines": 344,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_groq_interpreter.py",
+      "language": "python",
+      "sizeLines": 124,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_lifecycle_preview_resend.py",
+      "language": "python",
+      "sizeLines": 66,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_market_outlook_regime_patch.py",
+      "language": "python",
+      "sizeLines": 78,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_multisource_broker_multiday.py",
+      "language": "python",
+      "sizeLines": 366,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_multisource_conflict.py",
+      "language": "python",
+      "sizeLines": 96,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_multisource_health.py",
+      "language": "python",
+      "sizeLines": 81,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_multisource_quality.py",
+      "language": "python",
+      "sizeLines": 142,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_multisource_router.py",
+      "language": "python",
+      "sizeLines": 130,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_multisource_schema.py",
+      "language": "python",
+      "sizeLines": 119,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_multisource_zapi_mock.py",
+      "language": "python",
+      "sizeLines": 94,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_news_market_impact.py",
+      "language": "python",
+      "sizeLines": 75,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_news_monitor.py",
+      "language": "python",
+      "sizeLines": 72,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_news_monitor_market_impact.py",
+      "language": "python",
+      "sizeLines": 234,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_outcome_tracker_lifecycle.py",
+      "language": "python",
+      "sizeLines": 489,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_portfolio_broker_backfill.py",
+      "language": "python",
+      "sizeLines": 251,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_portfolio_edit_position.py",
+      "language": "python",
+      "sizeLines": 54,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_portfolio_maintenance_cli.py",
+      "language": "python",
+      "sizeLines": 37,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_portfolio_management_reporting.py",
+      "language": "python",
+      "sizeLines": 239,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_portfolio_runtime_guardrails.py",
+      "language": "python",
+      "sizeLines": 169,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_position_broker_history.py",
+      "language": "python",
+      "sizeLines": 260,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_position_management_engine.py",
+      "language": "python",
+      "sizeLines": 137,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_post_market_data_guardrail.py",
+      "language": "python",
+      "sizeLines": 154,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_resend_daily_reports.py",
+      "language": "python",
+      "sizeLines": 79,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_resend_final_watchlist.py",
+      "language": "python",
+      "sizeLines": 39,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_resolve_last_trading_day.py",
+      "language": "python",
+      "sizeLines": 31,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_runtime_integration.py",
+      "language": "python",
+      "sizeLines": 103,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_scheduler_hardening.py",
+      "language": "python",
+      "sizeLines": 513,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_sde_job_runner.py",
+      "language": "python",
+      "sizeLines": 179,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_sector_rotation.py",
+      "language": "python",
+      "sizeLines": 50,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_signal_quality_v160.py",
+      "language": "python",
+      "sizeLines": 253,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_smart_selective_v162.py",
+      "language": "python",
+      "sizeLines": 166,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_stage1_stabilization.py",
+      "language": "python",
+      "sizeLines": 149,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_stage2_gap_closure.py",
+      "language": "python",
+      "sizeLines": 113,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_stage2_moderate_calibration.py",
+      "language": "python",
+      "sizeLines": 116,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_start_sde_swing_launcher.py",
+      "language": "python",
+      "sizeLines": 106,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_swing_v1_2.py",
+      "language": "python",
+      "sizeLines": 774,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_task_scheduler_xml_encoding_v2.py",
+      "language": "python",
+      "sizeLines": 43,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_task_scheduler_xml_import_hotfix.py",
+      "language": "python",
+      "sizeLines": 43,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_telegram_professional_ui.py",
+      "language": "python",
+      "sizeLines": 213,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_telegram_router.py",
+      "language": "python",
+      "sizeLines": 73,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_telegram_router_news.py",
+      "language": "python",
+      "sizeLines": 24,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_telegram_router_specific_report_precedence.py",
+      "language": "python",
+      "sizeLines": 37,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_v161_report_and_bat_structure.py",
+      "language": "python",
+      "sizeLines": 143,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_v170_multisource_enrichment.py",
+      "language": "python",
+      "sizeLines": 135,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_v170_telegram_contract.py",
+      "language": "python",
+      "sizeLines": 66,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_yahoo_incremental_refresh.py",
+      "language": "python",
+      "sizeLines": 223,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_zapi_end_to_end.py",
+      "language": "python",
+      "sizeLines": 457,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_zapi_idx_documented.py",
+      "language": "python",
+      "sizeLines": 313,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_zapi_sector_metadata.py",
+      "language": "python",
+      "sizeLines": 93,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/audit_quant_analysis.py",
+      "language": "python",
+      "sizeLines": 374,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/broker_period_performance.py",
+      "language": "python",
+      "sizeLines": 472,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/check_telegram_report_route.py",
+      "language": "python",
+      "sizeLines": 191,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/ci_validate_contracts.py",
+      "language": "python",
+      "sizeLines": 218,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/ci_validate_runtime_config.py",
+      "language": "python",
+      "sizeLines": 52,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/clean_runtime_artifacts.py",
+      "language": "python",
+      "sizeLines": 71,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/detect_telegram_report_topic.py",
+      "language": "python",
+      "sizeLines": 98,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/generate_manifest.py",
+      "language": "python",
+      "sizeLines": 102,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/generate_telegram_ui_preview.py",
+      "language": "python",
+      "sizeLines": 146,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/preview_lifecycle_digest.py",
+      "language": "python",
+      "sizeLines": 149,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/print_job_status.py",
+      "language": "python",
+      "sizeLines": 182,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/resend_daily_report.py",
+      "language": "python",
+      "sizeLines": 239,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/resend_final_watchlist.py",
+      "language": "python",
+      "sizeLines": 206,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/resolve_last_trading_day.py",
+      "language": "python",
+      "sizeLines": 61,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/run_final_watchlist_broker_period.py",
+      "language": "python",
+      "sizeLines": 563,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/run_full_daily_broker_period.py",
+      "language": "python",
+      "sizeLines": 114,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/run_moderate_shadow.py",
+      "language": "python",
+      "sizeLines": 12,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/send_active_recommendations.py",
+      "language": "python",
+      "sizeLines": 266,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/send_lifecycle_digest.py",
+      "language": "python",
+      "sizeLines": 154,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/set_python_cmd.bat",
+      "language": "batch",
+      "sizeLines": 28,
+      "fileCategory": "script"
+    },
+    {
+      "path": "tools/telegram_settings.py",
+      "language": "python",
+      "sizeLines": 459,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/trigger_backtest_v162.py",
+      "language": "python",
+      "sizeLines": 220,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/update_idx_universe.py",
+      "language": "python",
+      "sizeLines": 212,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/validate_release.py",
+      "language": "python",
+      "sizeLines": 425,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/validate_telegram_ui_preview.py",
+      "language": "python",
+      "sizeLines": 90,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/verify_manifest.py",
+      "language": "python",
+      "sizeLines": 108,
+      "fileCategory": "code"
+    }
+  ],
+  "totalFiles": 354,
+  "filteredByIgnore": 0,
+  "estimatedComplexity": "large",
+  "stats": {
+    "filesScanned": 354,
+    "byCategory": {
+      "infra": 2,
+      "script": 29,
+      "docs": 86,
+      "config": 21,
+      "data": 15,
+      "code": 201
+    },
+    "byLanguage": {
+      "yaml": 2,
+      "batch": 29,
+      "markdown": 67,
+      "json": 20,
+      "csv": 15,
+      "txt": 19,
+      "python": 198,
+      "config": 1,
+      "javascript": 3
+    }
+  }
+}
