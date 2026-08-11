@@ -50,7 +50,9 @@ def test_detail_reports_escape_dynamic_values_and_do_not_expose_raw_arrays() -> 
     assert "BUY READY" in text
     assert "WAIT_FOR_ENTRY_TRIGGER" not in text
     assert "['should not render" not in text
-    assert "should not render as a Python list" in text
+    assert "should not render as a Python list" not in text
+    assert "<b>Reason:</b>" in text
+    assert "Broker mendukung (ACCUMULATION)" in text
     assert "<b>🎯 TRADE SETUP</b>" in text
     assert "<b>🏦 BROKER SUMMARY</b>" in text
     assert "<b>🟢 Top Buy</b>" in text
