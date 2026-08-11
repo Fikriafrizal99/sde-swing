@@ -46,8 +46,11 @@ def _hrum_row() -> dict:
     }
 
 
-def test_package_routes_final_watchlist_to_interpretive_formatter():
-    assert _daily_report_ui.format_watchlist_detail is format_watchlist_detail
+def test_package_runtime_uses_interpretive_final_watchlist_contract():
+    text = _daily_report_ui.format_watchlist_detail(_hrum_row())
+    assert "<b>Reason:</b>" in text
+    assert "Broker mendukung (STRONG ACCUMULATION)" in text
+    assert "generic engine reason" not in text
 
 
 def test_hrum_card_is_compact_and_reason_explains_why_wait():
@@ -62,12 +65,11 @@ def test_hrum_card_is_compact_and_reason_explains_why_wait():
     assert "📊 Pattern" not in text
     assert "Persistence" not in text
 
-    assert "HRUM masih bullish" in text
-    assert "masih di area entry 840–860" in text
+    assert "HRUM bullish; harga 850 masih di entry 840–860" in text
     assert "Broker mendukung (STRONG ACCUMULATION)" in text
-    assert "buying terlihat lebih konsisten daripada selling" in text
-    assert "resistance 880 menjadi konfirmasi terdekat" in text
-    assert "Tunggu harga menembus dan bertahan di atas 880" in text
+    assert "Buy/Sell 4/0, buying konsisten" in text
+    assert "WAIT TRIGGER; resistance 880 belum lewat" in text
+    assert "Tunggu break dan bertahan &gt;880 sebelum entry" in text
     assert "generic engine reason" not in text
     assert len(text) <= 1024
 
@@ -97,8 +99,8 @@ def test_insufficient_broker_is_explained_as_missing_evidence_not_distribution()
     text = format_watchlist_detail(row)
 
     assert "📌 INSUFFICIENT | Score 0/100" in text
-    assert "Score 0 pada kondisi INSUFFICIENT berarti data belum cukup, bukan otomatis distribusi" in text
-    assert "net flow sementara +Rp2,54B dan Buy/Sell 1/0 baru dibaca sebagai indikasi awal" in text
-    assert "Status masih NOT READY; resistance 1.125 menjadi konfirmasi terdekat" in text
-    assert "Tunggu harga menembus dan bertahan di atas 1.125" in text
+    assert "Broker INSUFFICIENT: Score 0 = data belum cukup, bukan distribusi" in text
+    assert "net +Rp2,54B dan Buy/Sell 1/0 baru indikasi awal" in text
+    assert "NOT READY; resistance 1.125 belum lewat" in text
+    assert "Tunggu break dan bertahan &gt;1.125 sebelum entry" in text
     assert len(text) <= 1024
