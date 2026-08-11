@@ -767,7 +767,10 @@ def validate_broker_summary(ctx: RunnerContext, expected_symbols: list[str] | No
         return _write_broker_readiness(ctx, report)
     if bool(cfg.get("reject_sample_data", True)):
         sample_markers = ("sample", "fixture", "dummy", "placeholder")
-        text_cols = df.astype(str).agg(" ".join, axis=1).str.lower()
+        # Pandas 3's ``astype(str)`` may retain missing values as floats in
+        # the resulting StringDtype.  A blank optional broker field must not
+        # crash readiness validation while we scan for sample markers.
+        text_cols = df.astype("string").fillna("").agg(" ".join, axis=1).str.lower()
         if text_cols.str.contains("|".join(sample_markers), regex=True).any():
             report["status"] = "SAMPLE_DATA_DETECTED"
             return _write_broker_readiness(ctx, report)

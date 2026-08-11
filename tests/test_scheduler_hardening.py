@@ -363,6 +363,8 @@ class SchedulerHardeningTests(unittest.TestCase):
             ctx = make_ctx(tmp)
             write_broker(tmp, "2026-07-24")
             self.assertEqual(validate_broker_summary(ctx, ["BBCA", "TLKM"])["status"], "READY")
+            write_broker(tmp, "2026-07-24", TOP_SELLER_3=[None, None])
+            self.assertEqual(validate_broker_summary(ctx, ["BBCA", "TLKM"])["status"], "READY")
             pd.DataFrame({"EMITEN": ["BBCA"]}).to_csv(tmp / "broker/BROKER_SUMMARY_LATEST.csv", index=False)
             self.assertEqual(validate_broker_summary(ctx, ["BBCA"])["status"], "SCHEMA_INVALID")
             write_broker(tmp, "2026-07-24", symbols=["BBCA", "BBCA"])
