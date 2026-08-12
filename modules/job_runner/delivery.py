@@ -19,6 +19,9 @@ from .reports import ReportPayload
 from .runtime import RunnerContext, append_jsonl, now_wib, read_json, resolve, write_json
 
 
+_PHOTO_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+
+
 def _attachment_path(payload: ReportPayload) -> Path | None:
     raw = getattr(payload, "attachment_path", None)
     if raw in (None, ""):
@@ -30,9 +33,21 @@ def _attachment_caption(payload: ReportPayload) -> str:
     return str(getattr(payload, "caption", "") or payload.text or "").strip()
 
 
+def _is_photo_attachment(path: Path | None) -> bool:
+    return path is not None and path.suffix.lower() in _PHOTO_SUFFIXES
+
+
 def _idempotency_key(ctx: RunnerContext, payload: ReportPayload) -> str:
     report = payload.report_type.upper()
     attachment = _attachment_path(payload)
+    if _is_photo_attachment(attachment) and report == "FINAL_WATCHLIST_DETAIL":
+        symbol = (payload.symbol or "UNKNOWN").upper()
+        material = payload.material_signature or payload.signal_version or payload.signature[:24]
+        return f"{ctx.trade_date.isoformat()}:{report}:{symbol}:{material}"
+    if attachment is None and report == "FINAL_WATCHLIST_DETAIL" and (payload.material_signature or payload.signal_version):
+        symbol = (payload.symbol or "UNKNOWN").upper()
+        material = payload.material_signature or payload.signal_version
+        return f"{ctx.trade_date.isoformat()}:{report}:{symbol}:{material}"
     if attachment is not None:
         return f"{ctx.trade_date.isoformat()}:{report}:{attachment.name.upper()}"
     if report == "DATA_WARNING":
@@ -76,6 +91,30 @@ def _mark_lifecycle_events_notified(ctx: RunnerContext, event_ids: tuple[str, ..
         conn.close()
 
 
+def _lifecycle_ack_ids(payload: ReportPayload, normalized_text: str) -> tuple[str, ...]:
+    """Return only lifecycle IDs that are visibly represented in the message.
+
+    The lifecycle bridge can carry a larger pending ID set than the bounded
+    digest text (normally 20 events). Acknowledging the full pending set would
+    silently lose later TP/SL events. STATUS_CHANGES uses one `◆` line per
+    rendered event, so the visible event count is the authoritative ACK bound.
+    If the formatter contract is not recognizable, fail safe and ACK nothing.
+    """
+    identifiers = tuple(
+        str(item).strip()
+        for item in (getattr(payload, "lifecycle_event_ids", ()) or ())
+        if str(item).strip()
+    )
+    if not identifiers:
+        return ()
+    if str(payload.report_type or "").upper() != "STATUS_CHANGES":
+        return identifiers
+    rendered_count = len(re.findall(r"(?m)^◆\s+", normalized_text))
+    if rendered_count <= 0:
+        return ()
+    return identifiers[:rendered_count]
+
+
 def should_send(ctx: RunnerContext, payload: ReportPayload) -> tuple[bool, str]:
     if ctx.dry_run:
         return False, "DRY_RUN"
@@ -93,10 +132,6 @@ def _telegram_config(ctx: RunnerContext) -> dict[str, Any]:
     return read_json(ctx.path("telegram_config", "config/telegram.json"))
 
 
-def _topic_id(ctx: RunnerContext, payload: ReportPayload) -> str:
-    return str(telegram_route(ctx, payload)["message_thread_id"] or "").strip()
-
-
 def telegram_route(ctx: RunnerContext, payload: ReportPayload) -> dict[str, Any]:
     """Resolve one of SIGNAL/REPORT/SYSTEM topics with env-first semantics."""
     cfg = _telegram_config(ctx)
@@ -107,6 +142,10 @@ def telegram_route(ctx: RunnerContext, payload: ReportPayload) -> dict[str, Any]
         if configured:
             route = type(route)(route.category, route.target_thread, str(configured).strip(), False)
     return {**route.to_dict(), "env_var": f"TELEGRAM_THREAD_{route.category}_ID"}
+
+
+def _topic_id(ctx: RunnerContext, payload: ReportPayload) -> str:
+    return str(telegram_route(ctx, payload)["message_thread_id"] or "").strip()
 
 
 def split_telegram_text(text: str, max_len: int = 4000) -> list[str]:
@@ -126,8 +165,7 @@ def split_telegram_text(text: str, max_len: int = 4000) -> list[str]:
         if len(block) <= max_len:
             current = block
             continue
-        lines = block.splitlines()
-        for line in lines:
+        for line in block.splitlines():
             candidate = line if not current else current + "\n" + line
             if len(candidate) <= max_len:
                 current = candidate
@@ -170,15 +208,14 @@ def _credentials(ctx: RunnerContext | None = None) -> tuple[str, str]:
             runtime_cfg = telegram_cfg.get("telegram", {}) if isinstance(telegram_cfg.get("telegram", {}), dict) else {}
         except Exception:
             runtime_cfg = {}
-    token = (os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or str(runtime_cfg.get("bot_token", "")).strip())
-    chat_id = (os.getenv("TELEGRAM_CHAT_ID", "").strip() or str(runtime_cfg.get("chat_id", "")).strip())
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or str(runtime_cfg.get("bot_token", "")).strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip() or str(runtime_cfg.get("chat_id", "")).strip()
     if not token or not chat_id:
         raise RuntimeError("Telegram token/chat_id belum dikonfigurasi.")
     return token, chat_id
 
 
 def telegram_configured(ctx: RunnerContext) -> bool:
-    """Return whether runtime Telegram credentials are available."""
     try:
         _credentials(ctx)
     except RuntimeError:
@@ -196,7 +233,13 @@ def _response_json(response: Any) -> dict[str, Any]:
     return body
 
 
-def _send_telegram(ctx: RunnerContext, payload: ReportPayload, text: str | None = None, part_index: int = 1, part_count: int = 1) -> dict[str, Any]:
+def _send_telegram(
+    ctx: RunnerContext,
+    payload: ReportPayload,
+    text: str | None = None,
+    part_index: int = 1,
+    part_count: int = 1,
+) -> dict[str, Any]:
     if requests is None:
         raise RuntimeError("Dependency requests belum terpasang. Jalankan maintenance\\INSTALL_REQUIREMENTS.bat.")
     token, chat_id = _credentials(ctx)
@@ -244,128 +287,6 @@ def _send_document(ctx: RunnerContext, payload: ReportPayload) -> dict[str, Any]
     return _response_json(response)
 
 
-def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str, Any]]:
-    index_path, log_path = _state_paths(ctx)
-    index = read_json(index_path)
-    results: list[dict[str, Any]] = []
-    failed_root = resolve(ctx.scheduler_config.get("delivery", {}).get("failed_root", "data/output/failed_delivery"))
-    delivery_total = len(payloads)
-    credentials_ready = telegram_configured(ctx)
-    provenance = getattr(ctx, "config_provenance", {}) or {}
-    official_runtime = str(provenance.get("config_version", "")) == "1.7.0-multisource"
-    for delivery_sequence, payload in enumerate(payloads, start=1):
-        allowed, reason = should_send(ctx, payload)
-        key = _idempotency_key(ctx, payload)
-        attachment = _attachment_path(payload)
-        max_len = int(ctx.scheduler_config.get("telegram", {}).get("maximum_message_length", 4000))
-        normalized_text = normalize_telegram_text(payload.text)
-        parts = [] if attachment is not None else split_telegram_text(normalized_text, max_len=max_len)
-        base = {
-            "time": now_wib().isoformat(timespec="seconds"),
-            "run_id": ctx.run_id,
-            "job": ctx.job,
-            "trade_date": ctx.trade_date.isoformat(),
-            "report_type": payload.report_type,
-            "signature": payload.signature,
-            "idempotency_key": key,
-            "part_count": 1 if attachment is not None else len(parts),
-            "delivery_sequence": delivery_sequence,
-            "delivery_total": delivery_total,
-            "force_resend": bool(ctx.force),
-            "attachment_path": str(attachment) if attachment else "",
-            **telegram_route(ctx, payload),
-            "telegram_message_id": "",
-        }
-        if not allowed:
-            event = {**base, "status": reason}
-            append_jsonl(log_path, event)
-            results.append(event)
-            continue
-        if not credentials_ready and official_runtime:
-            event = {**base, "status": "SKIPPED_NOT_CONFIGURED", "reason": "TELEGRAM_CREDENTIALS_EMPTY"}
-            append_jsonl(log_path, event)
-            results.append(event)
-            continue
-        message_ids: list[Any] = []
-        part_events: list[dict[str, Any]] = []
-        try:
-            if attachment is not None:
-                response = _send_document(ctx, payload)
-                message_id = response.get("result", {}).get("message_id", "")
-                message_ids.append(message_id)
-                part_event = {**base, "status": "SENT_PART", "part_index": 1, "telegram_message_id": message_id}
-                append_jsonl(log_path, part_event)
-                part_events.append(part_event)
-            else:
-                for idx, part in enumerate(parts, start=1):
-                    response = _send_telegram(ctx, payload, text=part, part_index=idx, part_count=len(parts))
-                    message_id = response.get("result", {}).get("message_id", "")
-                    message_ids.append(message_id)
-                    part_event = {**base, "status": "SENT_PART", "part_index": idx, "telegram_message_id": message_id}
-                    append_jsonl(log_path, part_event)
-                    part_events.append(part_event)
-            event = {**base, "status": "SENT", "telegram_message_ids": message_ids, "parts": part_events}
-            lifecycle_ack_failed = False
-            lifecycle_ids = tuple(getattr(payload, "lifecycle_event_ids", ()) or ())
-            if lifecycle_ids:
-                try:
-                    _mark_lifecycle_events_notified(ctx, lifecycle_ids)
-                except Exception as exc:
-                    # Telegram succeeded; leave events pending if the local
-                    # acknowledgement fails so the next maintenance run can
-                    # retry the acknowledgement safely.
-                    lifecycle_ack_failed = True
-                    append_jsonl(log_path, {**base, "status": "LIFECYCLE_ACK_FAILED", "error": str(exc)})
-            if not lifecycle_ack_failed:
-                index[key] = event
-                write_json(index_path, index)
-            append_jsonl(log_path, event)
-            results.append(event)
-        except Exception as exc:
-            folder = failed_root / ctx.trade_date.isoformat()
-            folder.mkdir(parents=True, exist_ok=True)
-            suffix = attachment.suffix if attachment is not None else ".txt"
-            payload_path = folder / f"{ctx.run_id}_{payload.report_type}{suffix}"
-            if attachment is not None and attachment.exists():
-                payload_path.write_bytes(attachment.read_bytes())
-            else:
-                payload_path.write_text(normalized_text, encoding="utf-8")
-            event = {
-                **base,
-                "status": "FAILED",
-                "error": str(exc),
-                "failed_payload": str(payload_path),
-                "failed_payload_sha256": file_sha256(payload_path),
-                "telegram_message_ids": message_ids,
-                "sent_parts_before_failure": len(message_ids),
-            }
-            append_jsonl(log_path, event)
-            results.append(event)
-    return results
-
-# FINAL_WATCHLIST_PHOTO_DELIVERY_V2
-_PHOTO_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
-_fw_legacy_idempotency_key = _idempotency_key
-
-
-def _is_photo_attachment(path: Path | None) -> bool:
-    return path is not None and path.suffix.lower() in _PHOTO_SUFFIXES
-
-
-def _idempotency_key(ctx: RunnerContext, payload: ReportPayload) -> str:
-    attachment = _attachment_path(payload)
-    report = payload.report_type.upper()
-    if _is_photo_attachment(attachment) and report == "FINAL_WATCHLIST_DETAIL":
-        symbol = (payload.symbol or "UNKNOWN").upper()
-        material = payload.material_signature or payload.signal_version or payload.signature[:24]
-        return f"{ctx.trade_date.isoformat()}:{report}:{symbol}:{material}"
-    if attachment is None and report == "FINAL_WATCHLIST_DETAIL" and (payload.material_signature or payload.signal_version):
-        symbol = (payload.symbol or "UNKNOWN").upper()
-        material = payload.material_signature or payload.signal_version
-        return f"{ctx.trade_date.isoformat()}:{report}:{symbol}:{material}"
-    return _fw_legacy_idempotency_key(ctx, payload)
-
-
 def _send_photo(ctx: RunnerContext, payload: ReportPayload, caption: str) -> dict[str, Any]:
     if requests is None:
         raise RuntimeError("Dependency requests belum terpasang. Jalankan maintenance\\INSTALL_REQUIREMENTS.bat.")
@@ -398,11 +319,26 @@ def _photo_parts(payload: ReportPayload, max_len: int) -> tuple[str, list[str]]:
     if not caption:
         caption = full[:900]
     caption = caption[:1024]
-    if full.startswith(caption):
-        remainder = full[len(caption):].strip()
-    else:
-        remainder = full
+    remainder = full[len(caption):].strip() if full.startswith(caption) else full
     return caption, split_telegram_text(remainder, max_len=max_len) if remainder else []
+
+
+def _record_successful_lifecycle_ack(
+    ctx: RunnerContext,
+    payload: ReportPayload,
+    normalized_text: str,
+    base: dict[str, Any],
+    log_path: Path,
+) -> bool:
+    lifecycle_ids = _lifecycle_ack_ids(payload, normalized_text)
+    if not lifecycle_ids:
+        return True
+    try:
+        _mark_lifecycle_events_notified(ctx, lifecycle_ids)
+        return True
+    except Exception as exc:
+        append_jsonl(log_path, {**base, "status": "LIFECYCLE_ACK_FAILED", "error": str(exc)})
+        return False
 
 
 def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str, Any]]:
@@ -474,8 +410,9 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
                         "telegram_message_ids": message_ids,
                         "parts": part_events,
                     }
-                    index[key] = event
-                    write_json(index_path, index)
+                    if _record_successful_lifecycle_ack(ctx, payload, normalized_text, base, log_path):
+                        index[key] = event
+                        write_json(index_path, index)
                     append_jsonl(log_path, event)
                     results.append(event)
                     continue
@@ -509,15 +446,7 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
                     part_events.append(part_event)
 
             event = {**base, "status": "SENT", "telegram_message_ids": message_ids, "parts": part_events}
-            lifecycle_ack_failed = False
-            lifecycle_ids = tuple(getattr(payload, "lifecycle_event_ids", ()) or ())
-            if lifecycle_ids:
-                try:
-                    _mark_lifecycle_events_notified(ctx, lifecycle_ids)
-                except Exception as exc:
-                    lifecycle_ack_failed = True
-                    append_jsonl(log_path, {**base, "status": "LIFECYCLE_ACK_FAILED", "error": str(exc)})
-            if not lifecycle_ack_failed:
+            if _record_successful_lifecycle_ack(ctx, payload, normalized_text, base, log_path):
                 index[key] = event
                 write_json(index_path, index)
             append_jsonl(log_path, event)
