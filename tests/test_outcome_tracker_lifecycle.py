@@ -168,6 +168,7 @@ def test_export_reports_writes_lifecycle_and_portfolio_artifacts(tmp_path: Path)
         "SIGNAL_OUTCOME_LEDGER.csv",
         "ACTIVE_RECOMMENDATIONS.csv",
         "LIFECYCLE_EVENTS.csv",
+        "SIGNAL_RECOMMENDATION_HISTORY.csv",
         "PORTFOLIO_POSITIONS.csv",
         "ACTIVE_RECOMMENDATIONS_TELEGRAM.txt",
         "STATUS_CHANGES_TELEGRAM.txt",

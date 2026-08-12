@@ -27,6 +27,7 @@ from modules.analytics.execution_integrity import (
     target_is_profitable,
     validate_plan_geometry,
 )
+from modules.broker_bridge.broker_period_context import trading_sessions_between
 
 try:
     import requests
@@ -78,7 +79,6 @@ LEDGER_COLUMNS = [
     "final_outcome", "realized_return_pct", "created_at", "updated_at",
     "source_json",
 ]
-
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS signal_outcome_ledger (
@@ -163,6 +163,18 @@ CREATE INDEX IF NOT EXISTS idx_lifecycle_events_pending
     ON lifecycle_events(telegram_notified_at, event_date);
 CREATE INDEX IF NOT EXISTS idx_lifecycle_events_signal
     ON lifecycle_events(signal_id, created_at);
+
+CREATE TABLE IF NOT EXISTS signal_recommendation_history (
+    signal_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    recommendation_date TEXT NOT NULL,
+    run_id TEXT,
+    raw_decision TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (signal_id, recommendation_date)
+);
+CREATE INDEX IF NOT EXISTS idx_signal_recommendation_history_symbol_date
+    ON signal_recommendation_history(symbol, recommendation_date);
 
 CREATE TABLE IF NOT EXISTS portfolio_positions (
     position_id TEXT PRIMARY KEY,
@@ -258,9 +270,16 @@ def record_lifecycle_event(
 def pending_lifecycle_events(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         """
-        SELECT * FROM lifecycle_events
-        WHERE telegram_notified_at IS NULL OR telegram_notified_at=''
-        ORDER BY event_date, created_at, symbol
+        SELECT e.*,
+               (SELECT COUNT(*) FROM signal_recommendation_history h
+                WHERE h.signal_id=e.signal_id) AS recommendation_count,
+               (SELECT s.signal_date FROM signal_outcome_ledger s
+                WHERE s.signal_id=e.signal_id) AS original_signal_date,
+               (SELECT s.trigger_expiry_days FROM signal_outcome_ledger s
+                WHERE s.signal_id=e.signal_id) AS trigger_expiry_days
+        FROM lifecycle_events e
+        WHERE e.telegram_notified_at IS NULL OR e.telegram_notified_at=''
+        ORDER BY e.event_date, e.created_at, e.symbol
         """
     ).fetchall()
 
@@ -338,9 +357,95 @@ def as_int(value: Any, default: int) -> int:
         return default
 
 
+def waiting_expiry_sessions(value: Any = 7) -> int:
+    """Return the hard maximum waiting window in IDX sessions."""
+    return min(max(as_int(value, 7), 1), 7)
+
+
 def parse_date(value: Any) -> str:
     parsed = pd.to_datetime(value, errors="coerce")
     return "" if pd.isna(parsed) else parsed.date().isoformat()
+
+
+def lifecycle_age_sessions(signal_date: Any, as_of_date: Any) -> int:
+    """Return IDX sessions elapsed after the immutable signal date.
+
+    The creation session is AGE 0D.  Weekends and configured IDX holidays are
+    excluded by the shared trading-session utility.
+    """
+    start_text = parse_date(signal_date)
+    end_text = parse_date(as_of_date)
+    if not start_text or not end_text or start_text > end_text:
+        return 0
+    try:
+        sessions = trading_sessions_between(start_text, end_text)
+    except (TypeError, ValueError, OSError):
+        return 0
+    return max(0, len(sessions) - 1)
+
+
+def _record_recommendation_occurrence(
+    conn: sqlite3.Connection,
+    *,
+    signal_id: str,
+    symbol: str,
+    recommendation_date: Any,
+    run_id: str,
+    raw_decision: str,
+) -> bool:
+    """Append one idempotent recommendation occurrence for a lifecycle."""
+    recommendation_date = parse_date(recommendation_date)
+    if not signal_id or not recommendation_date or norm_text(raw_decision).upper() not in CURRENT_RECOMMENDATION_DECISIONS:
+        return False
+    try:
+        if trading_sessions_between(recommendation_date, recommendation_date) != [recommendation_date]:
+            return False
+    except (TypeError, ValueError, OSError):
+        return False
+    cursor = conn.execute(
+        """
+        INSERT OR IGNORE INTO signal_recommendation_history (
+            signal_id, symbol, recommendation_date, run_id, raw_decision, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            signal_id,
+            normalize_symbol(symbol),
+            recommendation_date,
+            norm_text(run_id),
+            norm_text(raw_decision).upper(),
+            now_text(),
+        ),
+    )
+    return cursor.rowcount > 0
+
+
+def recommendation_count(conn: sqlite3.Connection, signal_id: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM signal_recommendation_history WHERE signal_id=?",
+        (signal_id,),
+    ).fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def _ensure_legacy_recommendation_baselines(conn: sqlite3.Connection) -> None:
+    """Backfill only the provable original occurrence for legacy ledger rows."""
+    placeholders = ",".join("?" for _ in CURRENT_RECOMMENDATION_DECISIONS)
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO signal_recommendation_history (
+            signal_id, symbol, recommendation_date, run_id, raw_decision, created_at
+        )
+        SELECT signal_id, symbol, signal_date, run_id,
+               UPPER(COALESCE(NULLIF(raw_decision, ''), signal_type)),
+               COALESCE(created_at, datetime('now'))
+        FROM signal_outcome_ledger
+        WHERE signal_id IS NOT NULL AND signal_id <> ''
+          AND signal_date IS NOT NULL AND signal_date <> ''
+          AND UPPER(COALESCE(NULLIF(raw_decision, ''), signal_type, '')) IN ({placeholders})
+        """,
+        tuple(CURRENT_RECOMMENDATION_DECISIONS),
+    )
 
 
 def row_value(row: pd.Series | dict[str, Any], *aliases: str, default: Any = None) -> Any:
@@ -380,6 +485,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     for name in ("latest_scan_status", "latest_scan_date", "latest_scan_run_id"):
         if name not in existing:
             conn.execute(f"ALTER TABLE signal_outcome_ledger ADD COLUMN {name} TEXT")
+    _ensure_legacy_recommendation_baselines(conn)
     conn.commit()
     return conn
 
@@ -513,7 +619,7 @@ def build_signal_record(
         "plan_status": plan_status,
         "trigger_type": trigger_type,
         "trigger_price": trigger_price,
-        "trigger_expiry_days": trigger_expiry_days,
+        "trigger_expiry_days": waiting_expiry_sessions(trigger_expiry_days),
         "entry_zone_low": entry_zone_low,
         "entry_zone_high": entry_zone_high,
         "reference_price": reference_price,
@@ -570,12 +676,114 @@ def _update_scan_metadata(
     )
 
 
+def _expire_waiting_lifecycle(
+    conn: sqlite3.Connection,
+    record: sqlite3.Row,
+    as_of_date: Any,
+) -> bool:
+    """Close a WAITING lifecycle exactly at its 7th elapsed IDX session."""
+    if norm_text(record["current_status"]).upper() != "WAITING_TRIGGER":
+        return False
+    signal_date = parse_date(record["signal_date"])
+    as_of = parse_date(as_of_date)
+    if not signal_date or not as_of:
+        return False
+    expiry = waiting_expiry_sessions(record["trigger_expiry_days"])
+    try:
+        sessions = trading_sessions_between(signal_date, as_of)
+    except (TypeError, ValueError, OSError):
+        return False
+    elapsed_age = len(sessions) - 1
+    if elapsed_age < expiry:
+        return False
+    expiry_date = sessions[expiry]
+    conn.execute(
+        """
+        UPDATE signal_outcome_ledger
+        SET current_status='EXPIRED', final_outcome='EXPIRED',
+            exit_date=?, exit_price=NULL,
+            exit_reason='TRIGGER_NOT_REACHED_WITHIN_WINDOW', updated_at=?
+        WHERE signal_id=? AND current_status='WAITING_TRIGGER'
+        """,
+        (expiry_date, now_text(), record["signal_id"]),
+    )
+    record_lifecycle_event(
+        conn,
+        signal_id=record["signal_id"],
+        symbol=record["symbol"],
+        event_type="EXPIRED",
+        previous_status="WAITING_TRIGGER",
+        new_status="EXPIRED",
+        event_date=expiry_date,
+        event_price=None,
+        event_reason="TRIGGER_NOT_REACHED_WITHIN_WINDOW",
+    )
+    return True
+
+
+def _resolve_expired_waiting_lifecycles(
+    conn: sqlite3.Connection,
+    as_of_date: Any,
+    *,
+    exclude_symbols: set[str] | None = None,
+) -> int:
+    if not parse_date(as_of_date):
+        return 0
+    excluded = {normalize_symbol(value) for value in (exclude_symbols or set())}
+    expired = 0
+    for active in conn.execute(
+        "SELECT * FROM signal_outcome_ledger WHERE current_status='WAITING_TRIGGER'"
+    ).fetchall():
+        if normalize_symbol(active["symbol"]) in excluded:
+            continue
+        expired += int(_expire_waiting_lifecycle(conn, active, as_of_date))
+    return expired
+
+
+def _rebase_new_lifecycle(record: dict[str, Any], recommendation_date: str) -> dict[str, Any]:
+    """Build a current-day lifecycle envelope without changing engine facts."""
+    rebased = dict(record)
+    original_id = str(record.get("signal_id") or "")
+    rebased["signal_id"] = hashlib.sha256(
+        f"{original_id}|NEW_LIFECYCLE|{recommendation_date}".encode("utf-8")
+    ).hexdigest()[:24]
+    rebased["signal_date"] = recommendation_date
+    rebased["last_seen_date"] = recommendation_date
+    rebased["latest_scan_date"] = recommendation_date
+    rebased["latest_scan_run_id"] = record.get("run_id", "")
+    rebased["created_at"] = now_text()
+    rebased["updated_at"] = rebased["created_at"]
+    return rebased
+
+
 def upsert_signal(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
-    """Insert a signal once, or refresh the same active lifecycle in place."""
+    """Insert a signal or refresh the same active lifecycle in place.
+
+    A waiting lifecycle is resolved before a new same-symbol recommendation is
+    matched to it.  This prevents an expiry-day recommendation from reviving
+    the old thesis and resetting its age/expiry window.
+    """
     exact = conn.execute(
         "SELECT * FROM signal_outcome_ledger WHERE signal_id=?",
         (record["signal_id"],),
     ).fetchone()
+    if exact and norm_text(exact["current_status"]).upper() in TERMINAL_STATUSES:
+        recommendation_date = parse_date(record.get("_recommendation_date") or record.get("signal_date"))
+        if (
+            norm_text(exact["current_status"]).upper() == "EXPIRED"
+            and recommendation_date
+            and recommendation_date > norm_text(exact["signal_date"])
+        ):
+            # A stale scan can reproduce the old deterministic signal_id.  A
+            # later valid recommendation after EXPIRED is still a new thesis
+            # and must receive a new lifecycle identity.
+            record = _rebase_new_lifecycle(record, recommendation_date)
+            exact = None
+        else:
+            return "SKIPPED"
+    explicit_invalidation = norm_text(record.get("current_status")).upper() == "INVALIDATED_BEFORE_ENTRY"
+    if exact and not explicit_invalidation and _expire_waiting_lifecycle(conn, exact, record.get("signal_date")):
+        exact = None
     active = None if exact else conn.execute(
         """
         SELECT * FROM signal_outcome_ledger
@@ -584,6 +792,8 @@ def upsert_signal(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
         """,
         (record["symbol"],),
     ).fetchone()
+    if active and not explicit_invalidation and _expire_waiting_lifecycle(conn, active, record.get("signal_date")):
+        active = None
     target = exact or active
     if target:
         signal_id = target["signal_id"]
@@ -653,7 +863,32 @@ def upsert_signal(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
                 event_price=record.get("reference_price"),
                 event_reason="INVALID_PLAN_BEFORE_ENTRY",
             )
+        _record_recommendation_occurrence(
+            conn,
+            signal_id=signal_id,
+            symbol=record["symbol"],
+            recommendation_date=record.get("_recommendation_date") or record.get("signal_date"),
+            run_id=record.get("run_id", ""),
+            raw_decision=record.get("raw_decision", ""),
+        )
         return "UPDATED_ACTIVE" if active or exact else "SKIPPED"
+    recommendation_date = parse_date(record.get("_recommendation_date") or record.get("signal_date"))
+    prior_expired = conn.execute(
+        """
+        SELECT signal_id, signal_date
+        FROM signal_outcome_ledger
+        WHERE symbol=? AND current_status='EXPIRED'
+        ORDER BY signal_date DESC LIMIT 1
+        """,
+        (record["symbol"],),
+    ).fetchone()
+    if (
+        recommendation_date
+        and prior_expired
+        and recommendation_date > norm_text(prior_expired["signal_date"])
+    ):
+        record = _rebase_new_lifecycle(record, recommendation_date)
+
     columns = LEDGER_COLUMNS
     placeholders = ",".join("?" for _ in columns)
     cursor = conn.execute(
@@ -672,6 +907,14 @@ def upsert_signal(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
             event_price=record.get("reference_price"),
             event_reason=record.get("exit_reason") or "BUY_SIGNAL_REGISTERED",
         )
+        _record_recommendation_occurrence(
+            conn,
+            signal_id=record["signal_id"],
+            symbol=record["symbol"],
+            recommendation_date=record.get("_recommendation_date") or record.get("signal_date"),
+            run_id=record.get("run_id", ""),
+            raw_decision=record.get("raw_decision", ""),
+        )
         return "INSERTED"
     return "SKIPPED"
 
@@ -683,11 +926,21 @@ def register_decision_file(
     run_id: str,
     default_signal_date: str = "",
     trigger_expiry_days: int = 7,
+    historical_dir: Path | None = None,
 ) -> RegisterResult:
     decisions = read_csv(decision_path)
     plans = read_csv(plans_path)
     result = RegisterResult()
+    # Production sync resolves price-triggered transitions before matching a
+    # same-symbol recommendation.  This preserves the event priority:
+    # trigger on the final allowed session becomes OPEN; only then does a
+    # non-triggered waiting lifecycle expire.
+    if historical_dir is not None:
+        update_outcomes(conn, historical_dir)
+    resolved_date = parse_date(default_signal_date)
     if decisions.empty:
+        if resolved_date:
+            _resolve_expired_waiting_lifecycles(conn, resolved_date)
         for active in conn.execute(
             "SELECT signal_id FROM signal_outcome_ledger WHERE current_status IN ('WAITING_TRIGGER','OPEN')"
         ).fetchall():
@@ -708,6 +961,7 @@ def register_decision_file(
 
     current_state: dict[str, tuple[str, dict[str, Any] | None]] = {}
     records: list[dict[str, Any]] = []
+    recommendation_date = norm_text(default_signal_date)
     for _, row in decisions.iterrows():
         symbol = normalize_symbol(row.get(symbol_col))
         raw_decision = norm_text(row.get(decision_col), "").upper()
@@ -718,6 +972,8 @@ def register_decision_file(
             default_signal_date,
             trigger_expiry_days,
         )
+        if record is not None:
+            record["_recommendation_date"] = recommendation_date or record.get("signal_date", "")
         current_state[symbol] = (raw_decision, record)
         if record is not None:
             records.append(record)
@@ -733,6 +989,17 @@ def register_decision_file(
                 date_candidates.extend(pd.to_datetime(decisions[column], errors="coerce").dropna().tolist())
         if date_candidates:
             scan_date = max(date_candidates).date().isoformat()
+    if scan_date:
+        explicit_invalid_symbols = {
+            normalize_symbol(record["symbol"])
+            for record in records
+            if norm_text(record.get("current_status")).upper() == "INVALIDATED_BEFORE_ENTRY"
+        }
+        _resolve_expired_waiting_lifecycles(
+            conn,
+            scan_date,
+            exclude_symbols=explicit_invalid_symbols,
+        )
     for active in conn.execute(
         "SELECT signal_id,symbol FROM signal_outcome_ledger WHERE current_status IN ('WAITING_TRIGGER','OPEN')"
     ).fetchall():
@@ -849,7 +1116,7 @@ def entry_from_zone(bar: pd.Series, low: float, high: float) -> float:
 
 
 def first_trigger(record: sqlite3.Row, future: pd.DataFrame) -> tuple[int, float] | None:
-    expiry = max(as_int(record["trigger_expiry_days"], 7), 1)
+    expiry = waiting_expiry_sessions(record["trigger_expiry_days"])
     window = future.head(expiry)
     if window.empty:
         return None
@@ -898,10 +1165,21 @@ def evaluate_record(record: sqlite3.Row, price: pd.DataFrame) -> dict[str, Any]:
     if newly_triggered:
         signal_date = pd.Timestamp(record["signal_date"])
         future = price[price["Date"] > signal_date].copy().reset_index(drop=True)
+        if not future.empty:
+            try:
+                last_date = future["Date"].max().date()
+                expected_sessions = trading_sessions_between(signal_date.date(), last_date)
+                expiry = waiting_expiry_sessions(record["trigger_expiry_days"])
+                allowed_sessions = set(expected_sessions[1 : expiry + 1])
+                future = future[
+                    future["Date"].dt.date.astype(str).isin(allowed_sessions)
+                ].reset_index(drop=True)
+            except (TypeError, ValueError, OSError):
+                future = pd.DataFrame()
         if future.empty:
             return update
         trigger = first_trigger(record, future)
-        expiry = max(as_int(record["trigger_expiry_days"], 7), 1)
+        expiry = waiting_expiry_sessions(record["trigger_expiry_days"])
         if trigger is None:
             if len(future) >= expiry:
                 bar = future.iloc[expiry - 1]
@@ -1159,6 +1437,8 @@ def _latest_price(historical_dir: Path, symbol: str) -> float | None:
 
 
 def active_recommendations_df(conn: sqlite3.Connection, historical_dir: Path) -> pd.DataFrame:
+    _ensure_legacy_recommendation_baselines(conn)
+    conn.commit()
     rows = conn.execute(
         """
         SELECT * FROM signal_outcome_ledger
@@ -1167,7 +1447,7 @@ def active_recommendations_df(conn: sqlite3.Connection, historical_dir: Path) ->
         """
     ).fetchall()
     if not rows:
-        return pd.DataFrame(columns=[*LEDGER_COLUMNS, "current_price", "simulated_return_pct", "age_sessions"])
+        return pd.DataFrame(columns=[*LEDGER_COLUMNS, "recommendation_count", "current_price", "simulated_return_pct", "age_sessions"])
     output: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
@@ -1176,8 +1456,9 @@ def active_recommendations_df(conn: sqlite3.Connection, historical_dir: Path) ->
         item["current_price"] = current
         item["simulated_return_pct"] = ret_pct(current, base_price)
         prices = load_prices(historical_dir / f"{item['symbol']}.csv")
-        signal_date = pd.Timestamp(item["signal_date"])
-        item["age_sessions"] = int(len(prices[prices["Date"] > signal_date])) if not prices.empty else 0
+        as_of_date = item.get("latest_scan_date") or item.get("last_seen_date") or item.get("signal_date")
+        item["age_sessions"] = lifecycle_age_sessions(item.get("signal_date"), as_of_date)
+        item["recommendation_count"] = recommendation_count(conn, str(item.get("signal_id") or ""))
         output.append(item)
     return pd.DataFrame(output)
 
@@ -1453,7 +1734,8 @@ def _active_recommendations_telegram(active: pd.DataFrame) -> str:
                     f"TP1          : {fmt_price(row.get('take_profit_1'))}",
                     f"TP2          : {fmt_price(row.get('take_profit_2'))}",
                     f"SL           : {fmt_price(row.get('stop_loss'))}",
-                    f"Umur posisi  : {int(row.get('age_sessions') or 0)} sesi",
+                    f"REC          : {max(as_int(row.get('recommendation_count'), 1), 1)}x",
+                    f"AGE          : {int(row.get('age_sessions') or 0)}D",
                 ])
             else:
                 low = fmt_price(row.get("entry_zone_low"), missing="")
@@ -1463,7 +1745,8 @@ def _active_recommendations_telegram(active: pd.DataFrame) -> str:
                     "", f"</b>{symbol}</b>", f"Sinyal      : {signal_date}", f"Entry       : {entry}",
                     f"Harga kini  : {current}",
                     f"Status scan : {html.escape(str(row.get('latest_scan_status') or 'NOT_IN_LATEST_SCAN'))}",
-                    f"Umur sinyal : {int(row.get('age_sessions') or 0)} sesi",
+                    f"REC         : {max(as_int(row.get('recommendation_count'), 1), 1)}x",
+                    f"AGE         : {int(row.get('age_sessions') or 0)}D",
                 ])
     return "\n".join(lines)
 
@@ -1503,7 +1786,7 @@ def _status_changes_telegram(events: list[sqlite3.Row], *, max_events: int = 20)
         # EVENT TYPE
         if event_type == "ENTRY_TRIGGERED":
             lines.append("📈 <b>ENTRY TRIGGERED</b>")
-            lines.append(f"🎯 Trigger : {reason.title()}")
+            lines.append(f"🎯 Trigger : {reason.title()} ({html.escape(reason_raw)})")
             lines.append(f"💰 Entry   : {price}")
         elif event_type == "TP1_HIT":
             lines.append("🎯 <b>TP1 HIT</b>")
@@ -1519,7 +1802,16 @@ def _status_changes_telegram(events: list[sqlite3.Row], *, max_events: int = 20)
             lines.append(f"💰 Exit    : {price}")
         elif event_type == "EXPIRED":
             lines.append("⌛ <b>SIGNAL EXPIRED</b>")
-            lines.append(f"⚠️ Reason  : {reason}")
+            expiry_sessions = waiting_expiry_sessions(_event_value(event, "trigger_expiry_days", 7))
+            lines.append(f"⚠️ Waiting {expiry_sessions} sesi perdagangan tanpa entry trigger.")
+            rec_count = as_int(_event_value(event, "recommendation_count"), 0)
+            lines.append(f"🔁 REC selama lifecycle: {rec_count}x")
+            original = str(_event_value(event, "original_signal_date", raw_date) or raw_date)
+            try:
+                original = pd.to_datetime(original).strftime("%d %b %Y")
+            except Exception:
+                pass
+            lines.append(f"📅 Original signal: {html.escape(original)}")
         elif event_type == "INVALIDATED_BEFORE_ENTRY":
             lines.append("🚫 <b>SIGNAL INVALIDATED</b>")
             lines.append(f"⚠️ Reason  : {reason}")
@@ -1553,6 +1845,20 @@ def export_reports(
         conn,
     )
     events.to_csv(output_dir / "LIFECYCLE_EVENTS.csv", index=False, encoding="utf-8-sig")
+    recommendation_history = pd.read_sql_query(
+        """
+        SELECT signal_id, symbol, recommendation_date, run_id,
+               raw_decision, created_at
+        FROM signal_recommendation_history
+        ORDER BY recommendation_date, symbol, signal_id
+        """,
+        conn,
+    )
+    recommendation_history.to_csv(
+        output_dir / "SIGNAL_RECOMMENDATION_HISTORY.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
     portfolio = portfolio_df(conn)
     portfolio.to_csv(output_dir / "PORTFOLIO_POSITIONS.csv", index=False, encoding="utf-8-sig")
     pending = material_lifecycle_events(pending_lifecycle_events(conn))
@@ -1590,6 +1896,7 @@ def export_reports(
             "telegram_preview": str((output_dir / "PERFORMANCE_TELEGRAM.txt").resolve()),
             "active_recommendations": str((output_dir / "ACTIVE_RECOMMENDATIONS.csv").resolve()),
             "lifecycle_events": str((output_dir / "LIFECYCLE_EVENTS.csv").resolve()),
+            "recommendation_history": str((output_dir / "SIGNAL_RECOMMENDATION_HISTORY.csv").resolve()),
             "portfolio_positions": str((output_dir / "PORTFOLIO_POSITIONS.csv").resolve()),
             "active_recommendations_telegram": str((output_dir / "ACTIVE_RECOMMENDATIONS_TELEGRAM.txt").resolve()),
             "status_changes_telegram": str((output_dir / "STATUS_CHANGES_TELEGRAM.txt").resolve()),
@@ -1776,6 +2083,7 @@ def sync(args: argparse.Namespace) -> int:
             args.run_id or f"OUTCOME-SYNC-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
             args.signal_date,
             args.trigger_expiry_days,
+            Path(args.historical_dir),
         )
     updates = update_outcomes(conn, Path(args.historical_dir))
     payload = export_reports(conn, Path(args.output_dir), Path(args.historical_dir))

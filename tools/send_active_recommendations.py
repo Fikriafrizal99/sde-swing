@@ -177,6 +177,7 @@ def build_active_message(active: pd.DataFrame) -> str:
             _compact_price(row.get("stop_loss"), anchor_price=anchor),
             _compact_price(row.get("take_profit_1"), anchor_price=anchor),
             _compact_price(row.get("take_profit_2"), anchor_price=anchor),
+            f"{max(_int_or_zero(row.get('recommendation_count')), 1)}x",
             f"{_int_or_zero(row.get('age_sessions'))}D",
         ])
 
@@ -185,7 +186,7 @@ def build_active_message(active: pd.DataFrame) -> str:
             "",
             "📈 <b>ACTIVE</b>",
             "<pre>" + html.escape(_render_table(
-                ["EMT", "ENTRY", "NOW", "P/L", "SL", "TP1", "TP2", "AGE"],
+                ["EMT", "ENTRY", "NOW", "P/L", "SL", "TP1", "TP2", "REC", "AGE"],
                 open_rows,
             )) + "</pre>",
         ])
@@ -205,7 +206,7 @@ def build_active_message(active: pd.DataFrame) -> str:
             _compact_price(row.get("stop_loss"), anchor_price=anchor),
             _compact_price(row.get("take_profit_1"), anchor_price=anchor),
             _compact_price(row.get("take_profit_2"), anchor_price=anchor),
-            _risk_reward(row),
+            f"{max(_int_or_zero(row.get('recommendation_count')), 1)}x",
             f"{_int_or_zero(row.get('age_sessions'))}D",
         ])
 
@@ -214,7 +215,7 @@ def build_active_message(active: pd.DataFrame) -> str:
             "",
             "⏳ <b>WAITING ENTRY</b>",
             "<pre>" + html.escape(_render_table(
-                ["EMT", "ENTRY", "NOW", "GAP", "SL", "TP1", "TP2", "RR", "AGE"],
+                ["EMT", "ENTRY", "NOW", "GAP", "SL", "TP1", "TP2", "REC", "AGE"],
                 waiting_rows,
                 left_columns={0},
             )) + "</pre>",

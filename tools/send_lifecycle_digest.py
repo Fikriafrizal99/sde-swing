@@ -51,8 +51,8 @@ def build_lifecycle_message(events: list[Mapping[str, Any]], *, max_events: int 
 
     limit = max(int(max_events or 1), 1)
     lines = [
-        "🔔 <b>CUANS HIT DAILY</b>",
-        f"📊 <b>{len(material)} Hit Plan</b>",
+        "🔔 <b>LIFECYCLE DIGEST</b>",
+        f"📊 <b>{len(material)} perubahan material</b>",
         "━━━━━━━━━━━━━━━━━━━",
     ]
     body: list[str] = []
@@ -74,10 +74,20 @@ def build_lifecycle_message(events: list[Mapping[str, Any]], *, max_events: int 
         elif event_type in {"TP1_HIT", "TP2_HIT", "STOP_LOSS_HIT", "MAX_HOLD_EXIT"}:
             block.append(f"Exit      {price}")
         elif event_type in {"EXPIRED", "INVALIDATED_BEFORE_ENTRY"}:
-            block.extend([
-                f"Reason    {reason.title() or '-'}",
-                f"Price     {price}",
-            ])
+            if event_type == "EXPIRED":
+                expiry = tracker.waiting_expiry_sessions(_value(event, "trigger_expiry_days", 7))
+                rec = tracker.as_int(_value(event, "recommendation_count"), 0)
+                original = _event_date(_value(event, "original_signal_date", _value(event, "event_date")))
+                block.extend([
+                    f"Waiting   {expiry} sesi perdagangan tanpa entry trigger",
+                    f"REC       {rec}x",
+                    f"Original  {original}",
+                ])
+            else:
+                block.extend([
+                    f"Reason    {reason.title() or '-'}",
+                    f"Price     {price}",
+                ])
         else:
             previous = str(_value(event, "previous_status") or "-").replace("_", " ")
             new = str(_value(event, "new_status") or "-").replace("_", " ")

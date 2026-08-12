@@ -45,15 +45,38 @@ def recent_material_events(db_path: Path, limit: int) -> list[sqlite3.Row]:
     placeholders = ",".join("?" for _ in event_types)
     conn = _open_read_only(db_path)
     try:
-        rows = conn.execute(
-            f"""
-            SELECT * FROM lifecycle_events
-            WHERE UPPER(event_type) IN ({placeholders})
-            ORDER BY COALESCE(created_at, event_date) DESC, event_date DESC, symbol DESC
-            LIMIT ?
-            """,
-            [*event_types, max(int(limit), 1)],
-        ).fetchall()
+        tables = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if {"signal_recommendation_history", "signal_outcome_ledger"}.issubset(tables):
+            query = f"""
+                SELECT e.*,
+                       (SELECT COUNT(*) FROM signal_recommendation_history h
+                        WHERE h.signal_id=e.signal_id) AS recommendation_count,
+                       (SELECT s.signal_date FROM signal_outcome_ledger s
+                        WHERE s.signal_id=e.signal_id) AS original_signal_date,
+                       (SELECT s.trigger_expiry_days FROM signal_outcome_ledger s
+                        WHERE s.signal_id=e.signal_id) AS trigger_expiry_days
+                FROM lifecycle_events e
+                WHERE UPPER(e.event_type) IN ({placeholders})
+                ORDER BY COALESCE(e.created_at, e.event_date) DESC, e.event_date DESC, e.symbol DESC
+                LIMIT ?
+            """
+        else:
+            # Legacy/read-only preview databases may only contain the original
+            # lifecycle_events table.  Preserve preview compatibility without
+            # fabricating REC metadata.
+            query = f"""
+                SELECT e.*
+                FROM lifecycle_events e
+                WHERE UPPER(e.event_type) IN ({placeholders})
+                ORDER BY COALESCE(e.created_at, e.event_date) DESC, e.event_date DESC, e.symbol DESC
+                LIMIT ?
+            """
+        rows = conn.execute(query, [*event_types, max(int(limit), 1)]).fetchall()
     finally:
         conn.close()
 

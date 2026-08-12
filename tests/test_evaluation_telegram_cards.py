@@ -72,7 +72,7 @@ def test_active_and_waiting_are_one_card_with_compact_mobile_tables() -> None:
     assert "1.465" not in text
 
     # WAITING: compact entry zone and RANGE label.
-    for token in ("BAIK", "760-770", "770", "RANGE", "730", "815", "840", "1:2.10"):
+    for token in ("BAIK", "760-770", "770", "RANGE", "REC", "AGE", "1x"):
         assert token in text
     assert "IN RANGE" not in text
     assert "760–770" not in text
@@ -160,8 +160,8 @@ def test_lifecycle_digest_is_a_separate_monospace_card() -> None:
     assert "🎯 LSIP | TP1 HIT" in text
     assert "Exit      1.525" in text
     assert "⌛ BBRI | SIGNAL EXPIRED" in text
-    assert "Reason    Trigger Not Reached Within Window" in text
-    assert "Price     3.130" in text
+    assert "Waiting   7 sesi perdagangan tanpa entry trigger" in text
+    assert "REC       0x" in text
     assert "Date      07 Aug 2026" in text
     assert text.count("<pre>") == 1
     assert text.count("</pre>") == 1
