@@ -98,7 +98,8 @@ def _lifecycle_ack_ids(payload: ReportPayload, normalized_text: str) -> tuple[st
     digest text (normally 20 events). Acknowledging the full pending set would
     silently lose later TP/SL events. STATUS_CHANGES uses one `◆` line per
     rendered event, so the visible event count is the authoritative ACK bound.
-    If the formatter contract is not recognizable, fail safe and ACK nothing.
+    A legacy single-event payload has no digest marker; it remains safe to ACK
+    because its one ID cannot hide additional pending lifecycle events.
     """
     identifiers = tuple(
         str(item).strip()
@@ -110,9 +111,11 @@ def _lifecycle_ack_ids(payload: ReportPayload, normalized_text: str) -> tuple[st
     if str(payload.report_type or "").upper() != "STATUS_CHANGES":
         return identifiers
     rendered_count = len(re.findall(r"(?m)^◆\s+", normalized_text))
-    if rendered_count <= 0:
-        return ()
-    return identifiers[:rendered_count]
+    if rendered_count > 0:
+        return identifiers[:rendered_count]
+    if len(identifiers) == 1:
+        return identifiers
+    return ()
 
 
 def should_send(ctx: RunnerContext, payload: ReportPayload) -> tuple[bool, str]:
