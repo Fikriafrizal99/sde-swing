@@ -48,10 +48,11 @@ def run(command: list[str], label: str) -> int:
 
 
 def integrated_job(args: argparse.Namespace, job: str, trade_date: str) -> list[str]:
+    runner = "run_sde_job_integrated_market_first.py" if job == "post_market" else "run_sde_job_integrated.py"
     command = [
         sys.executable,
         "-u",
-        str(PROJECT_ROOT / "run_sde_job_integrated.py"),
+        str(PROJECT_ROOT / runner),
         "--job",
         job,
         "--config",
@@ -97,8 +98,8 @@ def main() -> int:
     args = parse_args()
     trade_date = args.trade_date or datetime.now(WIB).date().isoformat()
 
-    # Keep the established Full Manual sequencing: Post Market technical first,
-    # then market context, then broker/final execution.
+    # Post Market now adds a same-session IHSG closing pulse after the technical
+    # refresh. Market Outlook remains a separate context stage.
     rc = run(integrated_job(args, "post_market", trade_date), "POST MARKET")
     if rc != 0:
         return rc
