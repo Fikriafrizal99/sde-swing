@@ -20,9 +20,11 @@ echo ================================================================
 echo             SDE - BROKER PORTFOLIO AKTIF
 echo ================================================================
 echo Mode normal HANYA mengambil tanggal broker yang belum ada di database.
+echo Target otomatis memakai SESI BEI TERAKHIR YANG SUDAH SELESAI.
+echo Sebelum post-market 16:30 WIB, tanggal hari ini belum dianggap missing.
 echo.
-echo Posisi BARU : pertama kali diisi dari tanggal BUY sampai trading day terakhir.
-echo Posisi LAMA : berikutnya hanya tanggal yang MISSING / hari berjalan.
+echo Posisi BARU : pertama kali diisi dari tanggal BUY sampai sesi selesai terakhir.
+echo Posisi LAMA : berikutnya hanya tanggal yang MISSING dari sesi yang sudah selesai.
 echo Posisi SOLD : otomatis tidak ikut karena statusnya sudah CLOSED.
 echo.
 echo [1] UPDATE HARIAN  ^(disarankan^)
@@ -52,7 +54,8 @@ echo ================================================================
 echo                 UPDATE BROKER HARIAN
 echo ================================================================
 echo Sistem mengecek portfolio OPEN + histori yang SUDAH ada di database.
-echo CSV yang dibuat hanya berisi tanggal yang masih MISSING.
+echo CSV hanya berisi tanggal missing sampai SESI BEI TERAKHIR YANG SELESAI.
+echo Tanggal kalender baru tidak otomatis menjadi missing sebelum 16:30 WIB.
 echo.
 %SDE_PYTHON_CMD% -u %BROKER_DAILY_PY% --output "%TASK_FILE%" daily
 set "RC=!ERRORLEVEL!"
@@ -107,6 +110,7 @@ echo                   REPAIR SATU EMITEN
 echo ================================================================
 echo Untuk posisi OPEN, FROM_DATE boleh kosong supaya memakai actual BUY date.
 echo Sistem tetap melewati tanggal yang sudah tersedia di database.
+echo TO_DATE kosong = sesi BEI terakhir yang sudah selesai.
 echo.
 set "SYMBOL="
 set "FROM_DATE="
@@ -118,7 +122,7 @@ if not defined SYMBOL (
   goto MENU
 )
 set /p "FROM_DATE=Mulai YYYY-MM-DD [Enter=BUY date OPEN]: "
-set /p "TO_DATE=Sampai YYYY-MM-DD [Enter=trading day terakhir]: "
+set /p "TO_DATE=Sampai YYYY-MM-DD [Enter=sesi selesai terakhir]: "
 set "ARGS=--symbol !SYMBOL!"
 if defined FROM_DATE set "ARGS=!ARGS! --from-date !FROM_DATE!"
 if defined TO_DATE set "ARGS=!ARGS! --to-date !TO_DATE!"
@@ -133,6 +137,7 @@ echo             ADVANCED - REFRESH SEMUA HISTORI OPEN
 echo ================================================================
 echo PERINGATAN: mode ini sengaja meminta ulang tanggal yang SUDAH ada di DB.
 echo Jangan gunakan untuk update harian biasa.
+echo Target default tetap dibatasi sampai sesi BEI terakhir yang sudah selesai.
 echo.
 set "CONFIRM="
 set /p "CONFIRM=Ketik REFRESH untuk lanjut: "
