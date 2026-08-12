@@ -107,7 +107,93 @@ def test_legacy_validated_backfill_becomes_visible_to_portfolio_history(tmp_path
     assert manifest["broker_period_source"] == "STOCKBIT_1D"
     assert manifest["daily_history_eligible"] is True
     assert manifest["aggregate_snapshot"] is False
-    assert manifest["provenance_repair"] == "LEGACY_PORTFOLIO_BACKFILL_1D_V1"
+    assert manifest["provenance_repair"] == "LEGACY_PORTFOLIO_BACKFILL_1D_V2"
+
+
+def test_blank_snapshot_dates_are_recovered_only_when_row_json_proves_daily(tmp_path):
+    db = tmp_path / "history.db"
+    archive_root = tmp_path / "archive"
+    day = "2026-08-12"
+    conn = connect(db)
+    try:
+        archive_backfill(
+            conn,
+            pd.DataFrame([_summary_row("MDKA", day)]),
+            source_path=tmp_path / "legacy.csv",
+            archive_root=archive_root,
+        )
+        snapshot_id = conn.execute(
+            "SELECT broker_snapshot_id FROM broker_snapshots WHERE broker_date=?",
+            (day,),
+        ).fetchone()[0]
+        legacy_manifest = {
+            "source": "PORTFOLIO_BACKFILL",
+            "daily_only": True,
+        }
+        conn.execute(
+            """
+            UPDATE broker_snapshots
+            SET from_date='', to_date='', manifest_json=?
+            WHERE broker_snapshot_id=?
+            """,
+            (json.dumps(legacy_manifest), snapshot_id),
+        )
+        conn.commit()
+
+        assert load_broker_history(conn, "MDKA", day, day) == []
+        repaired = repair_legacy_backfill_provenance(conn)
+        snapshot = conn.execute(
+            "SELECT from_date, to_date, manifest_json FROM broker_snapshots WHERE broker_snapshot_id=?",
+            (snapshot_id,),
+        ).fetchone()
+        history = load_broker_history(conn, "MDKA", day, day)
+    finally:
+        conn.close()
+
+    assert repaired == 1
+    assert snapshot[0] == day
+    assert snapshot[1] == day
+    assert json.loads(snapshot[2])["broker_period_type"] == "1D"
+    assert len(history) == 1
+
+
+def test_row_json_with_multiday_period_is_not_repaired(tmp_path):
+    db = tmp_path / "history.db"
+    conn = connect(db)
+    try:
+        from modules.database.swing_history_db import init_schema
+
+        init_schema(conn)
+        day = "2026-08-12"
+        manifest = {"source": "PORTFOLIO_BACKFILL", "daily_only": True}
+        conn.execute(
+            """
+            INSERT INTO broker_snapshots (
+                broker_snapshot_id, broker_date, from_date, to_date, source_files,
+                coverage, snapshot_hash, data_quality_status, manifest_json, created_at
+            ) VALUES (?, ?, '', '', ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "row-proves-multiday",
+                day,
+                "legacy",
+                1.0,
+                "hash-row",
+                "VALID_BACKFILL_DAILY",
+                json.dumps(manifest),
+                day + "T18:00:00",
+            ),
+        )
+        payload = _summary_row("MDKA", day)
+        payload["FROM_DATE"] = "2026-08-11"
+        conn.execute(
+            "INSERT INTO broker_summary (broker_snapshot_id, symbol, row_json) VALUES (?, ?, ?)",
+            ("row-proves-multiday", "MDKA", json.dumps(payload)),
+        )
+        conn.commit()
+        assert repair_legacy_backfill_provenance(conn) == 0
+    finally:
+        conn.close()
 
 
 def test_repair_is_idempotent_and_does_not_touch_multiday_rows(tmp_path):
