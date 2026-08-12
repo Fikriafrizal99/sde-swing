@@ -29,6 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from modules.database.swing_history_db import archive_broker, connect, init_schema
 from modules.market_calendar.idx_calendar import is_idx_trading_day
+from modules.portfolio.broker_history_context import _snapshot_is_real_daily
 from swing_utils import ensure_dir, file_sha256, normalize_symbol, write_json
 
 DEFAULT_DB = PROJECT_ROOT / "data/database/sde_swing_history.db"
@@ -153,18 +154,34 @@ def existing_broker_dates(
     start_date: str,
     end_date: str,
 ) -> set[str]:
+    """Return only broker dates usable as real 1D Portfolio Management history.
+
+    ``broker_snapshots`` intentionally contains both real daily snapshots and
+    aggregate 3D/5D/CUSTOM snapshots.  Portfolio backfill must therefore use
+    the exact same provenance contract as Position Management; otherwise an
+    aggregate ending on a date can falsely suppress the missing DAILY task.
+    """
     init_schema(conn)
     rows = conn.execute(
         """
-        SELECT DISTINCT s.broker_date
+        SELECT s.broker_date, s.from_date, s.to_date, s.manifest_json
         FROM broker_summary b
         JOIN broker_snapshots s ON s.broker_snapshot_id=b.broker_snapshot_id
         WHERE UPPER(b.symbol)=UPPER(?)
           AND COALESCE(s.broker_date, '') BETWEEN ? AND ?
+        ORDER BY s.broker_date, s.created_at, s.broker_snapshot_id
         """,
         (normalize_symbol(symbol), start_date, end_date),
     ).fetchall()
-    return {str(row[0]) for row in rows if row and row[0]}
+
+    existing: set[str] = set()
+    for row in rows:
+        if not _snapshot_is_real_daily(row):
+            continue
+        day = str(row[0] or "").strip()[:10]
+        if day:
+            existing.add(day)
+    return existing
 
 
 def build_tasks(
