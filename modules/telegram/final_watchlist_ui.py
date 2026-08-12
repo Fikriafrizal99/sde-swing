@@ -115,19 +115,20 @@ def _money(value: Any, *, signed: bool = True) -> str:
     sign = "+" if signed and number > 0 else "-" if signed and number < 0 else ""
     amount = abs(number)
     if amount >= 1_000_000_000:
-        rendered = f"Rp{amount / 1_000_000_000:.2f}B"
+        scaled, unit = amount / 1_000_000_000, "B"
     elif amount >= 1_000_000:
-        rendered = f"Rp{amount / 1_000_000:.2f}Jt"
+        scaled, unit = amount / 1_000_000, "M"
     elif amount >= 1_000:
-        rendered = f"Rp{amount / 1_000:.2f}Rb"
+        scaled, unit = amount / 1_000, "K"
     else:
-        rendered = f"Rp{amount:,.0f}"
-    return (sign + rendered).replace(".", ",")
+        return f"{sign}Rp{amount:,.0f}".replace(",", ".")
+    rendered = f"{scaled:.2f}".rstrip("0").rstrip(".")
+    return f"{sign}Rp{rendered}{unit}"
 
 
 def _rr(value: Any) -> str:
     number = _num(value)
-    return f"{number:.2f}" if number is not None else "N/A"
+    return f"{number:.2f}".replace(".", ",") if number is not None else "N/A"
 
 
 def _day_count(value: Any) -> str:
@@ -168,7 +169,46 @@ def _period_is_multi(period_type: str) -> bool:
     return bool(period_type) and period_type not in {"1D", "1DAY", "DAY"}
 
 
-def _participants(value: Any) -> list[str]:
+def _period_range_text(start: Any, end: Any) -> str:
+    months = {
+        1: "Jan",
+        2: "Feb",
+        3: "Mar",
+        4: "Apr",
+        5: "Mei",
+        6: "Jun",
+        7: "Jul",
+        8: "Aug",
+        9: "Sep",
+        10: "Okt",
+        11: "Nov",
+        12: "Des",
+    }
+
+    def parts(value: Any) -> tuple[int, int, int] | None:
+        text = _raw(value)[:10]
+        try:
+            year, month, day = (int(item) for item in text.split("-"))
+            return year, month, day
+        except Exception:
+            return None
+
+    left, right = parts(start), parts(end)
+    if left is None or right is None:
+        start_text = _raw(start) or "N/A"
+        end_text = _raw(end) or "N/A"
+        return start_text if start_text == end_text else f"{start_text}–{end_text}"
+
+    sy, sm, sd = left
+    ey, em, ed = right
+    if left == right:
+        return f"{sd} {months.get(sm, str(sm))}"
+    if sy == ey and sm == em:
+        return f"{sd}–{ed} {months.get(sm, str(sm))}"
+    return f"{sd} {months.get(sm, str(sm))}–{ed} {months.get(em, str(em))}"
+
+
+def _participant_codes(value: Any) -> list[str]:
     if isinstance(value, str):
         raw = value.strip()
         if raw.startswith("["):
@@ -179,30 +219,18 @@ def _participants(value: Any) -> list[str]:
         else:
             value = []
     items = list(value or []) if isinstance(value, (list, tuple)) else []
-    lines: list[str] = []
-    for index, item in enumerate(items[:3], 1):
+    codes: list[str] = []
+    for item in items[:3]:
         if not isinstance(item, Mapping):
             continue
         broker = _enum(
             item.get("broker") or item.get("code") or item.get("name"),
-            "?",
+            "",
             upper=True,
         )
-        amount = _money(
-            item.get("value") or item.get("net_value") or item.get("amount"),
-            signed=False,
-        )
-        average = _price(
-            item.get("avg_price") or item.get("average_price") or item.get("avg")
-        )
-        details: list[str] = []
-        if amount != "N/A":
-            details.append(amount)
-        if average != "N/A":
-            details.append(f"Avg Rp{average}")
-        suffix = f" — {' | '.join(details)}" if details else ""
-        lines.append(f"{index}. {broker}{suffix}")
-    return lines or ["• Data tidak tersedia"]
+        if broker:
+            codes.append(broker)
+    return codes
 
 
 def _inside(value: float | None, low: float | None, high: float | None) -> bool:
@@ -297,6 +325,43 @@ def _interpretive_reason(row: Mapping[str, Any]) -> str:
             broker_text += f": {evidence_text}"
         broker_text += ", jadi konfirmasi belum kuat."
 
+    top_buy = _participant_codes(_pick(row, "top_buyers", default=[]))
+    top_sell = _participant_codes(_pick(row, "top_sellers", default=[]))
+    participant_parts: list[str] = []
+    if top_buy:
+        participant_parts.append(f"buyer utama {', '.join(top_buy)}")
+    if top_sell:
+        participant_parts.append(f"seller utama {', '.join(top_sell)}")
+    participant_text = (
+        f"Bukti broker: {'; '.join(participant_parts)}."
+        if participant_parts
+        else ""
+    )
+
+    buy_cost_raw = _pick(
+        row,
+        "bandar_buy_cost",
+        "avg_buyer_price",
+        "weighted_broker_buy_cost",
+    )
+    buy_cost = _price(buy_cost_raw)
+    vs_cost = _pct(
+        _pick(
+            row,
+            "distance_to_buy_cost",
+            "distance_to_buyer_avg_pct",
+            "distance_to_buy_cost_pct",
+        )
+    )
+    cost_text = ""
+    if buy_cost != "N/A" and vs_cost != "N/A":
+        cost_text = (
+            f"Rata-rata biaya buyer berada di {buy_cost}; harga saat ini {vs_cost} "
+            "dari buy cost."
+        )
+    elif buy_cost != "N/A":
+        cost_text = f"Rata-rata biaya buyer berada di {buy_cost}."
+
     resistance_raw = _pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance")
     resistance = _num(resistance_raw)
     resistance_text = _price(resistance_raw)
@@ -330,66 +395,56 @@ def _interpretive_reason(row: Mapping[str, Any]) -> str:
         "",
         upper=True,
     )
-    period_facts: list[str] = []
+    primary_text = ""
+    pulse_text = ""
     if period_type:
-        source = _enum(
-            _pick(row, "broker_period_source", "Broker_Period_Source", "source"),
-            "UNKNOWN",
-            upper=True,
-        )
-        start = _raw(_pick(row, "broker_period_start", "Broker_Period_Start")) or "?"
-        end = _raw(_pick(row, "broker_period_end", "Broker_Period_End")) or "?"
-        sessions = _period_session_text(
-            _pick(row, "broker_session_dates", "Broker_Session_Dates")
-        ) or "N/A"
-        snapshot = _raw(_pick(row, "broker_snapshot_id", "Broker_Snapshot_ID"))
-        snapshot_text = f" snapshot {snapshot}" if snapshot else ""
-        freshness = _enum(
-            _pick(row, "broker_freshness_status", "freshness_status"),
-            "UNKNOWN",
-            upper=True,
-        )
-        period_facts.append(
-            f"Primary {period_type} dari {source}, range {start}–{end}, "
-            f"sesi {sessions}, coverage {_period_coverage(row)}, freshness {freshness}{snapshot_text}."
-        )
         period_complete = _pick(row, "broker_period_complete", "Broker_Period_Complete", default=True)
         missing_sessions = _period_session_text(
             _pick(row, "broker_missing_sessions", "Broker_Missing_Sessions", default=[])
         )
         if str(period_complete).strip().lower() in {"false", "0", "no"}:
-            period_facts.append(
+            primary_text = (
                 f"Broker PRIMARY {period_type} belum lengkap"
                 + (f"; missing {missing_sessions}." if missing_sessions else ".")
             )
         else:
-            period_facts.append(f"Broker PRIMARY {period_type} kondisi {broker_state} menjadi konteks utama.")
+            primary_text = f"Broker PRIMARY {period_type} {broker_state} menjadi konteks utama."
+
         if _period_is_multi(period_type):
             pulse_status = _enum(
                 _pick(row, "today_pulse_status"),
                 "NOT_AVAILABLE",
                 upper=True,
             )
-            pulse_date = _raw(_pick(row, "today_pulse_date")) or end
+            pulse_date = _raw(_pick(row, "today_pulse_date")) or _raw(
+                _pick(row, "broker_period_end", "Broker_Period_End")
+            )
             pulse_net = _money(_pick(row, "today_pulse_net_flow"))
             pulse_buy = _day_count(_pick(row, "today_pulse_buy_days"))
             pulse_sell = _day_count(_pick(row, "today_pulse_sell_days"))
-            pulse_source = _enum(
-                _pick(row, "today_pulse_source"),
-                "UNKNOWN",
-                upper=True,
-            )
             alignment = _enum(
                 _pick(row, "broker_alignment", "Broker_Period_Alignment"),
                 "INSUFFICIENT",
                 upper=True,
             )
-            period_facts.append(
-                f"Today Pulse {pulse_status} {pulse_date} ({pulse_source}): net {pulse_net}, "
+            pulse_text = (
+                f"Today Pulse {pulse_status} {pulse_date}: net {pulse_net}, "
                 f"Buy/Sell {pulse_buy}/{pulse_sell}; alignment {alignment}."
             )
 
-    text = " ".join((opening, broker_text, action, *period_facts))
+    text = " ".join(
+        part
+        for part in (
+            opening,
+            primary_text,
+            broker_text,
+            participant_text,
+            cost_text,
+            pulse_text,
+            action,
+        )
+        if part
+    )
     text = re.sub(r"\s+", " ", text).strip()
     return html.escape(text, quote=False)
 
@@ -446,19 +501,6 @@ def format_watchlist_detail(row: Mapping[str, Any]) -> str:
     sell_days = _day_count(_pick(row, "sell_days"))
     buyer_concentration = _pct(_pick(row, "buyer_concentration"), concentration=True)
     seller_concentration = _pct(_pick(row, "seller_concentration"), concentration=True)
-    top_buy = _participants(_pick(row, "top_buyers", default=[]))
-    top_sell = _participants(_pick(row, "top_sellers", default=[]))
-    buy_cost = _price(
-        _pick(row, "bandar_buy_cost", "avg_buyer_price", "weighted_broker_buy_cost")
-    )
-    vs_cost = _pct(
-        _pick(
-            row,
-            "distance_to_buy_cost",
-            "distance_to_buyer_avg_pct",
-            "distance_to_buy_cost_pct",
-        )
-    )
 
     trend = html.escape(
         _enum(_pick(row, "trend", "Technical_Regime"), "N/A", lower=True),
@@ -492,69 +534,32 @@ def format_watchlist_detail(row: Mapping[str, Any]) -> str:
     )
     period_lines: list[str] = []
     if period_type:
-        source = html.escape(
-            _enum(
-                _pick(row, "broker_period_source", "Broker_Period_Source", "source"),
-                "UNKNOWN",
-                upper=True,
-            ),
-            quote=False,
-        )
-        start = html.escape(
-            _raw(_pick(row, "broker_period_start", "Broker_Period_Start")) or "N/A",
-            quote=False,
-        )
-        end = html.escape(
-            _raw(_pick(row, "broker_period_end", "Broker_Period_End")) or "N/A",
-            quote=False,
-        )
-        session_text = html.escape(
-            _period_session_text(
-                _pick(row, "broker_session_dates", "Broker_Session_Dates")
-            ) or "N/A",
-            quote=False,
-        )
-        freshness = html.escape(
-            _enum(
-                _pick(row, "broker_freshness_status", "freshness_status"),
-                "UNKNOWN",
-                upper=True,
-            ),
-            quote=False,
-        )
+        start = _pick(row, "broker_period_start", "Broker_Period_Start")
+        end = _pick(row, "broker_period_end", "Broker_Period_End")
+        period_range = html.escape(_period_range_text(start, end), quote=False)
         period_lines.extend([
             "",
-            "<b>Broker Primary Context</b>",
-            f"Primary {period_type} | {source} | {start}–{end}",
-            f"IDX sessions {session_text} | Coverage {_period_coverage(row)} | Freshness {freshness}",
+            "<b>🏦 BROKER PRIMARY</b>",
+            f"{period_type} | {period_range} | Coverage {_period_coverage(row)}",
         ])
         if _period_is_multi(period_type):
-            pulse_status = _enum(
-                _pick(row, "today_pulse_status"),
-                "NOT_AVAILABLE",
-                upper=True,
-            )
-            pulse_date = _raw(_pick(row, "today_pulse_date")) or end
-            pulse_net = _money(_pick(row, "today_pulse_net_flow"))
-            pulse_buy = _day_count(_pick(row, "today_pulse_buy_days"))
-            pulse_sell = _day_count(_pick(row, "today_pulse_sell_days"))
-            pulse_source = html.escape(
+            pulse_status = html.escape(
                 _enum(
-                    _pick(row, "today_pulse_source"),
-                    "UNKNOWN",
+                    _pick(row, "today_pulse_status"),
+                    "NOT_AVAILABLE",
                     upper=True,
                 ),
                 quote=False,
             )
-            alignment = _enum(
-                _pick(row, "broker_alignment", "Broker_Period_Alignment"),
-                "INSUFFICIENT",
-                upper=True,
+            alignment = html.escape(
+                _enum(
+                    _pick(row, "broker_alignment", "Broker_Period_Alignment"),
+                    "INSUFFICIENT",
+                    upper=True,
+                ),
+                quote=False,
             )
-            period_lines.append(
-                f"TODAY PULSE {pulse_status} {pulse_date} | {pulse_source} | Net {pulse_net} | "
-                f"Buy/Sell {pulse_buy}/{pulse_sell} | {alignment}"
-            )
+            period_lines.append(f"Today Pulse: {pulse_status} | {alignment}")
 
     lines = [
         "<b>📈 SDE SWING — FINAL WATCHLIST</b>",
@@ -565,35 +570,24 @@ def format_watchlist_detail(row: Mapping[str, Any]) -> str:
         "",
         "<b>🎯 TRADE SETUP</b>",
         f"💰 {current} | Entry {entry_low}–{entry_high}",
-        f"🛑 SL {stop} | 🎯 TP1/TP2 {tp1} | {tp2}",
+        f"🛑 SL {stop} | 🎯 TP1 {tp1} | TP2 {tp2}",
         f"⚖️ RR 1:{rr}",
         f"📊 {technical_status} | 🧠 Confidence {confidence}",
         "",
         "<b>🏦 BROKER SUMMARY</b>",
         f"📌 {broker_signal} | Score {broker_score}/100",
-        f"💵 Net Flow {net_flow} | 📅 Buy/Sell {buy_days}/{sell_days}",
+        f"💵 Net Flow {net_flow} | Buy/Sell {buy_days}/{sell_days}",
         f"🎯 Concentration B {buyer_concentration} | S {seller_concentration}",
-        "",
-        "<b>🟢 Top Buy</b>",
-        *top_buy,
-        "",
-        "<b>🔴 Top Sell</b>",
-        *top_sell,
-        "",
-        f"💰 Buy Cost {buy_cost} | Buy Avg {vs_cost}",
         "",
         "<b>📌 SETUP CONTEXT</b>",
         f"📈 {trend} | {phase}",
         f"🟢 Support {support} | 🔴 Resistance {resistance}",
         f"📐 Fibonacci {fib_status}",
         "",
-        "<b>Reason:</b>",
+        "<b>🧠 REASON</b>",
         _interpretive_reason(row),
     ]
     if period_lines:
-        # Keep legacy 1.6/1.7 cards byte-for-byte compatible when no period
-        # envelope is present; enriched runs get the context card after the
-        # date header.
         lines[5:5] = period_lines
     return "\n".join(lines).strip()
 
