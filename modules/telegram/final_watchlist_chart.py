@@ -373,6 +373,12 @@ def _install_telegram_idx_price_formatter() -> None:
             enriched = _enrich_final_watchlist_broker_row(row)
             text = original_formatter(enriched)
             text = text.replace(" | Vs Cost ", " | Jarak Buy Avg ")
+            # Fibonacci is visual-only in Final Watchlist. Keep the underlying
+            # fields available for chart/audit use, but do not duplicate them in text.
+            text = "\n".join(
+                line for line in text.splitlines()
+                if not line.lstrip().startswith(("📐 Fibonacci ", "📐 Fib "))
+            )
             return compact_final_watchlist_caption(text)
 
         daily_ui._fw_price = _telegram_idx_price
@@ -426,6 +432,110 @@ def _load_candles(path: Path, candle_limit: int) -> pd.DataFrame:
     frame["MA20"] = frame["Close"].rolling(20).mean()
     frame["MA50"] = frame["Close"].rolling(50).mean()
     return frame.tail(max(60, min(int(candle_limit), 100))).reset_index(drop=True)
+
+
+def _pivot_indices(frame: pd.DataFrame, column: str, *, mode: str, radius: int = 2) -> list[int]:
+    """Return confirmed local pivot indices for chart-only swing selection."""
+    values = [float(value) for value in frame[column].tolist()]
+    pivots: list[int] = []
+    for idx in range(radius, len(values) - radius):
+        center = values[idx]
+        window = values[idx - radius: idx + radius + 1]
+        if mode == "high" and center == max(window):
+            pivots.append(idx)
+        elif mode == "low" and center == min(window):
+            pivots.append(idx)
+    return pivots
+
+
+def _resolve_chart_swing(row: Mapping[str, Any], frame: pd.DataFrame) -> tuple[float, float, str] | None:
+    """Resolve a presentation-only Fibonacci swing without touching engine logic.
+
+    Engine-provided swing anchors win when both are valid. Otherwise the chart
+    derives the latest confirmed structural swing from the same closed candles
+    already plotted. The fallback is intentionally local so an old extreme does
+    not make the current swing Fibonacci unreadably wide.
+    """
+    engine_high = _number(_pick(row, "swing_high", "Swing_High", "Valid_Swing_High"))
+    engine_low = _number(_pick(row, "swing_low", "Swing_Low", "Valid_Swing_Low"))
+    trend_text = str(
+        _pick(row, "trend", "Technical_Regime", "technical_status", "technical_state") or ""
+    ).upper()
+    direction = "bearish" if "BEAR" in trend_text else "bullish"
+    if engine_high is not None and engine_low is not None and engine_high > engine_low > 0:
+        return float(engine_low), float(engine_high), direction
+
+    recent = frame.tail(min(50, len(frame))).reset_index(drop=True)
+    if len(recent) < 8:
+        return None
+    high_pivots = _pivot_indices(recent, "High", mode="high", radius=2)
+    low_pivots = _pivot_indices(recent, "Low", mode="low", radius=2)
+
+    def valid_pair(low_idx: int, high_idx: int) -> tuple[float, float, str] | None:
+        low_value = float(recent.iloc[low_idx]["Low"])
+        high_value = float(recent.iloc[high_idx]["High"])
+        if low_value <= 0 or high_value <= low_value:
+            return None
+        # Ignore micro-swings that would create visually meaningless levels.
+        if (high_value - low_value) / low_value < 0.05:
+            return None
+        return low_value, high_value, direction
+
+    if direction == "bullish":
+        for high_idx in reversed(high_pivots):
+            candidates = [idx for idx in low_pivots if idx < high_idx and high_idx - idx <= 30]
+            if candidates:
+                resolved = valid_pair(candidates[-1], high_idx)
+                if resolved is not None:
+                    return resolved
+        fallback = recent.tail(min(35, len(recent))).reset_index(drop=True)
+        high_idx = int(fallback["High"].idxmax())
+        if high_idx > 0:
+            low_idx = int(fallback.loc[: high_idx - 1, "Low"].idxmin())
+            low_value = float(fallback.iloc[low_idx]["Low"])
+            high_value = float(fallback.iloc[high_idx]["High"])
+            if low_value > 0 and high_value > low_value and (high_value - low_value) / low_value >= 0.05:
+                return low_value, high_value, direction
+    else:
+        for low_idx in reversed(low_pivots):
+            candidates = [idx for idx in high_pivots if idx < low_idx and low_idx - idx <= 30]
+            if candidates:
+                resolved = valid_pair(low_idx, candidates[-1])
+                if resolved is not None:
+                    return resolved
+        fallback = recent.tail(min(35, len(recent))).reset_index(drop=True)
+        low_idx = int(fallback["Low"].idxmin())
+        if low_idx > 0:
+            high_idx = int(fallback.loc[: low_idx - 1, "High"].idxmax())
+            low_value = float(fallback.iloc[low_idx]["Low"])
+            high_value = float(fallback.iloc[high_idx]["High"])
+            if low_value > 0 and high_value > low_value and (high_value - low_value) / low_value >= 0.05:
+                return low_value, high_value, direction
+    return None
+
+
+def _chart_fibonacci_levels(swing_low: float, swing_high: float, direction: str) -> list[tuple[str, float]]:
+    """Calculate standard retracement/extension overlays for chart presentation only."""
+    span = float(swing_high) - float(swing_low)
+    if span <= 0:
+        return []
+    if direction == "bearish":
+        return [
+            ("FIB 38.2%", swing_low + span * 0.382),
+            ("FIB 50%", swing_low + span * 0.500),
+            ("FIB 61.8%", swing_low + span * 0.618),
+            ("FIB 78.6%", swing_low + span * 0.786),
+            ("FIB 127.2%", swing_low - span * 0.272),
+            ("FIB 161.8%", swing_low - span * 0.618),
+        ]
+    return [
+        ("FIB 38.2%", swing_high - span * 0.382),
+        ("FIB 50%", swing_high - span * 0.500),
+        ("FIB 61.8%", swing_high - span * 0.618),
+        ("FIB 78.6%", swing_high - span * 0.786),
+        ("FIB 127.2%", swing_high + span * 0.272),
+        ("FIB 161.8%", swing_high + span * 0.618),
+    ]
 
 
 def generate_final_watchlist_chart(
@@ -500,22 +610,26 @@ def generate_final_watchlist_chart(
         ax.axhline(float(value), linestyle=style, linewidth=lw, alpha=0.85)
         ax.text(x_label, float(value), label, va="center", fontsize=8.5, clip_on=False)
 
-    swing_high = round_idx_price(_pick(row, "swing_high", "Swing_High"))
-    swing_low = round_idx_price(_pick(row, "swing_low", "Swing_Low"))
-    if swing_high is not None:
-        ax.axhline(swing_high, linestyle="-.", linewidth=0.85, alpha=0.55)
-        ax.text(x_label, swing_high, f"SWING HIGH {_price_label(swing_high)}", va="center", fontsize=8, clip_on=False)
-    if swing_low is not None:
-        ax.axhline(swing_low, linestyle="-.", linewidth=0.85, alpha=0.55)
-        ax.text(x_label, swing_low, f"SWING LOW {_price_label(swing_low)}", va="center", fontsize=8, clip_on=False)
-
-    fib_status = str(_pick(row, "fib_status", "Fibonacci_Status", "Fib_Status") or "").upper()
-    if "VALID" in fib_status and "NOT" not in fib_status:
-        for key, label in (("fib_382", "FIB 38.2%"), ("fib_500", "FIB 50%"), ("fib_618", "FIB 61.8%"), ("fib_1618", "FIB 161.8%")):
-            value = round_idx_price(_pick(row, key, key.upper()))
-            if value is not None:
-                ax.axhline(value, linestyle=":", linewidth=0.75, alpha=0.45)
-                ax.text(x_label, value, f"{label} {_price_label(value)}", va="center", fontsize=7.5, clip_on=False)
+    # Fibonacci is a presentation overlay only. It never feeds Entry/SL/TP,
+    # scoring, confidence, broker state, or the Final Watchlist decision.
+    swing = _resolve_chart_swing(row, frame)
+    if swing is not None:
+        swing_low, swing_high, fib_direction = swing
+        swing_low_display = round_idx_price(swing_low)
+        swing_high_display = round_idx_price(swing_high)
+        x_fib = len(frame) + 5.2
+        if swing_high_display is not None:
+            ax.axhline(swing_high_display, linestyle="-.", linewidth=0.8, alpha=0.42)
+            ax.text(x_fib, swing_high_display, f"FIB HIGH {_price_label(swing_high_display)}", va="center", fontsize=7.4, clip_on=False)
+        if swing_low_display is not None:
+            ax.axhline(swing_low_display, linestyle="-.", linewidth=0.8, alpha=0.42)
+            ax.text(x_fib, swing_low_display, f"FIB LOW {_price_label(swing_low_display)}", va="center", fontsize=7.4, clip_on=False)
+        for label, raw_value in _chart_fibonacci_levels(swing_low, swing_high, fib_direction):
+            value = round_idx_price(raw_value)
+            if value is None or value <= 0:
+                continue
+            ax.axhline(value, linestyle=":", linewidth=0.72, alpha=0.38)
+            ax.text(x_fib, value, f"{label} {_price_label(value)}", va="center", fontsize=7.2, clip_on=False)
 
     setup = str(_pick(row, "setup", "Setup_Type") or "SETUP").replace("_", " ")
     date = str(_pick(row, "analysis_date", "trade_date", "Trade_Date") or "")
@@ -524,7 +638,7 @@ def generate_final_watchlist_chart(
     ax.grid(alpha=0.16)
     ax.legend(loc="upper left", frameon=False, ncol=3, fontsize=8.5)
     ax.tick_params(axis="x", labelbottom=False)
-    ax.set_xlim(-1, len(frame) + 12)
+    ax.set_xlim(-1, len(frame) + 14)
 
     tick_positions = list(range(0, len(frame), max(1, len(frame) // 8)))
     vol.set_xticks(tick_positions)
@@ -532,7 +646,7 @@ def generate_final_watchlist_chart(
     vol.set_ylabel("Volume")
     vol.grid(alpha=0.12)
 
-    fig.subplots_adjust(left=0.07, right=0.78, top=0.93, bottom=0.08, hspace=0.04)
+    fig.subplots_adjust(left=0.07, right=0.76, top=0.93, bottom=0.08, hspace=0.04)
     fig.savefig(output_path, dpi=160, bbox_inches="tight")
     plt.close(fig)
     if not output_path.exists() or output_path.stat().st_size <= 0:
