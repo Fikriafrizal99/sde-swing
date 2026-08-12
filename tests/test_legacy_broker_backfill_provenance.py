@@ -1,0 +1,155 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pandas as pd
+
+from modules.database.swing_history_db import connect
+from modules.portfolio.broker_history_context import load_broker_history
+from modules.portfolio.broker_portfolio_backfill import archive_backfill
+from modules.portfolio.repair_legacy_broker_backfill_provenance import (
+    repair_legacy_backfill_provenance,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _summary_row(symbol: str, day: str) -> dict:
+    return {
+        "FROM_DATE": day,
+        "TO_DATE": day,
+        "EMITEN": symbol,
+        "TOTAL_BUY": 150.0,
+        "TOTAL_SELL": 50.0,
+        "NET_FLOW": 100.0,
+        "TOP_BUYER_1": "YP",
+        "TOP_BUYER_1_VALUE": 80.0,
+        "TOP_BUYER_2": "CC",
+        "TOP_BUYER_2_VALUE": 40.0,
+        "TOP_BUYER_3": "XL",
+        "TOP_BUYER_3_VALUE": 30.0,
+        "TOP_SELLER_1": "AK",
+        "TOP_SELLER_1_VALUE": -25.0,
+        "TOP_SELLER_2": "PD",
+        "TOP_SELLER_2_VALUE": -15.0,
+        "TOP_SELLER_3": "NI",
+        "TOP_SELLER_3_VALUE": -10.0,
+        "BUYER_CONCENTRATION": 0.70,
+        "SELLER_CONCENTRATION": 0.30,
+        "BROKER_ACCDIST": "BIG ACC",
+        "AVG_ACCDIST": "BIG ACC",
+        "AVG_AMOUNT": 1.0,
+        "AVG_PERCENT": 1.0,
+        "TOP3_ACCDIST": "BIG ACC",
+        "TOP3_AMOUNT": 1.0,
+        "TOP3_PERCENT": 1.0,
+        "TOTAL_BUYER_COUNT": 10,
+        "TOTAL_SELLER_COUNT": 8,
+        "TOTAL_VALUE": 200.0,
+        "TOTAL_VOLUME": 1000.0,
+    }
+
+
+def test_legacy_validated_backfill_becomes_visible_to_portfolio_history(tmp_path):
+    db = tmp_path / "history.db"
+    archive_root = tmp_path / "archive"
+    day = "2026-08-12"
+    conn = connect(db)
+    try:
+        archive_backfill(
+            conn,
+            pd.DataFrame([_summary_row("MDKA", day)]),
+            source_path=tmp_path / "legacy.csv",
+            archive_root=archive_root,
+        )
+        snapshot_id = conn.execute(
+            "SELECT broker_snapshot_id FROM broker_snapshots WHERE broker_date=?",
+            (day,),
+        ).fetchone()[0]
+
+        # Reproduce manifests written by the older backfill importer: coverage
+        # could see this date, but the strict portfolio-history reader could not.
+        legacy_manifest = {
+            "broker_date": day,
+            "from_date": day,
+            "to_date": day,
+            "source": "PORTFOLIO_BACKFILL",
+            "coverage": 1.0,
+            "DATA_QUALITY_STATUS": "VALID_BACKFILL_DAILY",
+            "daily_only": True,
+            "symbol_count": 1,
+        }
+        conn.execute(
+            "UPDATE broker_snapshots SET manifest_json=? WHERE broker_snapshot_id=?",
+            (json.dumps(legacy_manifest), snapshot_id),
+        )
+        conn.commit()
+
+        assert load_broker_history(conn, "MDKA", day, day) == []
+
+        repaired = repair_legacy_backfill_provenance(conn)
+        history = load_broker_history(conn, "MDKA", day, day)
+        manifest = json.loads(
+            conn.execute(
+                "SELECT manifest_json FROM broker_snapshots WHERE broker_snapshot_id=?",
+                (snapshot_id,),
+            ).fetchone()[0]
+        )
+    finally:
+        conn.close()
+
+    assert repaired == 1
+    assert len(history) == 1
+    assert history[0]["broker_date"] == day
+    assert manifest["broker_period_type"] == "1D"
+    assert manifest["broker_period_source"] == "STOCKBIT_1D"
+    assert manifest["daily_history_eligible"] is True
+    assert manifest["aggregate_snapshot"] is False
+    assert manifest["provenance_repair"] == "LEGACY_PORTFOLIO_BACKFILL_1D_V1"
+
+
+def test_repair_is_idempotent_and_does_not_touch_multiday_rows(tmp_path):
+    db = tmp_path / "history.db"
+    conn = connect(db)
+    try:
+        from modules.database.swing_history_db import init_schema
+
+        init_schema(conn)
+        legacy = {
+            "source": "PORTFOLIO_BACKFILL",
+            "daily_only": True,
+        }
+        conn.execute(
+            """
+            INSERT INTO broker_snapshots (
+                broker_snapshot_id, broker_date, from_date, to_date, source_files,
+                coverage, snapshot_hash, data_quality_status, manifest_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "bad-multiday",
+                "2026-08-12",
+                "2026-08-11",
+                "2026-08-12",
+                "legacy",
+                1.0,
+                "hash",
+                "VALID_BACKFILL_DAILY",
+                json.dumps(legacy),
+                "2026-08-12T18:00:00",
+            ),
+        )
+        conn.commit()
+        assert repair_legacy_backfill_provenance(conn) == 0
+    finally:
+        conn.close()
+
+
+def test_position_management_launcher_runs_provenance_repair_first():
+    source = (ROOT / "maintenance/RUN_POSITION_MANAGEMENT.bat").read_text(encoding="utf-8-sig")
+    repair_call = "repair_legacy_broker_backfill_provenance.py"
+    runtime_call = "position_management_runtime.py"
+    assert repair_call in source
+    assert source.index(repair_call) < source.index(runtime_call)
