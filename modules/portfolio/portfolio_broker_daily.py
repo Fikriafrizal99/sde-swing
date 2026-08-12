@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 """User-facing daily broker maintenance for actual OPEN portfolio positions.
 
-The shared SQLite database is the source of truth.  Task CSVs are derived from
+The shared SQLite database is the source of truth. Task CSVs are derived from
 OPEN positions plus broker dates that are still missing from that database.
 After a successful import the task CSV is rebuilt immediately, so stale BUY
 history or CLOSED symbols are not left behind for the next Tampermonkey run.
+
+Default task dates are capped at the latest COMPLETED IDX session. A new
+calendar date is therefore not treated as missing broker data before the
+configured post-market/data-ready time has been reached.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from datetime import datetime, time, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -19,6 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from modules.database.swing_history_db import connect
+from modules.market_calendar.idx_calendar import is_idx_trading_day
 from modules.portfolio.broker_portfolio_backfill import (
     DEFAULT_ARCHIVE,
     DEFAULT_CALENDAR,
@@ -28,9 +36,94 @@ from modules.portfolio.broker_portfolio_backfill import (
     build_tasks,
     default_downloads,
     find_latest_backfill_export,
+    latest_trading_on_or_before,
+    load_calendar,
     status_rows,
     write_tasks,
 )
+
+DEFAULT_SCHEDULER = PROJECT_ROOT / "config/scheduler.json"
+DEFAULT_TIMEZONE = "Asia/Jakarta"
+DEFAULT_DATA_READY_TIME = "16:30"
+
+
+def _parse_clock(value: str) -> time:
+    raw = str(value or "").strip()
+    try:
+        hour, minute = raw.split(":", 1)
+        return time(hour=int(hour), minute=int(minute))
+    except Exception:
+        return time(16, 30)
+
+
+def _load_data_ready_policy(scheduler_path: Path) -> tuple[str, str]:
+    timezone = DEFAULT_TIMEZONE
+    ready_time = DEFAULT_DATA_READY_TIME
+    if not scheduler_path.exists():
+        return timezone, ready_time
+    try:
+        payload = json.loads(scheduler_path.read_text(encoding="utf-8-sig"))
+        timezone = str(payload.get("timezone") or DEFAULT_TIMEZONE).strip() or DEFAULT_TIMEZONE
+        broker_cfg = payload.get("broker_portfolio", {}) or {}
+        ready_time = str(
+            broker_cfg.get("data_ready_time")
+            or (payload.get("post_market", {}) or {}).get("time")
+            or DEFAULT_DATA_READY_TIME
+        ).strip()
+        _parse_clock(ready_time)
+    except Exception:
+        return DEFAULT_TIMEZONE, DEFAULT_DATA_READY_TIME
+    return timezone, ready_time
+
+
+def resolve_completed_broker_date(
+    *,
+    calendar_path: Path,
+    scheduler_path: Path = DEFAULT_SCHEDULER,
+    now: datetime | None = None,
+) -> tuple[str, dict]:
+    """Return the latest IDX date whose daily broker data can reasonably exist.
+
+    On an IDX trading day, today's date is eligible only after the configured
+    data-ready time (by default scheduler.post_market.time = 16:30 WIB).
+    Before that cut-off, use the previous IDX session. Weekends and holidays
+    naturally resolve to the most recent trading session.
+    """
+    holidays, special = load_calendar(calendar_path)
+    timezone_name, ready_text = _load_data_ready_policy(scheduler_path)
+    tz = ZoneInfo(timezone_name)
+    current = now or datetime.now(tz)
+    current = current.replace(tzinfo=tz) if current.tzinfo is None else current.astimezone(tz)
+    ready_clock = _parse_clock(ready_text)
+    today = current.date()
+    today_is_trading = is_idx_trading_day(
+        today,
+        holidays=holidays,
+        special_trading_days=special,
+    )
+
+    if today_is_trading and current.time().replace(tzinfo=None) >= ready_clock:
+        candidate = today
+        reason = "TODAY_SESSION_COMPLETED"
+    elif today_is_trading:
+        candidate = today - timedelta(days=1)
+        reason = "TODAY_SESSION_NOT_COMPLETED"
+    else:
+        candidate = today
+        reason = "TODAY_NOT_TRADING_DAY"
+
+    completed = latest_trading_on_or_before(
+        candidate,
+        holidays=holidays,
+        special_trading_days=special,
+    )
+    return completed.isoformat(), {
+        "target_source": "LATEST_COMPLETED_SESSION",
+        "target_reason": reason,
+        "timezone": timezone_name,
+        "data_ready_time": ready_text,
+        "as_of": current.isoformat(timespec="minutes"),
+    }
 
 
 def _print_coverage(rows: list[dict]) -> None:
@@ -59,24 +152,36 @@ def sync_tasks(
     db_path: Path,
     calendar_path: Path,
     output_path: Path,
+    scheduler_path: Path = DEFAULT_SCHEDULER,
     symbol: str = "",
     from_date: str = "",
     to_date: str = "",
     force: bool = False,
+    now: datetime | None = None,
 ) -> tuple[list[dict[str, str]], dict, list[dict]]:
+    target_meta: dict = {"target_source": "EXPLICIT_TO_DATE"}
+    resolved_to_date = str(to_date or "").strip()
+    if not resolved_to_date:
+        resolved_to_date, target_meta = resolve_completed_broker_date(
+            calendar_path=calendar_path,
+            scheduler_path=scheduler_path,
+            now=now,
+        )
+
     conn = connect(db_path)
     try:
         tasks, meta = build_tasks(
             conn,
             symbol=symbol,
             from_date=from_date,
-            to_date=to_date,
+            to_date=resolved_to_date,
             calendar_path=calendar_path,
             force=force,
         )
-        coverage = status_rows(conn, calendar_path=calendar_path, to_date=to_date)
+        coverage = status_rows(conn, calendar_path=calendar_path, to_date=resolved_to_date)
     finally:
         conn.close()
+    meta.update(target_meta)
     write_tasks(output_path, tasks, meta)
     return tasks, meta, coverage
 
@@ -85,6 +190,13 @@ def _print_task_result(tasks: list[dict[str, str]], meta: dict, coverage: list[d
     print("\nSDE - UPDATE BROKER PORTFOLIO")
     print("=" * 72)
     print(f"Target trading day : {meta.get('to_date', '-')}")
+    if meta.get("target_source") == "LATEST_COMPLETED_SESSION":
+        print(
+            f"Session rule       : hanya sesi selesai; hari ini aktif setelah "
+            f"{meta.get('data_ready_time', DEFAULT_DATA_READY_TIME)} {meta.get('timezone', DEFAULT_TIMEZONE)}"
+        )
+        if meta.get("target_reason") == "TODAY_SESSION_NOT_COMPLETED":
+            print("Session status     : sesi hari ini belum selesai -> pakai trading day sebelumnya")
     print(f"Portfolio/symbol   : {meta.get('requested_symbols', 0)}")
     print(f"Sudah ada di DB    : {meta.get('skipped_existing', 0)} tanggal")
     print(f"Perlu diambil      : {meta.get('task_count', 0)} task harian")
@@ -109,6 +221,7 @@ def cmd_daily(args: argparse.Namespace) -> int:
     tasks, meta, coverage = sync_tasks(
         db_path=Path(args.db),
         calendar_path=Path(args.calendar),
+        scheduler_path=Path(args.scheduler),
         output_path=Path(args.output),
         to_date=args.to_date,
     )
@@ -120,6 +233,7 @@ def cmd_one(args: argparse.Namespace) -> int:
     tasks, meta, coverage = sync_tasks(
         db_path=Path(args.db),
         calendar_path=Path(args.calendar),
+        scheduler_path=Path(args.scheduler),
         output_path=Path(args.output),
         symbol=args.symbol,
         from_date=args.from_date,
@@ -133,6 +247,7 @@ def cmd_refresh_all(args: argparse.Namespace) -> int:
     tasks, meta, coverage = sync_tasks(
         db_path=Path(args.db),
         calendar_path=Path(args.calendar),
+        scheduler_path=Path(args.scheduler),
         output_path=Path(args.output),
         to_date=args.to_date,
         force=True,
@@ -150,6 +265,7 @@ def cmd_import(args: argparse.Namespace) -> int:
     df = pd.read_csv(source, low_memory=False)
     db_path = Path(args.db)
     calendar_path = Path(args.calendar)
+    scheduler_path = Path(args.scheduler)
     output_path = Path(args.output)
     conn = connect(db_path)
     try:
@@ -159,18 +275,17 @@ def cmd_import(args: argparse.Namespace) -> int:
             source_path=source,
             archive_root=Path(args.archive_dir),
         )
-        # Rebuild immediately from the DB. This is the key guard against a stale
-        # task CSV containing old BUY history or symbols that are no longer OPEN.
-        tasks, meta = build_tasks(
-            conn,
-            calendar_path=calendar_path,
-            force=False,
-        )
-        coverage = status_rows(conn, calendar_path=calendar_path)
     finally:
         conn.close()
 
-    write_tasks(output_path, tasks, meta)
+    # Rebuild immediately from the updated DB using the latest COMPLETED
+    # session, not blindly the machine's calendar date.
+    tasks, meta, coverage = sync_tasks(
+        db_path=db_path,
+        calendar_path=calendar_path,
+        scheduler_path=scheduler_path,
+        output_path=output_path,
+    )
     total_symbols = sum(int(row["symbol_count"]) for row in results)
     print("\nSDE - IMPORT BROKER PORTFOLIO")
     print("=" * 72)
@@ -183,13 +298,23 @@ def cmd_import(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
+    target, target_meta = resolve_completed_broker_date(
+        calendar_path=Path(args.calendar),
+        scheduler_path=Path(args.scheduler),
+    ) if not args.to_date else (args.to_date, {"target_source": "EXPLICIT_TO_DATE"})
     conn = connect(Path(args.db))
     try:
-        rows = status_rows(conn, calendar_path=Path(args.calendar), to_date=args.to_date)
+        rows = status_rows(conn, calendar_path=Path(args.calendar), to_date=target)
     finally:
         conn.close()
     print("\nSDE - STATUS HISTORI BROKER PORTFOLIO")
     print("=" * 72)
+    print(f"Target trading day : {target}")
+    if target_meta.get("target_source") == "LATEST_COMPLETED_SESSION":
+        print(
+            f"Session rule       : hanya sesi selesai; hari ini aktif setelah "
+            f"{target_meta.get('data_ready_time', DEFAULT_DATA_READY_TIME)} {target_meta.get('timezone', DEFAULT_TIMEZONE)}"
+        )
     _print_coverage(rows)
     if rows and all(int(row.get("missing", 0)) == 0 for row in rows):
         print("\n[OK] Semua posisi OPEN sudah lengkap sampai trading day target.")
@@ -202,11 +327,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Simple daily broker workflow for actual portfolio")
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--calendar", default=str(DEFAULT_CALENDAR))
+    parser.add_argument("--scheduler", default=str(DEFAULT_SCHEDULER))
     parser.add_argument("--output", default=str(DEFAULT_TASKS))
     sub = parser.add_subparsers(dest="command", required=True)
 
-    daily = sub.add_parser("daily", help="Recommended: create tasks only for broker dates missing from DB")
-    daily.add_argument("--to-date", default="")
+    daily = sub.add_parser("daily", help="Recommended: create tasks only for completed broker dates missing from DB")
+    daily.add_argument("--to-date", default="", help="Explicit override; blank = latest completed IDX session")
     daily.set_defaults(func=cmd_daily)
 
     one = sub.add_parser("one", help="Repair/backfill one symbol")
