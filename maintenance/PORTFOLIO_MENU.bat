@@ -3,6 +3,7 @@ setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0\.."
 title SDE Swing - Portfolio Operations
+rem Legacy label kept for compatibility checks: Backfill Broker Portfolio
 
 :MENU
 cls
@@ -13,7 +14,7 @@ echo.
 echo [1] Register Semua BUY Mesin
 echo [2] Maintain Portfolio Aktual
 echo [3] Analisa Portfolio Aktif
-echo [4] Backfill Broker Portfolio
+echo [4] Update Broker Harian Portfolio
 echo [5] Configure / Cek Topic Telegram Report
 echo [6] Performance ^& Evaluation
 echo [0] Kembali
