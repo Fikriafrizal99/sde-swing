@@ -69,8 +69,6 @@ def test_legacy_validated_backfill_becomes_visible_to_portfolio_history(tmp_path
             (day,),
         ).fetchone()[0]
 
-        # Reproduce manifests written by the older backfill importer: coverage
-        # could see this date, but the strict portfolio-history reader could not.
         legacy_manifest = {
             "broker_date": day,
             "from_date": day,
@@ -107,7 +105,7 @@ def test_legacy_validated_backfill_becomes_visible_to_portfolio_history(tmp_path
     assert manifest["broker_period_source"] == "STOCKBIT_1D"
     assert manifest["daily_history_eligible"] is True
     assert manifest["aggregate_snapshot"] is False
-    assert manifest["provenance_repair"] == "LEGACY_PORTFOLIO_BACKFILL_1D_V2"
+    assert manifest["provenance_repair"] == "LEGACY_PROVEN_DAILY_V3"
 
 
 def test_blank_snapshot_dates_are_recovered_only_when_row_json_proves_daily(tmp_path):
@@ -157,6 +155,44 @@ def test_blank_snapshot_dates_are_recovered_only_when_row_json_proves_daily(tmp_
     assert len(history) == 1
 
 
+def test_unlabeled_legacy_snapshot_is_recovered_from_row_proof(tmp_path):
+    db = tmp_path / "history.db"
+    archive_root = tmp_path / "archive"
+    day = "2026-08-12"
+    conn = connect(db)
+    try:
+        archive_backfill(
+            conn,
+            pd.DataFrame([_summary_row("MDKA", day)]),
+            source_path=tmp_path / "legacy.csv",
+            archive_root=archive_root,
+        )
+        snapshot_id = conn.execute(
+            "SELECT broker_snapshot_id FROM broker_snapshots WHERE broker_date=?",
+            (day,),
+        ).fetchone()[0]
+        # Reproduce the oldest form: broker_date and row_json survive, while
+        # provenance labels and snapshot period columns are missing.
+        conn.execute(
+            """
+            UPDATE broker_snapshots
+            SET from_date='', to_date='', data_quality_status='VALID', manifest_json='{}'
+            WHERE broker_snapshot_id=?
+            """,
+            (snapshot_id,),
+        )
+        conn.commit()
+
+        assert load_broker_history(conn, "MDKA", day, day) == []
+        assert repair_legacy_backfill_provenance(conn) == 1
+        history = load_broker_history(conn, "MDKA", day, day)
+    finally:
+        conn.close()
+
+    assert len(history) == 1
+    assert history[0]["broker_date"] == day
+
+
 def test_row_json_with_multiday_period_is_not_repaired(tmp_path):
     db = tmp_path / "history.db"
     conn = connect(db)
@@ -196,16 +232,18 @@ def test_row_json_with_multiday_period_is_not_repaired(tmp_path):
         conn.close()
 
 
-def test_repair_is_idempotent_and_does_not_touch_multiday_rows(tmp_path):
+def test_explicit_aggregate_is_not_repaired_even_if_row_dates_match(tmp_path):
     db = tmp_path / "history.db"
     conn = connect(db)
     try:
         from modules.database.swing_history_db import init_schema
 
         init_schema(conn)
-        legacy = {
-            "source": "PORTFOLIO_BACKFILL",
-            "daily_only": True,
+        day = "2026-08-12"
+        manifest = {
+            "broker_period_type": "AGGREGATE",
+            "broker_period_source": "STOCKBIT_AGGREGATE_EXPORT",
+            "aggregate_snapshot": True,
         }
         conn.execute(
             """
@@ -215,17 +253,21 @@ def test_repair_is_idempotent_and_does_not_touch_multiday_rows(tmp_path):
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                "bad-multiday",
-                "2026-08-12",
-                "2026-08-11",
-                "2026-08-12",
+                "explicit-aggregate",
+                day,
+                day,
+                day,
                 "legacy",
                 1.0,
-                "hash",
-                "VALID_BACKFILL_DAILY",
-                json.dumps(legacy),
-                "2026-08-12T18:00:00",
+                "hash-agg",
+                "VALID",
+                json.dumps(manifest),
+                day + "T18:00:00",
             ),
+        )
+        conn.execute(
+            "INSERT INTO broker_summary (broker_snapshot_id, symbol, row_json) VALUES (?, ?, ?)",
+            ("explicit-aggregate", "MDKA", json.dumps(_summary_row("MDKA", day))),
         )
         conn.commit()
         assert repair_legacy_backfill_provenance(conn) == 0
