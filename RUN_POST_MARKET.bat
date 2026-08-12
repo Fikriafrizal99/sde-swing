@@ -4,6 +4,9 @@ chcp 65001 >nul
 cd /d "%~dp0"
 title SDE Swing - Post Market
 
+REM Canonical integrated runner remains run_sde_job_integrated.py.
+REM Post Market uses a thin market-first shim that delegates to that runner and only replaces report context/presentation.
+
 :MENU
 cls
 echo ================================================================
