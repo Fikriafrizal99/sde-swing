@@ -360,7 +360,7 @@ def market_outlook_payloads(
     return [_artifact_payload(artifact)]
 
 
-def post_market_payloads(ctx: RunnerContext, manifest: dict[str, Any]) -> list[ReportPayload]:
+def validated_post_market_payloads(ctx: RunnerContext, manifest: dict[str, Any]) -> list[ReportPayload]:
     snapshot_path = str(manifest.get("Snapshot_Manifest") or manifest.get("snapshot_manifest") or "")
     snapshot = read_required_json(snapshot_path, "post_market_snapshot") if snapshot_path else {}
     manifest_path = str(
@@ -424,6 +424,13 @@ def post_market_payloads(ctx: RunnerContext, manifest: dict[str, Any]) -> list[R
         validation_details=validated,
     )
     return [_artifact_payload(artifact)]
+
+
+def post_market_payloads(ctx: RunnerContext, manifest: dict[str, Any]) -> list[ReportPayload]:
+    """Canonical Post Market payload path used by every runtime entry point."""
+    from modules.job_runner.post_market_live import post_market_live_payloads
+
+    return post_market_live_payloads(ctx, manifest)
 
 
 def _broker_summary_rows(ctx: RunnerContext) -> tuple[list[dict[str, Any]], dict[str, Any], Path]:

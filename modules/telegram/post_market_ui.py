@@ -226,7 +226,124 @@ def _join(lines: list[str]) -> str:
     return "\n".join(result).strip()
 
 
+def _current_section_status(value: Any) -> str:
+    return _upper(value) or "NOT AVAILABLE"
+
+
+def _current_candidate_line(item: Mapping[str, Any], index: int) -> str:
+    symbol = str(item.get("symbol") or "").strip().upper()
+    if not symbol or "AVOID" in _upper(item.get("decision")) or "AVOID" in _upper(item.get("candidate_status")):
+        return ""
+    parts = [f"{index}. <b>{escape(symbol)}</b>"]
+    setup = _upper(item.get("setup"))
+    if setup:
+        parts.append(f"Setup {escape(setup)}")
+    score = _number(item.get("score"))
+    if score is not None:
+        parts.append(f"Score {score:.1f}")
+    readiness = _number(item.get("entry_readiness"))
+    readiness_class = _upper(item.get("entry_readiness_class"))
+    if readiness is not None:
+        parts.append(f"Readiness {readiness:.1f}")
+    elif readiness_class:
+        parts.append(f"Readiness {escape(readiness_class)}")
+    quality = _upper(item.get("data_quality"))
+    if quality:
+        parts.append(f"Data {escape(quality)}")
+    return " | ".join(parts)
+
+
+def _format_current_post_market(data: Mapping[str, Any]) -> str:
+    """Current hierarchical Post Market contract used by official runtime."""
+    lines = ["<b>🌆 SDE SWING — POST MARKET</b>"]
+    trade_date = _date(data.get("trade_date"), long=True)
+    if trade_date:
+        lines.append(f"📅 {escape(trade_date)}")
+    finished = _time(data.get("finished_at") or data.get("generated_at") or data.get("completed_at"))
+    if finished:
+        lines.append(f"🕒 {escape(finished)} WIB")
+    lines += [SEPARATOR, "", "<b>PROCESS STATUS</b>"]
+    lines.append(_metric(_status_icon(data.get("process_status")), "Status", _current_section_status(data.get("process_status"))))
+
+    lines += ["", "<b>MARKET SUMMARY</b>"]
+    regime = _current_section_status(data.get("market_regime"))
+    lines.append(_metric("🧭", "Regime", regime))
+    ihsg_status = _upper(data.get("ihsg_status"))
+    change = _pct(data.get("ihsg_change"), signed=True, decimals=2)
+    if ihsg_status == "CURRENT SESSION" and change:
+        lines.append(_metric("📊", "IHSG", change))
+    else:
+        dated = str(data.get("ihsg_data_date") or "NOT AVAILABLE")
+        lines.append(_metric("🟡", "IHSG", f"NOT CURRENT ({dated})"))
+    lines.append(_metric("📈", "Breadth", _breadth_label(data)))
+    setup_items = _setup_items(data)
+    if setup_items:
+        dominant_setup = setup_items[0]
+        lines.append(_metric("🔥", "Dominant setup", f"{dominant_setup[0]} ({dominant_setup[1]})"))
+    else:
+        lines.append(_metric("🔥", "Dominant setup", "NOT AVAILABLE"))
+
+    lines += ["", "<b>SECTOR BIAS</b>"]
+    sector_items: list[str] = []
+    for key, label in (("leading", "LEADING"), ("rotating_in", "ROTATING IN"), ("weakening", "WEAKENING"), ("lagging", "LAGGING")):
+        values = data.get(key) if isinstance(data.get(key), (list, tuple)) else []
+        cleaned = [str(value).strip() for value in values if str(value).strip()]
+        if cleaned:
+            sector_items.append(f"{label}: {', '.join(cleaned[:4])}")
+    lines.extend(sector_items or ["🟡 Sector bias: <b>NOT AVAILABLE</b>"])
+
+    funnel = data.get("candidate_funnel") if isinstance(data.get("candidate_funnel"), Mapping) else {}
+    lines += ["", "<b>DATA QUALITY</b>"]
+    coverage = _coverage_pct(data.get("coverage")) or "NOT AVAILABLE"
+    lines.append(_metric("📦", "Coverage", coverage))
+    lines.append(_metric("🧪", "Technical", _current_section_status(data.get("technical_status"))))
+    technical_date = str(data.get("technical_data_date") or "NOT AVAILABLE")
+    lines.append(_metric("📅", "Technical date", technical_date))
+    if data.get("warnings"):
+        lines.append(f"⚠️ Warning: <b>{escape('; '.join(str(item) for item in data.get('warnings', [])[:2]))}</b>")
+
+    lines += ["", "<b>CANDIDATE FUNNEL — HEALTH CHECK</b>"]
+    lines.append(
+        "Technical {0} → Candidate {1} → Pass {2} → Ready {3} → Developing {4} → AVOID {5}".format(
+            _int_text(funnel.get("technical_rows")),
+            _int_text(funnel.get("candidate_rows")),
+            _int_text(funnel.get("pass_rows")),
+            _int_text(funnel.get("ready_rows")),
+            _int_text(funnel.get("developing_rows")),
+            _int_text(funnel.get("avoid_rows")),
+        )
+    )
+    lines.append("Candidate Funnel adalah health check, bukan Final Watchlist.")
+
+    lines += ["", "<b>FILTER DOMINAN</b>", escape(str(data.get("dominant_filter_reason") or "NOT AVAILABLE"))]
+    lines += ["", "<b>SCREENING RESULT</b>"]
+    lines.append(_metric("🎯", "Screening", _current_section_status(data.get("screening_result"))))
+    top = data.get("top_screening_watchlist") if isinstance(data.get("top_screening_watchlist"), (list, tuple)) else []
+    rendered_top = [_current_candidate_line(item, index) for index, item in enumerate(top[:5], 1) if isinstance(item, Mapping)]
+    rendered_top = [line for line in rendered_top if line]
+    if rendered_top:
+        lines += ["<b>POST MARKET TOP WATCHLIST (MAX 5)</b>", *rendered_top]
+    else:
+        lines.append("Post Market Top Watchlist: NOT AVAILABLE")
+    lines.append("Post Market Top Watchlist adalah health check, bukan Final Watchlist dan tidak membuat keputusan entry.")
+
+    lines += ["", "<b>PIPELINE STATUS</b>", _current_section_status(data.get("pipeline_status"))]
+    lines += ["", "<b>SOURCE STATUS</b>"]
+    source_status = data.get("source_status") if isinstance(data.get("source_status"), Mapping) else {}
+    for source, status in source_status.items():
+        lines.append(_metric("•", str(source), _current_section_status(status)))
+    if not source_status:
+        lines.append("🟡 Source status: <b>NOT AVAILABLE</b>")
+
+    lines += ["", "<b>NEXT PROCESS</b>", "Final Watchlist menentukan kandidat prioritas, broker PRIMARY, entry, SL, TP, dan keputusan final."]
+    if _present(data.get("run_id")):
+        lines += ["", f"<code>{escape(str(data['run_id']))}</code>"]
+    return _join(lines)
+
+
 def format_post_market(data: dict[str, Any]) -> str:
+    if str(data.get("post_market_report_version") or "").upper() == "CURRENT_V2":
+        return _format_current_post_market(data)
     bullish, neutral, bearish = _counts(data)
     bullish_pct, bearish_pct, directional = _directional_share(data)
     breadth_label = _breadth_label(data)

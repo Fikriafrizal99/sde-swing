@@ -587,20 +587,63 @@ def archive_candidates(conn: sqlite3.Connection, run_id: str, path: Path) -> int
     return len(df)
 
 
-def archive_broker(conn: sqlite3.Connection, path: Path, manifest_path: Path | None = None) -> str:
+def archive_broker(
+    conn: sqlite3.Connection,
+    path: Path,
+    manifest_path: Path | None = None,
+    manifest_payload: dict[str, Any] | None = None,
+) -> str:
     df = load_csv(path)
     if df.empty:
         return ""
-    manifest = read_json(manifest_path) if manifest_path and manifest_path.exists() else {}
+    manifest = dict(manifest_payload or {})
+    if not manifest and manifest_path and manifest_path.exists():
+        manifest = read_json(manifest_path)
+
+    # Preserve the period envelope even for legacy callers that only supplied
+    # the CSV.  This is deliberately metadata-only: it does not alter any
+    # broker calculation, but gives Portfolio Management enough provenance to
+    # reject an aggregate snapshot as a daily observation later on.
+    from_column = find_col(df, "FROM_DATE", "From_Date", "Broker_From_Date")
+    to_column = find_col(df, "TO_DATE", "To_Date", "Broker_To_Date")
+    inferred_from = ""
+    inferred_to = ""
+    if from_column and to_column:
+        from_values = pd.to_datetime(df[from_column], errors="coerce").dropna()
+        to_values = pd.to_datetime(df[to_column], errors="coerce").dropna()
+        if not from_values.empty:
+            inferred_from = from_values.min().date().isoformat()
+        if not to_values.empty:
+            inferred_to = to_values.max().date().isoformat()
+    inferred_from = inferred_from or inferred_to
+    inferred_to = inferred_to or inferred_from
+    period_type = str(manifest.get("broker_period_type") or "").strip().upper()
+    if not period_type and inferred_from and inferred_to:
+        period_type = "1D" if inferred_from == inferred_to else "AGGREGATE"
+    inferred_source = "STOCKBIT_1D" if period_type == "1D" else "STOCKBIT_AGGREGATE_EXPORT"
+    manifest.setdefault("broker_period_type", period_type)
+    manifest.setdefault("broker_period_start", inferred_from)
+    manifest.setdefault("broker_period_end", inferred_to)
+    manifest.setdefault("broker_trading_days", 1 if period_type == "1D" else 0)
+    manifest.setdefault("broker_period_source", inferred_source)
+    manifest.setdefault("daily_history_eligible", period_type == "1D")
+    manifest.setdefault("aggregate_snapshot", period_type != "1D")
+    manifest.setdefault("broker_date", inferred_to or latest_data_date(df))
+    manifest.setdefault("from_date", inferred_from)
+    manifest.setdefault("to_date", inferred_to or manifest.get("broker_date", ""))
     snapshot_hash = file_sha256(path)
-    broker_date = manifest.get("broker_date") or latest_data_date(df)
+    broker_date = manifest.get("broker_date") or manifest.get("broker_period_end") or latest_data_date(df)
     snapshot_id = hashlib.sha256(f"{broker_date}|{snapshot_hash}".encode("utf-8")).hexdigest()[:16]
     row = {
         "broker_snapshot_id": snapshot_id,
         "broker_date": broker_date,
-        "from_date": manifest.get("from_date", ""),
-        "to_date": manifest.get("to_date", broker_date),
-        "source_files": manifest.get("source") or str(path.resolve()),
+        "from_date": manifest.get("from_date") or manifest.get("broker_period_start", ""),
+        "to_date": manifest.get("to_date") or manifest.get("broker_period_end", broker_date),
+        "source_files": (
+            manifest.get("source")
+            or manifest.get("summary_source")
+            or str(path.resolve())
+        ),
         "coverage": manifest.get("coverage"),
         "snapshot_hash": snapshot_hash,
         "data_quality_status": manifest.get("DATA_QUALITY_STATUS", "VALID"),

@@ -161,6 +161,10 @@ def main() -> int:
         debug=False,
         interactive_broker=False,
     )
+    # Resend is delivery-only: the canonical Post Market builder still
+    # validates the requested-date pulse, but it must not trigger a new data
+    # refresh or rerun the engine.
+    setattr(ctx, "delivery_only", True)
 
     write_status(ctx, "RUNNING", "RESEND_EXISTING", EXIT_SUCCESS, {
         "engine_status": "NOT_RUN",

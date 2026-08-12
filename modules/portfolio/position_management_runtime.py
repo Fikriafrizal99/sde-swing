@@ -49,22 +49,41 @@ def fmt_money(value: Any) -> str:
 
 
 def _fallback_context_from_latest(broker_path: Path, symbol: str, analysis_date: str) -> dict[str, Any]:
-    latest = base.load_broker_row(broker_path, symbol)
-    state = str(latest.get("state") or "UNAVAILABLE").upper()
+    # ``BROKER_SUMMARY_LATEST.csv`` may be an aggregate PRIMARY snapshot.
+    # Never expose that file as TODAY 1D when its provenance is not real daily.
+    from modules.portfolio.broker_history_context import _daily_manifest_from_source
+
+    daily_manifest = _daily_manifest_from_source(
+        broker_path,
+        broker_path.with_suffix(".manifest.json")
+        if broker_path.with_suffix(".manifest.json").exists()
+        else None,
+    )
+    latest = base.load_broker_row(broker_path, symbol) if daily_manifest else {}
+    daily_date = str(daily_manifest.get("broker_period_end") or "")[:10]
+    pulse_available = bool(daily_manifest and daily_date == str(analysis_date)[:10])
+    historical_state = str(latest.get("state") or "UNAVAILABLE").upper()
+    state = historical_state if pulse_available else "UNAVAILABLE"
     return {
         "symbol": symbol,
         "buy_date": "",
         "analysis_date": analysis_date,
-        "broker_data_date": "",
+        "broker_data_date": daily_date,
         "observation_count": 0,
         "current_state": state,
-        "current_score": latest.get("score"),
+        "latest_historical_state": historical_state,
+        "latest_historical_date": daily_date,
+        "current_score": latest.get("score") if pulse_available else None,
         "current_confidence": None,
-        "current_net_flow": latest.get("net_flow"),
+        "current_net_flow": latest.get("net_flow") if pulse_available else None,
         # Latest-only broker evidence is warning-only. It must not change the
         # deterministic management action without historical confirmation.
         "effective_state": "UNAVAILABLE" if state == "UNAVAILABLE" else "NEUTRAL",
-        "effective_reason": "historical Broker Summary belum cukup; latest broker state hanya warning",
+        "effective_reason": (
+            "TODAY 1D Broker Summary belum tersedia; latest broker state hanya histori"
+            if not pulse_available
+            else "historical Broker Summary belum cukup; latest broker state hanya warning"
+        ),
         "3D": {"context": "INSUFFICIENT_DATA", "observation_count": 0, "required_observations": 3},
         "5D": {"context": "INSUFFICIENT_DATA", "observation_count": 0, "required_observations": 5},
         "7D": {"context": "INSUFFICIENT_DATA", "observation_count": 0, "required_observations": 7},
@@ -87,6 +106,11 @@ def _fallback_context_from_latest(broker_path: Path, symbol: str, analysis_date:
         "current_top_accumulation": [],
         "current_top_distribution": [],
         "actor_data_status": "UNAVAILABLE",
+        "today_pulse_available": pulse_available,
+        "today_pulse_status": "AVAILABLE" if pulse_available else "NOT_AVAILABLE",
+        "today_pulse_source": "STOCKBIT_1D" if pulse_available else "NOT_AVAILABLE",
+        "current_source": "STOCKBIT_1D" if pulse_available else "NOT_AVAILABLE",
+        "current_snapshot_id": str(daily_manifest.get("snapshot_id") or "") if pulse_available else "",
     }
 
 
@@ -222,18 +246,46 @@ def analyze_position(
         "technical_state": base.norm_text(tech.get("technical_regime"), "UNAVAILABLE"),
         "broker_state": str(broker_context.get("effective_state") or "UNAVAILABLE"),
         "broker_score": broker_context.get("current_score"),
+        "broker_confidence": broker_context.get("current_confidence"),
+        "broker_net_flow": broker_context.get("current_net_flow"),
         "broker_current_state": broker_context.get("current_state"),
         "broker_effective_state": broker_context.get("effective_state"),
+        "broker_source": broker_context.get("current_source", "STOCKBIT_1D"),
+        "broker_snapshot_id": broker_context.get("current_snapshot_id", ""),
+        "today_pulse_available": bool(broker_context.get("today_pulse_available")),
+        "today_pulse_status": broker_context.get("today_pulse_status", "NOT_AVAILABLE"),
+        "today_pulse_source": broker_context.get("today_pulse_source", "NOT_AVAILABLE"),
         "broker_data_date": broker_data_date,
         "broker_observation_count": int(broker_context.get("observation_count") or 0),
         "broker_context_3d": d3.get("context"),
         "broker_context_3d_observations": int(d3.get("observation_count") or 0),
+        "broker_context_3d_expected_sessions": d3.get("expected_sessions", []),
+        "broker_context_3d_observed_sessions": d3.get("observed_sessions", []),
+        "broker_context_3d_missing_sessions": d3.get("missing_sessions", []),
+        "broker_context_3d_coverage": d3.get("coverage"),
+        "broker_context_3d_coverage_text": d3.get("coverage_text", ""),
+        "broker_context_3d_coverage_status": d3.get("coverage_status", ""),
         "broker_context_5d": d5.get("context"),
         "broker_context_5d_observations": int(d5.get("observation_count") or 0),
+        "broker_context_5d_expected_sessions": d5.get("expected_sessions", []),
+        "broker_context_5d_observed_sessions": d5.get("observed_sessions", []),
+        "broker_context_5d_missing_sessions": d5.get("missing_sessions", []),
+        "broker_context_5d_coverage": d5.get("coverage"),
+        "broker_context_5d_coverage_text": d5.get("coverage_text", ""),
+        "broker_context_5d_coverage_status": d5.get("coverage_status", ""),
         "broker_context_7d": d7.get("context"),
         "broker_context_7d_observations": int(d7.get("observation_count") or 0),
+        "broker_context_7d_expected_sessions": d7.get("expected_sessions", []),
+        "broker_context_7d_observed_sessions": d7.get("observed_sessions", []),
+        "broker_context_7d_missing_sessions": d7.get("missing_sessions", []),
         "broker_context_since_entry": since.get("context"),
         "broker_history_status": since.get("coverage_status"),
+        "broker_since_entry_actual_sessions": since.get(
+            "actual_session_count",
+            len(since.get("observed_sessions", []) or []),
+        ),
+        "broker_since_entry_expected_sessions": since.get("expected_session_count", 0),
+        "broker_since_entry_observed_sessions": since.get("observed_sessions", []),
         "broker_net_flow_since_entry": since.get("net_flow"),
         "broker_avg_daily_net_flow": since.get("avg_net_flow"),
         "broker_buy_days": int(since.get("buy_days") or 0),
@@ -315,35 +367,79 @@ def _broker_conclusion(row: dict[str, Any]) -> str:
     current_dist = _actor_phrase(row.get("broker_current_top_distribution") or [])
     since_accum = _actor_phrase(row.get("broker_top_accumulation") or [])
     since_dist = _actor_phrase(row.get("broker_top_distribution") or [])
+    d3_coverage = str(row.get("broker_context_3d_coverage_status") or "").upper()
+    d3_coverage_text = str(row.get("broker_context_3d_coverage_text") or "").strip()
+    d5_coverage = str(row.get("broker_context_5d_coverage_status") or "").upper()
+    d5_coverage_text = str(row.get("broker_context_5d_coverage_text") or "").strip()
+
+    # A stale latest row is historical context, never today's primary pulse.
+    # Keep compatibility with old hand-built report rows that predate this key.
+    if "today_pulse_available" in row and not bool(row.get("today_pulse_available")):
+        latest_date = str(row.get("broker_data_date") or "").strip()[:10]
+        suffix = f"; daily terakhir {latest_date}" if latest_date else ""
+        return (
+            "Broker TODAY 1D belum tersedia untuk analysis date; "
+            f"histori daily terakhir tidak dipakai sebagai pulse hari ini{suffix}."
+        )
+
+    if observations <= 0 and current != "UNAVAILABLE" and bool(row.get("today_pulse_available")):
+        if current == "DISTRIBUTION":
+            return "Broker TODAY 1D menunjukkan distribution sebagai warning; histori multi-day real daily belum tersedia."
+        if current == "ACCUMULATION":
+            return "Broker TODAY 1D menunjukkan accumulation sebagai warning; histori multi-day real daily belum tersedia."
+        return "Broker TODAY 1D masih netral/campuran; histori multi-day real daily belum tersedia."
 
     if observations <= 0:
         return "Broker history belum tersedia; broker tidak dipakai sebagai pemicu action."
 
     if observations == 1:
+        coverage_note = (
+            f" Broker 3D belum lengkap ({d3_coverage_text or '1/3'} sesi)."
+            if d3_coverage and d3_coverage != "COMPLETE"
+            else ""
+        )
         if current == "DISTRIBUTION":
             actors = f", terutama {current_dist or since_dist}" if (current_dist or since_dist) else ""
-            return f"Distribusi muncul pada 1 sesi terbaru{actors}; tekanan jual terlihat tetapi persistence belum terkonfirmasi."
+            return f"Distribusi muncul pada 1 sesi terbaru{actors}; tekanan jual terlihat tetapi persistence belum terkonfirmasi.{coverage_note}"
         if current == "ACCUMULATION":
             actors = f", terutama {current_accum or since_accum}" if (current_accum or since_accum) else ""
-            return f"Akumulasi muncul pada 1 sesi terbaru{actors}; dukungan beli terlihat tetapi persistence belum terkonfirmasi."
-        return "Flow broker 1 sesi masih netral/campuran; belum ada arah yang cukup konsisten."
+            return f"Akumulasi muncul pada 1 sesi terbaru{actors}; dukungan beli terlihat tetapi persistence belum terkonfirmasi.{coverage_note}"
+        return f"Flow broker 1 sesi masih netral/campuran; belum ada arah yang cukup konsisten.{coverage_note}"
 
     if observations == 2:
+        coverage_note = (
+            f" Broker 3D belum lengkap ({d3_coverage_text or '2/3'} sesi)."
+            if d3_coverage and d3_coverage != "COMPLETE"
+            else ""
+        )
         if since == "DISTRIBUTION" or current == "DISTRIBUTION":
             actors = f", didominasi {since_dist or current_dist}" if (since_dist or current_dist) else ""
             qualifier = "mendominasi" if since == "DISTRIBUTION" else "muncul"
-            return f"Distribusi {qualifier} dalam 2 sesi sejak entry{actors}; tekanan jual mulai terbaca, tetapi belum menjadi konfirmasi 3D untuk action engine."
+            return f"Distribusi {qualifier} dalam 2 sesi sejak entry{actors}; tekanan jual mulai terbaca, tetapi belum menjadi konfirmasi 3D untuk action engine.{coverage_note}"
         if since == "ACCUMULATION" or current == "ACCUMULATION":
             actors = f", didominasi {since_accum or current_accum}" if (since_accum or current_accum) else ""
             qualifier = "mendominasi" if since == "ACCUMULATION" else "muncul"
-            return f"Akumulasi {qualifier} dalam 2 sesi sejak entry{actors}; dukungan beli mulai terbaca, tetapi belum menjadi konfirmasi 3D untuk action engine."
+            return f"Akumulasi {qualifier} dalam 2 sesi sejak entry{actors}; dukungan beli mulai terbaca, tetapi belum menjadi konfirmasi 3D untuk action engine.{coverage_note}"
         mixed_parts: list[str] = []
         if since_dist:
             mixed_parts.append(f"distribusi {since_dist}")
         if since_accum:
             mixed_parts.append(f"akumulasi {since_accum}")
         detail = "; " + " sementara ".join(mixed_parts) if mixed_parts else ""
-        return f"Flow broker 2 sesi masih campuran{detail}; belum ada persistence yang cukup untuk mengubah action engine."
+        return f"Flow broker 2 sesi masih campuran{detail}; belum ada persistence yang cukup untuk mengubah action engine.{coverage_note}"
+
+    if d3_coverage and d3_coverage != "COMPLETE":
+        return (
+            f"Broker 3D belum lengkap ({d3_coverage_text or f'{observations}/3'} sesi); "
+            "histori daily tidak digeser ke sesi yang lebih lama sehingga broker belum menjadi konfirmasi action engine."
+        )
+
+    if d5_coverage and d5_coverage != "COMPLETE" and observations >= 3:
+        context_3d = d3 if d3 not in {"", "INSUFFICIENT_DATA"} else "NEUTRAL"
+        return (
+            f"Broker 5D belum lengkap ({d5_coverage_text or f'{observations}/5'} sesi); "
+            f"context 3D {context_3d} tetap dipisahkan dari window 5D yang belum penuh."
+        )
 
     window = "3D"
     context = d3
@@ -377,6 +473,7 @@ def _deterministic_interpretation(row: dict[str, Any]) -> dict[str, str]:
     technical = str(row.get("technical_state") or "UNAVAILABLE").upper()
     sector = str(row.get("sector_state") or "UNAVAILABLE").upper()
     market = str(row.get("market_state") or "UNAVAILABLE").upper()
+    milestone = str(row.get("milestone") or "PRE_TARGET").replace("_", " ").upper()
 
     if engine_reason:
         action_sentence = f"Keputusan {action.replace('_', ' ')} mengikuti engine: {engine_reason}"
@@ -385,7 +482,33 @@ def _deterministic_interpretation(row: dict[str, Any]) -> dict[str, str]:
             f"Keputusan {action.replace('_', ' ')} tetap mengikuti engine dengan technical {technical}, "
             f"sektor {sector}, dan market {market}."
         )
-    main_reason = f"{broker_sentence} {action_sentence}".strip()
+    technical_sentence = f"Fakta teknikal/milestone: {technical} / {milestone}."
+    context_state = str(
+        row.get("broker_effective_state")
+        or row.get("broker_context_since_entry")
+        or current_broker
+        or "UNAVAILABLE"
+    ).upper()
+    if action == "EXIT" and context_state == "ACCUMULATION":
+        broker_relation = "Broker accumulation tidak mengaktifkan kembali thesis posisi yang sudah invalid."
+    elif action == "EXIT" and context_state == "DISTRIBUTION":
+        broker_relation = "Broker distribution mendukung keputusan keluar, tetapi bukan sumber utama action engine."
+    elif action in {"HOLD", "HOLD_STRONG", "HOLD_AFTER_TP1", "HOLD_AFTER_TP2"} and current_broker == "DISTRIBUTION":
+        broker_relation = (
+            "Distribution adalah warning; histori daily belum cukup terkonfirmasi untuk meng-override action HOLD."
+        )
+    elif action in {"HOLD", "HOLD_STRONG", "HOLD_AFTER_TP1", "HOLD_AFTER_TP2"} and context_state == "ACCUMULATION":
+        broker_relation = "Broker accumulation mendukung posisi, sementara action tetap ditentukan oleh engine teknikal."
+    elif context_state in {"UNAVAILABLE", "", "NEUTRAL", "INSUFFICIENT_DATA"}:
+        broker_relation = "Broker bersifat netral atau belum cukup terkonfirmasi sehingga tidak menjadi pemicu action."
+    else:
+        broker_relation = "Broker menjadi konteks pendukung/risiko, bukan pengganti action engine."
+
+    # Causal order is intentional: action driver first, then technical facts,
+    # broker context, its relationship to the action, and the next step.
+    main_reason = " ".join(
+        part for part in (action_sentence, technical_sentence, broker_sentence, broker_relation) if part
+    ).strip()
 
     plan_missing = not all(row.get(key) is not None for key in ("initial_stop_loss", "initial_tp1", "initial_tp2"))
     if row.get("data_quality_status") not in {"VALID", "VALID_WITH_BROKER_WARNING"}:
@@ -426,6 +549,7 @@ def _ai_facts(row: dict[str, Any]) -> dict[str, Any]:
         "pnl_pct": base.fmt_pct(row.get("pnl_pct")),
         "management_action": str(row.get("management_action") or ""),
         "milestone": str(row.get("milestone") or ""),
+        "initial_stop_loss": base.fmt_price(row.get("initial_stop_loss")),
         "initial_tp1": base.fmt_price(row.get("initial_tp1")),
         "initial_tp2": base.fmt_price(row.get("initial_tp2")),
         "active_stop_loss": base.fmt_price(row.get("active_stop_loss") or row.get("initial_stop_loss")),
@@ -435,11 +559,28 @@ def _ai_facts(row: dict[str, Any]) -> dict[str, Any]:
         "market_state": str(row.get("market_state") or ""),
         "broker_current_state": str(row.get("broker_current_state") or ""),
         "broker_effective_state": str(row.get("broker_effective_state") or ""),
+        "broker_data_date": str(row.get("broker_data_date") or ""),
+        "broker_source": str(row.get("broker_source") or ""),
+        "broker_current_score": row.get("broker_score"),
+        "broker_current_confidence": row.get("broker_confidence"),
+        "broker_current_net_flow": fmt_money(row.get("broker_net_flow")),
+        "today_pulse_available": bool(row.get("today_pulse_available")),
         "broker_observation_count": observations,
         "broker_context_3d": str(row.get("broker_context_3d") or ""),
         "broker_context_5d": str(row.get("broker_context_5d") or ""),
         "broker_context_7d": str(row.get("broker_context_7d") or ""),
         "broker_context_since_entry": str(row.get("broker_context_since_entry") or ""),
+        "broker_context_3d_coverage": str(row.get("broker_context_3d_coverage_text") or ""),
+        "broker_context_3d_missing_sessions": row.get("broker_context_3d_missing_sessions") or [],
+        "broker_context_5d_coverage": str(row.get("broker_context_5d_coverage_text") or ""),
+        "broker_context_5d_missing_sessions": row.get("broker_context_5d_missing_sessions") or [],
+        "broker_since_entry_actual_sessions": row.get("broker_since_entry_actual_sessions"),
+        "broker_buy_days": row.get("broker_buy_days"),
+        "broker_sell_days": row.get("broker_sell_days"),
+        "broker_accumulation_days": row.get("broker_accumulation_days"),
+        "broker_distribution_days": row.get("broker_distribution_days"),
+        "broker_persistence_pct": row.get("broker_persistence_pct"),
+        "broker_score_avg": row.get("broker_score_avg"),
         "broker_net_flow_since_entry": fmt_money(row.get("broker_net_flow_since_entry")),
         "broker_flow_trend": str(row.get("broker_flow_trend") or ""),
         "top_accumulation": _formatted_actors(row.get("broker_top_accumulation") or []),
@@ -447,12 +588,60 @@ def _ai_facts(row: dict[str, Any]) -> dict[str, Any]:
         "current_top_accumulation": _formatted_actors(row.get("broker_current_top_accumulation") or []),
         "current_top_distribution": _formatted_actors(row.get("broker_current_top_distribution") or []),
         "data_quality_status": str(row.get("data_quality_status") or ""),
+        "sector": str(row.get("sector_name") or row.get("sector_state") or ""),
+        "market": str(row.get("market_state") or ""),
         "initial_plan_status": "COMPLETE" if plan_complete else "INCOMPLETE",
         "broker_history_note": (
             f"3D history insufficient {observations}/3; current broker is warning-only"
             if observations < 3 else "3D history available for confirmation"
         ),
     }
+
+
+def _ai_reason_is_causal(row: dict[str, Any], text: Any) -> bool:
+    """Accept an AI rewrite only when it still explains the engine driver."""
+    rendered = " ".join(str(text or "").lower().split())
+    action = str(row.get("management_action") or "").lower().replace("_", " ").strip()
+    if not rendered or (action and action not in rendered):
+        return False
+    engine_reason = _engine_reason_text(row).lower()
+    driver_tokens = (
+        "stop", "thesis", "target", "teknikal", "technical", "momentum",
+        "profit", "milestone", "invalid", "struktur", "structure", "harga",
+    )
+    source_drivers = [token for token in driver_tokens if token in engine_reason]
+    if source_drivers and not any(token in rendered for token in source_drivers):
+        return False
+    return True
+
+
+def _ai_narrative_numbers_are_safe(row: dict[str, Any], interpreted: Any) -> bool:
+    """Reject presentation output that invents a number outside engine facts."""
+    try:
+        facts = _ai_facts(row)
+        rendered = " ".join(
+            str(getattr(interpreted, key, "") or "")
+            for key in ("main_reason", "main_risk", "execution_note")
+        )
+        PortfolioGroqInterpreter._reject_invented_numbers(rendered, facts)
+        return True
+    except Exception:
+        return False
+
+
+def _ai_execution_note_is_consistent(row: dict[str, Any], text: Any) -> bool:
+    """Reject an AI action note that contradicts the deterministic action."""
+    rendered = " ".join(str(text or "").lower().split())
+    action = str(row.get("management_action") or "").upper()
+    if not rendered:
+        return True
+    if action == "EXIT" and any(token in rendered for token in ("hold", "pertahankan", "tahan posisi", "buy", "beli")):
+        return False
+    if action in {"HOLD", "HOLD_STRONG", "HOLD_AFTER_TP1", "HOLD_AFTER_TP2"} and any(
+        token in rendered for token in ("exit", "keluar", "jual posisi")
+    ):
+        return False
+    return True
 
 
 def apply_report_interpretation(
@@ -469,16 +658,41 @@ def apply_report_interpretation(
             row["interpretation_status"] = "FALLBACK"
             row["interpretation_warning"] = ""
             continue
-        interpreted = interpreter.interpret(_ai_facts(row), fallback)
-        # Keep the portfolio conclusion deterministic so the engine reason,
-        # broker actors and nominal values cannot be lost or hallucinated by AI.
-        # AI remains presentation-only for risk/execution wording.
-        row["interpretation_main_reason"] = fallback["main_reason"]
-        row["interpretation_main_risk"] = interpreted.main_risk
-        row["interpretation_execution_note"] = interpreted.execution_note
-        row["interpretation_source"] = interpreted.source
-        row["interpretation_status"] = interpreted.status
-        row["interpretation_warning"] = interpreted.warning
+        try:
+            interpreted = interpreter.interpret(_ai_facts(row), fallback)
+            # AI may rewrite the narrative, but only the three presentation
+            # fields are read. A rewrite that drops the deterministic action
+            # driver is rejected so a generic sentence can never hide why
+            # EXIT or HOLD was selected. All engine-owned fields remain
+            # untouched.
+            trusted_source = str(getattr(interpreted, "source", "") or "").upper() in {"GROQ", "GROQ_CACHE"}
+            numbers_safe = _ai_narrative_numbers_are_safe(row, interpreted)
+            reason = getattr(interpreted, "main_reason", "")
+            risk = getattr(interpreted, "main_risk", "")
+            note = getattr(interpreted, "execution_note", "")
+            row["interpretation_main_reason"] = (
+                reason
+                if trusted_source and numbers_safe and _ai_reason_is_causal(row, reason)
+                else fallback["main_reason"]
+            )
+            row["interpretation_main_risk"] = risk if numbers_safe else fallback["main_risk"]
+            row["interpretation_execution_note"] = (
+                note
+                if numbers_safe and _ai_execution_note_is_consistent(row, note)
+                else fallback["execution_note"]
+            )
+            row["interpretation_source"] = getattr(interpreted, "source", "DETERMINISTIC")
+            row["interpretation_status"] = getattr(interpreted, "status", "FALLBACK")
+            row["interpretation_warning"] = getattr(interpreted, "warning", "")
+        except Exception as exc:
+            # A broken provider, malformed response, or test double must not
+            # make the active portfolio report unavailable.
+            row["interpretation_main_reason"] = fallback["main_reason"]
+            row["interpretation_main_risk"] = fallback["main_risk"]
+            row["interpretation_execution_note"] = fallback["execution_note"]
+            row["interpretation_source"] = "DETERMINISTIC"
+            row["interpretation_status"] = "FALLBACK"
+            row["interpretation_warning"] = f"AI_FALLBACK: {type(exc).__name__}: {exc}"[:300]
     return results
 
 
@@ -521,14 +735,15 @@ def telegram_text(results: list[dict[str, Any]], analysis_date: str) -> str:
             lines.append(f"🎯 Extended : {base.fmt_price(row.get('extended_target'))}")
         lines.extend([
             "",
-            "🏦 " + html.escape(str(row.get("interpretation_main_reason") or "-")),
+            "🧠 <b>Reason:</b>",
+            html.escape(str(row.get("interpretation_main_reason") or "-")),
         ])
         risk = str(row.get("interpretation_main_risk") or "").strip()
         if risk:
-            lines.append("⚠️ " + html.escape(risk))
+            lines.extend(["⚠️ <b>Risk:</b>", html.escape(risk)])
         note = str(row.get("interpretation_execution_note") or "").strip()
         if note:
-            lines.append("➡️ " + html.escape(note))
+            lines.extend(["➡️ <b>Action:</b>", html.escape(note)])
     return "\n".join(lines)
 
 

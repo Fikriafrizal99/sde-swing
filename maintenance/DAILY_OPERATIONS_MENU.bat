@@ -11,7 +11,9 @@ if not defined SDE_PYTHON_CMD (
   exit /b 9009
 )
 
-REM Full Daily wrapper tetap mendelegasikan Post Market dan Market Outlook ke run_sde_job_integrated.py.
+REM Full Daily wrapper mendelegasikan Post Market ke market-first runtime
+REM dengan closing-session IHSG validation; Market Outlook tetap terpisah.
+REM Lifecycle runner legacy tetap run_sde_job_integrated.py.
 REM Broker Period Bridge kemudian mengambil alih orchestration Final Watchlist tanpa mengubah menu utama.
 
 :MENU

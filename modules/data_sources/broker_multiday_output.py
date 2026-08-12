@@ -158,7 +158,11 @@ def build_telegram_summary(ctx: MultiDayContext, *, use_emoji: bool = False) -> 
         return _humanize(cls.classification) if cls else "-"
 
     top_buyers = ctx.windows.get(ctx.primary_window)
-    buyers = ", ".join(top_buyers.persistent_top_buyers[:3]) if top_buyers else "-"
+    buyers = (
+        ", ".join(str(value) for value in top_buyers.persistent_top_buyers[:3])
+        if top_buyers
+        else "-"
+    )
     cost = None
     if top_buyers and top_buyers.weighted_broker_buy_cost:
         cost = top_buyers.weighted_broker_buy_cost

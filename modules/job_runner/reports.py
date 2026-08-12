@@ -372,34 +372,13 @@ def _snapshot_from_manifest(run_manifest: dict[str, Any]) -> dict[str, Any]:
 
 
 def post_market_payloads(ctx: RunnerContext, run_manifest: dict[str, Any] | None = None) -> list[ReportPayload]:
+    # Keep the historical import/API stable, but route production and resend
+    # callers through the same validated current-date pulse builder as the
+    # official RUN_POST_MARKET entry point.
+    from modules.job_runner.post_market_live import post_market_live_payloads
+
     manifest = run_manifest or load_run_manifest(ctx)
-    snapshot = _snapshot_from_manifest(manifest)
-    output_paths = snapshot.get("output_paths", {}) if snapshot else {}
-    technical_path = Path(str(output_paths.get("technical_features") or ctx.path("technical_output_dir", "data/output/technical") / "latest_technical_features.csv"))
-    candidate_top = int(ctx.config.get("candidate", {}).get("top", 40))
-    candidates_path = Path(str(
-        output_paths.get("technical_candidates")
-        or ctx.path("candidate_output_dir", "data/output/candidates") / f"technical_candidates_top{candidate_top}.csv"
-    ))
-    technical = load_csv(technical_path)
-    candidates = load_csv(candidates_path)
-    trade_date = (
-        str(snapshot.get("trade_date") or manifest.get("Technical_Date") or "")
-        or latest_date_from_csv(technical_path, "Date", "Technical_Data_Date")
-        or ctx.trade_date.isoformat()
-    )
-    market_status = read_json(ctx.path("decision_output_dir", "data/output/decision") / "MARKET_STATUS.json")
-    ihsg = load_csv(ctx.path("ihsg_csv", "data/input/IHSG.csv"))
-    warnings = data_quality_payload(ctx, manifest)
-    text = format_post_market_summary(
-        trade_date=trade_date,
-        technical=technical,
-        candidates=candidates,
-        market_status=market_status,
-        ihsg=ihsg,
-        config=ui_config(ctx),
-    )
-    return [*warnings, ReportPayload("post_market", "post_market.txt", text, topic="post_market")]
+    return post_market_live_payloads(ctx, manifest)
 
 
 def final_watchlist_payloads(ctx: RunnerContext, run_manifest: dict[str, Any] | None = None) -> list[ReportPayload]:

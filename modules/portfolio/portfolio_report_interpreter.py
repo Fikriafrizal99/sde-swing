@@ -50,11 +50,19 @@ class PortfolioGroqInterpreter(GroqInterpreter):
     def _sanitize_facts(self, facts: dict[str, Any]) -> dict[str, Any]:
         allowed = {
             "position_id", "analysis_date", "symbol", "buy_price", "current_price",
-            "pnl_pct", "management_action", "milestone", "initial_tp1", "initial_tp2",
+            "pnl_pct", "management_action", "milestone", "initial_stop_loss", "initial_tp1", "initial_tp2",
             "active_stop_loss", "extended_target", "technical_state", "sector_state",
-            "market_state", "broker_current_state", "broker_effective_state",
+            "market_state", "sector", "market", "broker_current_state", "broker_effective_state",
+            "broker_data_date", "broker_source", "broker_current_score", "broker_current_confidence",
+            "broker_current_net_flow",
+            "today_pulse_available",
             "broker_observation_count", "broker_context_3d", "broker_context_5d",
             "broker_context_7d", "broker_context_since_entry", "broker_net_flow_since_entry",
+            "broker_context_3d_coverage", "broker_context_3d_missing_sessions",
+            "broker_context_5d_coverage", "broker_context_5d_missing_sessions",
+            "broker_since_entry_actual_sessions",
+            "broker_buy_days", "broker_sell_days", "broker_accumulation_days",
+            "broker_distribution_days", "broker_persistence_pct", "broker_score_avg",
             "broker_flow_trend", "top_accumulation", "top_distribution",
             "current_top_accumulation", "current_top_distribution", "data_quality_status",
             "initial_plan_status", "broker_history_note",
@@ -71,6 +79,12 @@ class PortfolioGroqInterpreter(GroqInterpreter):
             "PERSIS seperti string pada fakta. Jika nominal broker tidak tersedia, jangan menebak. "
             "Bedakan sinyal broker hari ini dengan histori terkonfirmasi; jika observation_count kurang dari 3, jelaskan "
             "bahwa histori masih pendek dan current broker hanya warning. "
+            "Jika today_pulse_available=false, jangan menyebut baris historis terakhir sebagai broker hari ini; "
+            "nyatakan TODAY 1D belum tersedia. "
+            "Susun main_reason dengan urutan: driver management action, fakta teknikal/stop/milestone, broker context, "
+            "apakah broker mendukung/konflik/netral, lalu langkah pengguna. Jelaskan konflik secara eksplisit; misalnya "
+            "broker accumulation tidak mengaktifkan kembali thesis EXIT yang sudah invalid, dan distribution yang belum "
+            "cukup terkonfirmasi tidak boleh mengubah HOLD. "
             "Jawab Bahasa Indonesia sangat ringkas dan actionable. Keluarkan JSON valid dengan tepat tiga key: "
             "main_reason, main_risk, execution_note. main_reason maksimal 2 kalimat; main_risk maksimal 1 kalimat; "
             "execution_note maksimal 1 kalimat dan harus konsisten dengan management_action."
