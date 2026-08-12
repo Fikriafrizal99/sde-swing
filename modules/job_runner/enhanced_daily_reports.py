@@ -64,6 +64,7 @@ BROKER_SUMMARY_COLUMNS = [
     "broker_period_type", "broker_period_start", "broker_period_end",
     "broker_trading_days", "broker_session_dates", "broker_snapshot_id",
     "broker_period_source", "broker_coverage", "broker_session_coverage",
+    "broker_period_coverage", "broker_missing_sessions", "broker_period_complete",
     "broker_coverage_text", "broker_coverage_status", "broker_freshness_status",
 ]
 
@@ -74,8 +75,9 @@ BROKER_MULTIDAY_COLUMNS = [
     "broker_period_type", "broker_period_start", "broker_period_end",
     "broker_trading_days", "broker_session_dates", "broker_snapshot_id",
     "broker_period_source", "broker_coverage", "broker_session_coverage",
+    "broker_period_coverage", "broker_missing_sessions", "broker_period_complete",
     "broker_coverage_text", "broker_coverage_status", "broker_freshness_status",
-    "today_pulse_date", "today_pulse_snapshot_id", "today_pulse_status",
+    "today_pulse_available", "today_pulse_date", "today_pulse_snapshot_id", "today_pulse_source", "today_pulse_status",
     "today_pulse_net_flow", "today_pulse_buy_days", "today_pulse_sell_days",
     "today_pulse_direction", "broker_alignment",
 ]
@@ -969,8 +971,9 @@ _FW_EXTRA_FINAL_COLUMNS = [
     "broker_period_type", "broker_period_start", "broker_period_end",
     "broker_trading_days", "broker_session_dates", "broker_snapshot_id",
     "broker_period_source", "broker_coverage", "broker_session_coverage",
+    "broker_period_coverage", "broker_missing_sessions", "broker_period_complete",
     "broker_coverage_text", "broker_coverage_status", "broker_freshness_status",
-    "today_pulse_date", "today_pulse_snapshot_id", "today_pulse_status",
+    "today_pulse_available", "today_pulse_date", "today_pulse_snapshot_id", "today_pulse_source", "today_pulse_status",
     "today_pulse_net_flow", "today_pulse_buy_days", "today_pulse_sell_days",
     "today_pulse_direction",
 ]
@@ -989,6 +992,10 @@ def _fw_primary_multiday_map(builder):
         except Exception:
             manifest = {}
     primary_manifest = manifest.get("primary_context") if isinstance(manifest.get("primary_context"), dict) else {}
+    if str(manifest.get("data_quality_status", "")).upper() not in {"", "VALID"}:
+        # Preserve the current-day pulse metadata, but do not let a partial
+        # daily window replace the Broker Fusion PRIMARY presentation fields.
+        return {}
     period_type = str(
         manifest.get("broker_period_type")
         or primary_manifest.get("broker_period_type", "")
@@ -1036,7 +1043,14 @@ def _fw_raw_participant_map(builder):
         if not isinstance(payload, dict) or not payload.get("broker_period_type"):
             continue
         active_period = True
-        raw_text = str(payload.get("raw_snapshot_path", "")).strip()
+        # The canonical raw may have been switched to today's daily capture
+        # for Multi-Day ingestion.  Top Buy/Sell must still describe the
+        # selected PRIMARY source (especially an aggregate fallback), so use
+        # the explicit primary lineage first.
+        raw_text = str(
+            payload.get("primary_raw_snapshot_path")
+            or payload.get("raw_snapshot_path", "")
+        ).strip()
         selected_raw = Path(raw_text) if raw_text else None
         path = selected_raw if selected_raw and selected_raw.exists() else None
         break
@@ -1070,7 +1084,7 @@ def _fw_raw_participant_map(builder):
     return result
 
 
-def _fw_merge_participants(existing, fallback):
+def _fw_merge_participants(existing, fallback, *, allow_missing_avg=False):
     items = []
     if isinstance(existing, list):
         for item in existing:
@@ -1087,8 +1101,38 @@ def _fw_merge_participants(existing, fallback):
         else:
             items.append(dict(item))
             by_broker[broker] = items[-1]
-    usable = [item for item in items if _present(item.get("broker")) and _present(item.get("avg_price"))]
+    usable = [
+        item
+        for item in items
+        if _present(item.get("broker"))
+        and (allow_missing_avg or _present(item.get("avg_price")))
+    ]
     return usable[:3]
+
+
+def _fw_window_participants(primary, key):
+    """Convert internal rollup persistent broker names into card participants."""
+    value = _value(primary, key, default=[])
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw.startswith("["):
+            try:
+                value = json.loads(raw)
+            except Exception:
+                value = []
+        else:
+            value = [item.strip() for item in raw.split(",") if item.strip()]
+    if not isinstance(value, (list, tuple)):
+        return []
+    result = []
+    for item in list(value)[:3]:
+        if isinstance(item, dict):
+            broker = item.get("broker") or item.get("code") or item.get("name")
+        else:
+            broker = item
+        if _present(broker):
+            result.append({"broker": str(broker).strip().upper()})
+    return result
 
 
 def _fw_fill(current, sources, target, *aliases):
@@ -1161,9 +1205,10 @@ def _fw_enrich_watchlist_rows(self, rows):
             "broker_period_type", "broker_period_start", "broker_period_end",
             "broker_trading_days", "broker_session_dates", "broker_snapshot_id",
             "broker_period_source", "broker_coverage", "broker_session_coverage",
+            "broker_period_coverage", "broker_missing_sessions", "broker_period_complete",
             "broker_coverage_text", "broker_coverage_status",
             "broker_freshness_status",
-            "today_pulse_date", "today_pulse_snapshot_id", "today_pulse_status",
+            "today_pulse_available", "today_pulse_date", "today_pulse_snapshot_id", "today_pulse_source", "today_pulse_status",
             "today_pulse_net_flow", "today_pulse_buy_days", "today_pulse_sell_days",
             "today_pulse_direction", "broker_alignment",
         ):
@@ -1188,8 +1233,25 @@ def _fw_enrich_watchlist_rows(self, rows):
         current["flow_persistence"] = persistence
 
         fallback = raw_participants.get(symbol, {})
-        current["top_buyers"] = _fw_merge_participants(current.get("top_buyers"), fallback.get("BUY", []))
-        current["top_sellers"] = _fw_merge_participants(current.get("top_sellers"), fallback.get("SELL", []))
+        primary_source = str(_value(primary, "broker_period_source", "Broker_Period_Source", default="")).upper()
+        if primary_source == "INTERNAL_DAILY_ROLLUP":
+            # The canonical raw is today's 1D pulse while the selected PRIMARY
+            # is the internal rollup. Prefer persistent primary-window brokers
+            # so cards do not accidentally label today's participants as 3D/5D.
+            primary_buyers = _fw_window_participants(primary, "persistent_top_buyers")
+            primary_sellers = _fw_window_participants(primary, "persistent_top_sellers")
+            current["top_buyers"] = _fw_merge_participants(
+                primary_buyers, fallback.get("BUY", []), allow_missing_avg=True
+            )
+            current["top_sellers"] = _fw_merge_participants(
+                primary_sellers, fallback.get("SELL", []), allow_missing_avg=True
+            )
+        else:
+            # Aggregate PRIMARY raw remains the authoritative Top Buy/Sell
+            # source; the raw fallback is already selected by its snapshot
+            # lineage, not by the canonical daily file.
+            current["top_buyers"] = _fw_merge_participants(current.get("top_buyers"), fallback.get("BUY", []))
+            current["top_sellers"] = _fw_merge_participants(current.get("top_sellers"), fallback.get("SELL", []))
 
         if not _present(current.get("broker_status")):
             current["broker_status"] = current.get("broker_direction") or current.get("multi_day_flow")

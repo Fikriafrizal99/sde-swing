@@ -1255,9 +1255,8 @@ def run_broker_multiday_stage(ctx: RunnerContext) -> dict[str, Any]:
     from modules.data_sources.broker_history import (
         connect as connect_broker_history,
         get_trading_sessions_before,
+        ingest_daily_capture_files,
         init_schema as init_broker_history_schema,
-        upsert_broker_rows,
-        register_trading_sessions,
     )
     from modules.data_sources.broker_windows import WINDOWS
 
@@ -1312,6 +1311,10 @@ def run_broker_multiday_stage(ctx: RunnerContext) -> dict[str, Any]:
         valid_range = from_values.notna() & to_values.notna()
         if not valid_range.any() or not (from_values[valid_range].dt.date == to_values[valid_range].dt.date).all():
             continue
+        if len(set(dates)) != 1:
+            # A single file spanning multiple dates is not a real 1D capture.
+            # Do not split it into synthetic observations.
+            continue
         for market_date in sorted(set(dates)):
             if market_date not in selected:
                 selected[market_date] = (path, frame)
@@ -1321,57 +1324,25 @@ def run_broker_multiday_stage(ctx: RunnerContext) -> dict[str, Any]:
 
     # Normalize accepted 1D captures into the immutable daily store.  The
     # aggregate export path was filtered above and therefore cannot be split
-    # into synthetic dates here.
+    # into synthetic dates here.  The same helper is used by the wrapper's
+    # preflight coverage check so the production and orchestration paths share
+    # one source/provenance rule.
     history_db = resolve(paths.get("broker_history_db", "data/database/broker_multiday.db"))
     history_conn = connect_broker_history(history_db)
     init_broker_history_schema(history_conn)
     try:
-        for _market_date, (_path, frame) in sorted(selected.items()):
-            symbol_col = find_col(frame, "SYMBOL", "EMITEN", "Ticker", "Symbol")
-            date_col = find_col(frame, "TO_DATE", "Market_Date", "Date")
-            if symbol_col is None or date_col is None:
-                continue
-            parsed_dates = pd.to_datetime(frame[date_col], errors="coerce").dt.date.astype(str)
-            daily_rows: list[dict[str, Any]] = []
-            for raw in frame.loc[parsed_dates.eq(_market_date)].to_dict(orient="records"):
-                symbol = str(raw.get(symbol_col, "")).strip().upper().replace(".JK", "")
-                parsed_market_date = pd.to_datetime(raw.get(date_col), errors="coerce")
-                if pd.isna(parsed_market_date):
-                    continue
-                market_date = parsed_market_date.date().isoformat()
-                if not symbol or market_date > ctx.trade_date.isoformat():
-                    continue
-
-                def number(*aliases: str) -> float | None:
-                    column = find_col(frame, *aliases)
-                    try:
-                        return float(raw.get(column)) if column and raw.get(column) not in (None, "") else None
-                    except (TypeError, ValueError):
-                        return None
-
-                row = {
-                    "symbol": symbol,
-                    "market_date": market_date,
-                    "broker_code": str(raw.get(find_col(frame, "BROKER_CODE", "Broker_Code") or "", "")).upper(),
-                    "broker_type": str(raw.get(find_col(frame, "BROKER_TYPE", "Broker_Type") or "", "UNKNOWN")).upper(),
-                    "side": str(raw.get(find_col(frame, "SIDE", "Side") or "", "")).upper(),
-                    "net_value": number("NET_VALUE", "Net_Value"),
-                    "net_lot": number("NET_LOT", "Net_Lot"),
-                    "gross_value": number("GROSS_VALUE", "Gross_Value"),
-                    "gross_lot": number("GROSS_LOT", "Gross_Lot"),
-                    "frequency": number("FREQUENCY", "Frequency"),
-                    "avg_price": number("AVG_PRICE", "Avg_Price"),
-                    "rank": number("RANK", "Rank"),
-                    "source": "STOCKBIT",
-                    "quality_status": "VALIDATED",
-                    "received_at": now_wib().isoformat(),
-                    "capture_id": file_sha256(_path),
-                }
-                if row["broker_code"] and row["side"] in {"BUY", "SELL"}:
-                    daily_rows.append(row)
-            if daily_rows:
-                upsert_broker_rows(history_conn, daily_rows)
-                register_trading_sessions(history_conn, [_market_date])
+        ingestion = ingest_daily_capture_files(
+            history_conn,
+            [path for path, _frame in selected.values()],
+            as_of_date=ctx.trade_date.isoformat(),
+            source="STOCKBIT_1D",
+        )
+        accepted_dates = set(ingestion.get("market_dates", []))
+        selected = {
+            market_date: item
+            for market_date, item in selected.items()
+            if market_date in accepted_dates
+        }
 
         history_rows = history_conn.execute(
             "SELECT * FROM broker_daily WHERE market_date <= ? ORDER BY market_date, symbol, side, rank",
@@ -1392,22 +1363,41 @@ def run_broker_multiday_stage(ctx: RunnerContext) -> dict[str, Any]:
             rows_by_symbol.setdefault(symbol, []).append(row)
 
     expected_period_dates = [str(value)[:10] for value in period_metadata.get("broker_session_dates", []) or []]
-    period_metadata.update(session_coverage(expected_period_dates, history_sessions))
-    period_metadata["broker_rollup_source"] = "INTERNAL_DAILY_ROLLUP"
+    history_coverage = session_coverage(expected_period_dates, history_sessions)
+    primary_source = str(period_metadata.get("broker_period_source", "")).upper()
+    period_metadata["daily_history_coverage"] = history_coverage.get("broker_period_coverage", 0.0)
+    period_metadata["daily_history_missing_sessions"] = history_coverage.get("broker_missing_sessions", [])
+    period_metadata["daily_history_status"] = history_coverage.get("broker_coverage_status", "INCOMPLETE")
+    if primary_source == "INTERNAL_DAILY_ROLLUP":
+        period_metadata.update(history_coverage)
+        period_metadata["broker_rollup_source"] = "INTERNAL_DAILY_ROLLUP"
+    else:
+        # An aggregate fallback is a complete PRIMARY input even when the
+        # daily history is short. Keep daily-history coverage separate so a
+        # missing session is visible without relabelling the aggregate range.
+        period_metadata["broker_rollup_source"] = primary_source or "STOCKBIT_AGGREGATE_EXPORT"
+        period_metadata.setdefault("broker_period_complete", True)
+        period_metadata.setdefault("broker_missing_sessions", [])
+        period_metadata.setdefault("broker_period_coverage", 1.0)
     pulse_snapshot_id = ""
+    pulse_source = "STOCKBIT_1D"
+    sidecar_pulse_id = str(period_sidecar.get("today_pulse_snapshot_id", "")).strip()
     if period_type == "1D":
         pulse_snapshot_id = str(period_metadata.get("broker_snapshot_id", ""))
     else:
-        snapshot_root = resolve("data/output/broker_snapshots")
-        for candidate_manifest in list_reusable_snapshots(ctx.trade_date.isoformat(), snapshot_root=snapshot_root):
-            if str(candidate_manifest.get("broker_period_type", "")).upper() == "1D":
-                pulse_snapshot_id = str(candidate_manifest.get("snapshot_id", ""))
-                break
+        pulse_snapshot_id = sidecar_pulse_id
+        if not pulse_snapshot_id:
+            snapshot_root = resolve("data/output/broker_snapshots")
+            for candidate_manifest in list_reusable_snapshots(ctx.trade_date.isoformat(), snapshot_root=snapshot_root):
+                if str(candidate_manifest.get("broker_period_type", "")).upper() == "1D":
+                    pulse_snapshot_id = str(candidate_manifest.get("snapshot_id", ""))
+                    break
     today_pulse_by_symbol = {
         symbol: today_pulse_from_rows(
             rows if period_type == "1D" or pulse_snapshot_id else [],
             pulse_date=ctx.trade_date.isoformat(),
             snapshot_id=pulse_snapshot_id,
+            source=pulse_source,
         )
         for symbol, rows in rows_by_symbol.items()
     }

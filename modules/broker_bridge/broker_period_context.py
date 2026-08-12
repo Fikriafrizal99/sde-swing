@@ -109,11 +109,14 @@ def session_coverage(
     return {
         "broker_coverage": round(ratio, 6),
         "broker_session_coverage": round(ratio, 6),
+        "broker_period_coverage": round(ratio, 6),
         "broker_coverage_text": f"{len(available)}/{count}",
         "broker_available_sessions": len(available),
         "broker_expected_sessions": count,
         "broker_missing_session_dates": missing,
+        "broker_missing_sessions": missing,
         "broker_coverage_status": "COMPLETE" if count and not missing else "INCOMPLETE",
+        "broker_period_complete": bool(count and not missing),
     }
 
 
@@ -147,6 +150,7 @@ def primary_context_metadata(
         # ``broker_coverage`` is the symbol/export coverage.  Session coverage
         # remains separately available so the two dimensions are not confused.
         metadata["broker_coverage"] = float(coverage)
+        metadata["broker_symbol_coverage"] = float(coverage)
     return metadata
 
 
@@ -176,6 +180,12 @@ def primary_context_metadata_from_manifest(manifest: dict[str, Any]) -> dict[str
     metadata["broker_freshness_status"] = str(
         manifest.get("freshness_status") or manifest.get("broker_freshness_status") or "CURRENT"
     ).upper()
+    if "broker_missing_sessions" in manifest:
+        metadata["broker_missing_sessions"] = list(manifest.get("broker_missing_sessions") or [])
+    elif "broker_missing_session_dates" in manifest:
+        metadata["broker_missing_sessions"] = list(manifest.get("broker_missing_session_dates") or [])
+    if "broker_period_complete" in manifest:
+        metadata["broker_period_complete"] = bool(manifest.get("broker_period_complete"))
     return metadata
 
 
@@ -184,17 +194,26 @@ def today_pulse_from_rows(
     *,
     pulse_date: str = "",
     snapshot_id: str = "",
+    source: str = "STOCKBIT_1D",
 ) -> dict[str, Any]:
     """Create interpretation-only metadata from the latest real 1D rows."""
     materialized = [dict(row) for row in rows]
     dates = sorted({str(row.get("market_date", ""))[:10] for row in materialized if str(row.get("market_date", "")).strip()})
     selected_date = str(pulse_date or (dates[-1] if dates else ""))[:10]
-    selected = [row for row in materialized if str(row.get("market_date", ""))[:10] == selected_date]
+    selected = [
+        row
+        for row in materialized
+        if str(row.get("market_date", ""))[:10] == selected_date
+        and str(row.get("source", "")).upper()
+        not in {"STOCKBIT_AGGREGATE_EXPORT", "AGGREGATE", "BROKER_AGGREGATE"}
+    ]
     if not selected:
         return {
+            "today_pulse_available": False,
             "today_pulse_date": selected_date,
             "today_pulse_snapshot_id": str(snapshot_id or ""),
-            "today_pulse_status": "UNAVAILABLE",
+            "today_pulse_source": "" if not snapshot_id else str(source or "STOCKBIT_1D").upper(),
+            "today_pulse_status": "NOT_AVAILABLE",
             "today_pulse_net_flow": 0.0,
             "today_pulse_buy_days": 0,
             "today_pulse_sell_days": 0,
@@ -209,8 +228,10 @@ def today_pulse_from_rows(
         net += value if str(row.get("side", "")).upper() == "BUY" else -abs(value)
     direction = "POSITIVE" if net > 0 else "NEGATIVE" if net < 0 else "NEUTRAL"
     return {
+        "today_pulse_available": True,
         "today_pulse_date": selected_date,
         "today_pulse_snapshot_id": str(snapshot_id or ""),
+        "today_pulse_source": str(source or "STOCKBIT_1D").upper(),
         "today_pulse_status": "AVAILABLE",
         "today_pulse_net_flow": round(net, 4),
         "today_pulse_buy_days": 1 if net > 0 else 0,
@@ -614,6 +635,13 @@ def persist_snapshot(
         "expected_symbols": int(info.get("expected", 0) or 0),
         "coverage_ratio": float(info.get("coverage", 0.0) or 0.0),
         "broker_coverage": float(info.get("coverage", 0.0) or 0.0),
+        "broker_period_coverage": 1.0,
+        "broker_session_coverage": 1.0,
+        "broker_coverage_text": f"{spec.trading_sessions}/{spec.trading_sessions}",
+        "broker_coverage_status": "COMPLETE",
+        "broker_missing_sessions": [],
+        "broker_missing_session_dates": [],
+        "broker_period_complete": True,
         "missing_symbols": list(info.get("missing_symbols", []) or []),
         "unexpected_symbols": list(info.get("unexpected_symbols", []) or []),
         "aggregate_snapshot": spec.period_type != "1D",
@@ -623,6 +651,128 @@ def persist_snapshot(
         "persistence_adjustment_applied": False,
     }
     manifest_path = root / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    manifest["manifest_path"] = str(manifest_path.resolve())
+    return manifest
+
+
+def persist_internal_rollup_snapshot(
+    daily_manifest: dict[str, Any],
+    spec: BrokerPeriodSpec,
+    *,
+    snapshot_root: Path = DEFAULT_SNAPSHOT_ROOT,
+    selected_by: str = "FINAL_WATCHLIST_INTERNAL_ROLLUP",
+) -> dict[str, Any]:
+    """Persist a PRIMARY manifest whose lineage is a complete real-daily rollup.
+
+    The copied files remain the real 1D source files used by the existing
+    Broker Summary/Fusion stages.  The manifest is deliberately separate from
+    the 1D capture so REUSE and performance analytics can distinguish the
+    selected PRIMARY horizon from the daily observation that supplied it.
+    No aggregate export is synthesized and no daily rows are created here.
+    """
+    if str(daily_manifest.get("broker_period_type", "")).upper() not in {"1D", "1DAY", "DAY"}:
+        raise ValueError("BROKER_INTERNAL_ROLLUP_REQUIRES_1D_CAPTURE")
+    if str(spec.period_type).upper() == "1D":
+        raise ValueError("BROKER_INTERNAL_ROLLUP_REQUIRES_MULTI_DAY")
+
+    daily_summary = Path(str(daily_manifest.get("summary_snapshot_path", "")))
+    daily_raw_text = str(daily_manifest.get("raw_snapshot_path", "")).strip()
+    daily_raw = Path(daily_raw_text) if daily_raw_text else None
+    if not daily_summary.exists() or daily_summary.stat().st_size <= 0:
+        raise RuntimeError("BROKER_INTERNAL_ROLLUP_DAILY_SUMMARY_MISSING")
+    if daily_raw is None or not daily_raw.exists() or daily_raw.stat().st_size <= 0:
+        raise RuntimeError("BROKER_INTERNAL_ROLLUP_DAILY_RAW_MISSING")
+
+    summary_hash = file_sha256(daily_summary)
+    raw_hash = file_sha256(daily_raw)
+    daily_snapshot_id = str(daily_manifest.get("snapshot_id") or daily_manifest.get("broker_snapshot_id") or "")
+    fingerprint = hashlib.sha256(
+        "|".join([
+            "INTERNAL_DAILY_ROLLUP",
+            spec.period_type,
+            spec.period_start,
+            spec.period_end,
+            daily_snapshot_id,
+            summary_hash,
+            raw_hash,
+        ]).encode("utf-8")
+    ).hexdigest()[:16]
+    snapshot_id = f"BROKER-{spec.period_type}-{spec.period_end.replace('-', '')}-INTERNAL-{fingerprint}"
+    root = snapshot_root / spec.period_end / snapshot_id
+    root.mkdir(parents=True, exist_ok=True)
+    manifest_path = root / "manifest.json"
+    if manifest_path.exists():
+        try:
+            existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"BROKER_SNAPSHOT_MANIFEST_UNREADABLE:{snapshot_id}") from exc
+        existing["manifest_path"] = str(manifest_path.resolve())
+        return existing
+
+    summary_copy = root / "BROKER_SUMMARY.csv"
+    raw_copy = root / "BROKER_RAW.csv"
+    if not summary_copy.exists():
+        shutil.copy2(daily_summary, summary_copy)
+    elif file_sha256(summary_copy) != summary_hash:
+        raise RuntimeError(f"BROKER_SNAPSHOT_SUMMARY_HASH_COLLISION:{snapshot_id}")
+    if not raw_copy.exists():
+        shutil.copy2(daily_raw, raw_copy)
+    elif file_sha256(raw_copy) != raw_hash:
+        raise RuntimeError(f"BROKER_SNAPSHOT_RAW_HASH_COLLISION:{snapshot_id}")
+
+    coverage = float(daily_manifest.get("coverage_ratio", daily_manifest.get("broker_coverage", 0.0)) or 0.0)
+    manifest = {
+        "snapshot_id": snapshot_id,
+        "broker_snapshot_id": snapshot_id,
+        "snapshot_state": "PENDING",
+        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "selected_by": selected_by,
+        "primary_context": True,
+        "historical_context_only": False,
+        "broker_period_type": spec.period_type,
+        "broker_period_start": spec.period_start,
+        "broker_period_end": spec.period_end,
+        "broker_trading_days": spec.trading_sessions,
+        "broker_session_dates": list(spec.session_dates),
+        "observed_session_dates": list(spec.session_dates),
+        "broker_period_source": "INTERNAL_DAILY_ROLLUP",
+        "freshness_status": freshness_status(spec.period_end, spec.period_end),
+        "summary_source": str(daily_summary.resolve()),
+        "summary_source_hash": summary_hash,
+        "source_path": str(daily_summary.resolve()),
+        "source_hash": summary_hash,
+        "summary_hash": summary_hash,
+        "summary_snapshot_path": str(summary_copy.resolve()),
+        "summary_snapshot_hash": file_sha256(summary_copy),
+        "raw_source": str(daily_raw.resolve()),
+        "raw_source_hash": raw_hash,
+        "raw_hash": raw_hash,
+        "raw_snapshot_path": str(raw_copy.resolve()),
+        "raw_snapshot_hash": file_sha256(raw_copy),
+        "rows": int(daily_manifest.get("rows", 0) or 0),
+        "matched_symbols": int(daily_manifest.get("matched_symbols", 0) or 0),
+        "expected_symbols": int(daily_manifest.get("expected_symbols", 0) or 0),
+        "coverage_ratio": coverage,
+        "broker_coverage": coverage,
+        "broker_period_coverage": 1.0,
+        "broker_session_coverage": 1.0,
+        "broker_coverage_text": f"{spec.trading_sessions}/{spec.trading_sessions}",
+        "broker_coverage_status": "COMPLETE",
+        "broker_missing_sessions": [],
+        "broker_missing_session_dates": [],
+        "broker_period_complete": True,
+        "missing_symbols": list(daily_manifest.get("missing_symbols", []) or []),
+        "unexpected_symbols": list(daily_manifest.get("unexpected_symbols", []) or []),
+        "aggregate_snapshot": True,
+        "daily_history_eligible": False,
+        "daily_source_snapshot_id": daily_snapshot_id,
+        "daily_source_manifest_path": str(daily_manifest.get("manifest_path", "")),
+        "daily_source_hash": raw_hash,
+        "scoring_adjustment_applied": False,
+        "freshness_adjustment_applied": False,
+        "persistence_adjustment_applied": False,
+    }
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     manifest["manifest_path"] = str(manifest_path.resolve())
     return manifest

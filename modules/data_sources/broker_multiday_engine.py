@@ -155,9 +155,11 @@ def compute_multiday_context(
     period_type = str(period_metadata.get("broker_period_type", "")).upper()
     if period_type not in {"", "1D", "1DAY", "DAY"} and not today_pulse:
         today_pulse = {
+            "today_pulse_available": False,
             "today_pulse_date": str(period_metadata.get("broker_period_end", market_date)),
             "today_pulse_snapshot_id": "",
-            "today_pulse_status": "UNAVAILABLE",
+            "today_pulse_source": "",
+            "today_pulse_status": "NOT_AVAILABLE",
             "today_pulse_net_flow": 0.0,
             "today_pulse_buy_days": 0,
             "today_pulse_sell_days": 0,
@@ -250,7 +252,7 @@ def compute_multiday_context(
         period_alignment = primary_pulse_alignment(
             primary_wf.cumulative_net_value if primary_wf else None,
             today_pulse.get("today_pulse_net_flow"),
-            pulse_status=str(today_pulse.get("today_pulse_status", "UNAVAILABLE")),
+            pulse_status=str(today_pulse.get("today_pulse_status", "NOT_AVAILABLE")),
         )
 
     trace: list[str] = []

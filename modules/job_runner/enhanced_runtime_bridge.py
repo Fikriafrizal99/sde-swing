@@ -185,10 +185,18 @@ def _broker_period_metadata(
         "broker_snapshot_id": _value(selected, "broker_snapshot_id", "snapshot_id", "Broker_Snapshot_ID", default=""),
         "broker_period_source": str(_value(selected, "broker_period_source", "Broker_Period_Source", "source", default="")).upper(),
         "broker_coverage": _value(selected, "broker_coverage", "Broker_Coverage", "coverage_ratio", "coverage", default=""),
+        "broker_period_coverage": _value(selected, "broker_period_coverage", "Broker_Period_Coverage", default=""),
+        "broker_missing_sessions": _value(selected, "broker_missing_sessions", "Broker_Missing_Sessions", default=[]),
+        "broker_period_complete": _value(selected, "broker_period_complete", "Broker_Period_Complete", default=""),
         "broker_session_coverage": _value(selected, "broker_session_coverage", "Broker_Session_Coverage", default=""),
         "broker_coverage_text": _value(selected, "broker_coverage_text", "Broker_Coverage_Text", default=""),
         "broker_coverage_status": _value(selected, "broker_coverage_status", "Broker_Coverage_Status", "data_quality_status", default=""),
         "broker_freshness_status": str(_value(selected, "broker_freshness_status", "freshness_status", default="")).upper(),
+        "today_pulse_available": _value(selected, "today_pulse_available", default=""),
+        "today_pulse_date": _value(selected, "today_pulse_date", default=""),
+        "today_pulse_snapshot_id": _value(selected, "today_pulse_snapshot_id", default=""),
+        "today_pulse_source": str(_value(selected, "today_pulse_source", default="")).upper(),
+        "today_pulse_status": _value(selected, "today_pulse_status", default=""),
     }
     return {key: value for key, value in normalized.items() if value not in ("", [], {})}
 
@@ -631,6 +639,8 @@ def _final_watchlist_multiday_map(ctx: RunnerContext) -> dict[str, dict[str, Any
     except Exception:
         return {}
     multiday_manifest = read_json(manifest_path) if manifest_path.exists() else {}
+    multiday_quality = str(multiday_manifest.get("data_quality_status", "")).upper()
+    pulse_only = bool(multiday_quality and multiday_quality != "VALID")
     period_metadata = _broker_period_metadata(ctx, multiday_manifest=multiday_manifest)
     period_type = str(period_metadata.get("broker_period_type", "")).upper()
     configured_window = str(ctx.config.get("broker", {}).get("primary_window", "5D")).upper()
@@ -698,7 +708,7 @@ def _final_watchlist_multiday_map(ctx: RunnerContext) -> dict[str, dict[str, Any
                 ),
             )
 
-        result[symbol] = {
+        row_result = {
             "primary_window": str(period_value("broker_period_type") or primary).upper(),
             "broker_status": classification,
             # The summary Confidence is 0-100; the signed classification Score
@@ -722,24 +732,49 @@ def _final_watchlist_multiday_map(ctx: RunnerContext) -> dict[str, dict[str, Any
             "broker_snapshot_id": period_value("broker_snapshot_id"),
             "broker_period_source": period_value("broker_period_source"),
             "broker_coverage": period_value("broker_coverage"),
+            "broker_period_coverage": period_value("broker_period_coverage"),
+            "broker_missing_sessions": period_value("broker_missing_sessions"),
+            "broker_period_complete": period_value("broker_period_complete"),
             "broker_session_coverage": period_value("broker_session_coverage"),
             "broker_coverage_text": period_value("broker_coverage_text"),
             "broker_coverage_status": period_value("broker_coverage_status"),
             "broker_freshness_status": period_value("broker_freshness_status"),
-            "today_pulse_date": _value(detail, "today_pulse_date", default=""),
-            "today_pulse_snapshot_id": _value(detail, "today_pulse_snapshot_id", default=""),
-            "today_pulse_status": _value(detail, "today_pulse_status", default=""),
-            "today_pulse_net_flow": _value(detail, "today_pulse_net_flow", default=""),
-            "today_pulse_buy_days": _value(detail, "today_pulse_buy_days", default=""),
-            "today_pulse_sell_days": _value(detail, "today_pulse_sell_days", default=""),
-            "today_pulse_direction": _value(detail, "today_pulse_direction", default=""),
+            "today_pulse_available": _value(detail, "today_pulse_available", default=period_metadata.get("today_pulse_available", "")),
+            "today_pulse_date": _value(detail, "today_pulse_date", default=period_metadata.get("today_pulse_date", "")),
+            "today_pulse_snapshot_id": _value(detail, "today_pulse_snapshot_id", default=period_metadata.get("today_pulse_snapshot_id", "")),
+            "today_pulse_source": _value(detail, "today_pulse_source", default=period_metadata.get("today_pulse_source", "")),
+            "today_pulse_status": _value(detail, "today_pulse_status", default=period_metadata.get("today_pulse_status", "")),
+            "today_pulse_net_flow": _value(detail, "today_pulse_net_flow", default=period_metadata.get("today_pulse_net_flow", "")),
+            "today_pulse_buy_days": _value(detail, "today_pulse_buy_days", default=period_metadata.get("today_pulse_buy_days", "")),
+            "today_pulse_sell_days": _value(detail, "today_pulse_sell_days", default=period_metadata.get("today_pulse_sell_days", "")),
+            "today_pulse_direction": _value(detail, "today_pulse_direction", default=period_metadata.get("today_pulse_direction", "")),
             "broker_alignment": _value(
                 detail,
                 "broker_alignment",
                 "Broker_Period_Alignment",
-                default="",
+                default=period_metadata.get("broker_alignment", ""),
             ),
         }
+        if pulse_only:
+            # An incomplete daily window may still contain a valid current-day
+            # pulse, but its partial multi-day classification must never
+            # replace the existing Broker Fusion PRIMARY fields. Keep only
+            # provenance/pulse metadata for presentation.
+            keep = {
+                "primary_window",
+                "broker_period_type", "broker_period_start", "broker_period_end",
+                "broker_trading_days", "broker_session_dates", "broker_snapshot_id",
+                "broker_period_source", "broker_coverage", "broker_period_coverage",
+                "broker_missing_sessions", "broker_period_complete",
+                "broker_session_coverage", "broker_coverage_text",
+                "broker_coverage_status", "broker_freshness_status",
+                "today_pulse_available", "today_pulse_date", "today_pulse_snapshot_id",
+                "today_pulse_source", "today_pulse_status", "today_pulse_net_flow",
+                "today_pulse_buy_days", "today_pulse_sell_days", "today_pulse_direction",
+                "broker_alignment",
+            }
+            row_result = {key: value for key, value in row_result.items() if key in keep}
+        result[symbol] = row_result
     return result
 
 
@@ -825,11 +860,11 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             "broker_score": _final_watchlist_broker_score(multiday, raw),
             "broker_state": multiday.get("broker_status") or broker_fallback,
             "broker_status": multiday.get("broker_status") or broker_fallback or "MISSING",
-            "broker_net_flow": multiday.get("broker_net_flow", ""),
-            "buy_days": multiday.get("buy_days", ""),
-            "sell_days": multiday.get("sell_days", ""),
-            "buyer_concentration": multiday.get("buyer_concentration", ""),
-            "seller_concentration": multiday.get("seller_concentration", ""),
+            "broker_net_flow": multiday.get("broker_net_flow", _value(raw, "NET_FLOW", "Net_Flow", "Broker_Net_Flow", default="")),
+            "buy_days": multiday.get("buy_days", _value(raw, "Buy_Days", default="")),
+            "sell_days": multiday.get("sell_days", _value(raw, "Sell_Days", default="")),
+            "buyer_concentration": multiday.get("buyer_concentration", _value(raw, "BUYER_CONCENTRATION", "Buyer_Concentration", default="")),
+            "seller_concentration": multiday.get("seller_concentration", _value(raw, "SELLER_CONCENTRATION", "Seller_Concentration", default="")),
             "broker_pattern": multiday.get("broker_pattern", ""),
             "bandar_buy_cost": multiday.get("bandar_buy_cost", ""),
             "distance_to_buy_cost": _final_watchlist_distance(multiday, raw),
@@ -843,17 +878,21 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             "broker_snapshot_id": multiday.get("broker_snapshot_id", global_period_metadata.get("broker_snapshot_id", "")),
             "broker_period_source": multiday.get("broker_period_source", global_period_metadata.get("broker_period_source", "")),
             "broker_coverage": multiday.get("broker_coverage", global_period_metadata.get("broker_coverage", "")),
+            "broker_period_coverage": multiday.get("broker_period_coverage", global_period_metadata.get("broker_period_coverage", "")),
+            "broker_missing_sessions": multiday.get("broker_missing_sessions", global_period_metadata.get("broker_missing_sessions", [])),
+            "broker_period_complete": multiday.get("broker_period_complete", global_period_metadata.get("broker_period_complete", "")),
             "broker_session_coverage": multiday.get("broker_session_coverage", global_period_metadata.get("broker_session_coverage", "")),
             "broker_coverage_text": multiday.get("broker_coverage_text", global_period_metadata.get("broker_coverage_text", "")),
             "broker_coverage_status": multiday.get("broker_coverage_status", global_period_metadata.get("broker_coverage_status", "")),
             "broker_freshness_status": multiday.get("broker_freshness_status", global_period_metadata.get("broker_freshness_status", "")),
-            "today_pulse_date": multiday.get("today_pulse_date", ""),
-            "today_pulse_snapshot_id": multiday.get("today_pulse_snapshot_id", ""),
-            "today_pulse_status": multiday.get("today_pulse_status", ""),
-            "today_pulse_net_flow": multiday.get("today_pulse_net_flow", ""),
-            "today_pulse_buy_days": multiday.get("today_pulse_buy_days", ""),
-            "today_pulse_sell_days": multiday.get("today_pulse_sell_days", ""),
-            "today_pulse_direction": multiday.get("today_pulse_direction", ""),
+            "today_pulse_available": multiday.get("today_pulse_available", global_period_metadata.get("today_pulse_available", "")),
+            "today_pulse_date": multiday.get("today_pulse_date", global_period_metadata.get("today_pulse_date", "")),
+            "today_pulse_snapshot_id": multiday.get("today_pulse_snapshot_id", global_period_metadata.get("today_pulse_snapshot_id", "")),
+            "today_pulse_source": multiday.get("today_pulse_source", global_period_metadata.get("today_pulse_source", "")),
+            "today_pulse_status": multiday.get("today_pulse_status", global_period_metadata.get("today_pulse_status", "")),
+            "today_pulse_net_flow": multiday.get("today_pulse_net_flow", global_period_metadata.get("today_pulse_net_flow", "")),
+            "today_pulse_buy_days": multiday.get("today_pulse_buy_days", global_period_metadata.get("today_pulse_buy_days", "")),
+            "today_pulse_sell_days": multiday.get("today_pulse_sell_days", global_period_metadata.get("today_pulse_sell_days", "")),
             "broker_alignment": multiday.get("broker_alignment", _value(raw, "broker_alignment", default="")),
             "sector_state": _value(raw, "Sector_State", "Sector_Rotation_State", default=""),
             "market_regime": _value(raw, "Market_Regime", default=""),

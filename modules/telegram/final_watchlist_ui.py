@@ -353,23 +353,39 @@ def _interpretive_reason(row: Mapping[str, Any]) -> str:
             f"Primary {period_type} dari {source}, range {start}–{end}, "
             f"sesi {sessions}, coverage {_period_coverage(row)}, freshness {freshness}{snapshot_text}."
         )
+        period_complete = _pick(row, "broker_period_complete", "Broker_Period_Complete", default=True)
+        missing_sessions = _period_session_text(
+            _pick(row, "broker_missing_sessions", "Broker_Missing_Sessions", default=[])
+        )
+        if str(period_complete).strip().lower() in {"false", "0", "no"}:
+            period_facts.append(
+                f"Broker PRIMARY {period_type} belum lengkap"
+                + (f"; missing {missing_sessions}." if missing_sessions else ".")
+            )
+        else:
+            period_facts.append(f"Broker PRIMARY {period_type} kondisi {broker_state} menjadi konteks utama.")
         if _period_is_multi(period_type):
             pulse_status = _enum(
                 _pick(row, "today_pulse_status"),
-                "UNAVAILABLE",
+                "NOT_AVAILABLE",
                 upper=True,
             )
             pulse_date = _raw(_pick(row, "today_pulse_date")) or end
             pulse_net = _money(_pick(row, "today_pulse_net_flow"))
             pulse_buy = _day_count(_pick(row, "today_pulse_buy_days"))
             pulse_sell = _day_count(_pick(row, "today_pulse_sell_days"))
+            pulse_source = _enum(
+                _pick(row, "today_pulse_source"),
+                "UNKNOWN",
+                upper=True,
+            )
             alignment = _enum(
                 _pick(row, "broker_alignment", "Broker_Period_Alignment"),
                 "INSUFFICIENT",
                 upper=True,
             )
             period_facts.append(
-                f"Today Pulse {pulse_status} {pulse_date}: net {pulse_net}, "
+                f"Today Pulse {pulse_status} {pulse_date} ({pulse_source}): net {pulse_net}, "
                 f"Buy/Sell {pulse_buy}/{pulse_sell}; alignment {alignment}."
             )
 
@@ -515,20 +531,28 @@ def format_watchlist_detail(row: Mapping[str, Any]) -> str:
         if _period_is_multi(period_type):
             pulse_status = _enum(
                 _pick(row, "today_pulse_status"),
-                "UNAVAILABLE",
+                "NOT_AVAILABLE",
                 upper=True,
             )
             pulse_date = _raw(_pick(row, "today_pulse_date")) or end
             pulse_net = _money(_pick(row, "today_pulse_net_flow"))
             pulse_buy = _day_count(_pick(row, "today_pulse_buy_days"))
             pulse_sell = _day_count(_pick(row, "today_pulse_sell_days"))
+            pulse_source = html.escape(
+                _enum(
+                    _pick(row, "today_pulse_source"),
+                    "UNKNOWN",
+                    upper=True,
+                ),
+                quote=False,
+            )
             alignment = _enum(
                 _pick(row, "broker_alignment", "Broker_Period_Alignment"),
                 "INSUFFICIENT",
                 upper=True,
             )
             period_lines.append(
-                f"TODAY PULSE {pulse_status} {pulse_date} | Net {pulse_net} | "
+                f"TODAY PULSE {pulse_status} {pulse_date} | {pulse_source} | Net {pulse_net} | "
                 f"Buy/Sell {pulse_buy}/{pulse_sell} | {alignment}"
             )
 

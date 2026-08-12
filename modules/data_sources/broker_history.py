@@ -18,11 +18,110 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Generator, Sequence
 
-from swing_utils import ensure_dir
+import pandas as pd
+
+from swing_utils import ensure_dir, file_sha256
 
 DEFAULT_DB = Path("data/database/broker_multiday.db")
 RETENTION_MIN = 60
 RETENTION_TARGET = 120
+
+
+def read_daily_capture_rows(
+    path: Path,
+    *,
+    source: str = "STOCKBIT_1D",
+    capture_id: str = "",
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Normalize one real 1D raw export without ever splitting an aggregate.
+
+    The raw parser is shared with the Broker Fusion presentation path.  A file
+    is eligible only when every usable row has the same FROM_DATE and
+    TO_DATE, and that date is one real session.  Multi-day/aggregate files
+    therefore return no rows rather than being decomposed into fake days.
+    """
+    from modules.broker_bridge.broker_raw import read_normalized_broker_raw
+
+    frame = read_normalized_broker_raw(Path(path))
+    if frame.empty or "FROM_DATE" not in frame.columns or "TO_DATE" not in frame.columns:
+        return [], []
+    from_values = pd.to_datetime(frame["FROM_DATE"], errors="coerce")
+    to_values = pd.to_datetime(frame["TO_DATE"], errors="coerce")
+    valid = from_values.notna() & to_values.notna()
+    if not bool(valid.any()):
+        return [], []
+    same_session = from_values[valid].dt.date == to_values[valid].dt.date
+    if not bool(same_session.all()):
+        return [], []
+    dates = sorted({value.isoformat() for value in to_values[valid].dt.date})
+    if len(dates) != 1:
+        return [], dates
+    market_date = dates[0]
+    capture = str(capture_id or file_sha256(Path(path)))
+    rows: list[dict[str, Any]] = []
+    for raw in frame.loc[valid].to_dict(orient="records"):
+        symbol = str(raw.get("SYMBOL", "")).strip().upper()
+        broker_code = str(raw.get("BROKER_CODE", "")).strip().upper()
+        side = str(raw.get("SIDE", "")).strip().upper()
+        if not symbol or not broker_code or side not in {"BUY", "SELL"}:
+            continue
+        def number(key: str) -> float | None:
+            value = raw.get(key)
+            try:
+                return float(value) if value not in (None, "") and not pd.isna(value) else None
+            except (TypeError, ValueError):
+                return None
+
+        rows.append({
+            "symbol": symbol,
+            "market_date": market_date,
+            "broker_code": broker_code,
+            "broker_type": str(raw.get("BROKER_TYPE") or "UNKNOWN").strip().upper(),
+            "side": side,
+            "net_value": number("NET_VALUE"),
+            "net_lot": number("NET_LOT"),
+            "gross_value": number("GROSS_VALUE"),
+            "gross_lot": number("GROSS_LOT"),
+            "frequency": number("FREQUENCY"),
+            "avg_price": number("AVG_PRICE"),
+            "rank": number("RANK"),
+            "source": str(source or "STOCKBIT_1D").upper(),
+            "quality_status": "VALIDATED",
+            "received_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "capture_id": capture,
+        })
+    return rows, [market_date] if rows else []
+
+
+def ingest_daily_capture_files(
+    conn: sqlite3.Connection,
+    paths: Sequence[Path],
+    *,
+    as_of_date: str = "",
+    source: str = "STOCKBIT_1D",
+) -> dict[str, Any]:
+    """Ingest only immutable real-1D captures and report exact coverage."""
+    accepted_files: list[str] = []
+    accepted_dates: set[str] = set()
+    rows_seen = 0
+    for path in paths:
+        rows, dates = read_daily_capture_rows(path, source=source)
+        if not rows or len(dates) != 1:
+            continue
+        market_date = dates[0]
+        if as_of_date and market_date > str(as_of_date)[:10]:
+            continue
+        upsert_broker_rows(conn, rows)
+        register_trading_sessions(conn, [market_date])
+        accepted_files.append(str(Path(path).resolve()))
+        accepted_dates.add(market_date)
+        rows_seen += len(rows)
+    return {
+        "accepted_files": accepted_files,
+        "market_dates": sorted(accepted_dates),
+        "rows": rows_seen,
+        "source": str(source or "STOCKBIT_1D").upper(),
+    }
 
 
 def connect(db_path: Path = DEFAULT_DB) -> sqlite3.Connection:
