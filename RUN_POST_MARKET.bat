@@ -37,12 +37,12 @@ set "ARGS="
 if "%MODE%"=="1" set "ARGS=--job post_market"
 if "%MODE%"=="2" set "ARGS=--job post_market --preview-existing --no-telegram"
 if not defined ARGS goto MENU
-%SDE_PYTHON_CMD% -u run_sde_job_integrated.py %ARGS%
+%SDE_PYTHON_CMD% -u run_sde_job_integrated_market_first.py %ARGS%
 set "RC=!ERRORLEVEL!"
 goto STATUS
 
 :NORMAL_WITH_NEWS
-%SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job post_market
+%SDE_PYTHON_CMD% -u run_sde_job_integrated_market_first.py --job post_market
 set "RC=!ERRORLEVEL!"
 if "!RC!"=="0" (
   echo.
