@@ -13,7 +13,7 @@ from modules.market_data.market_outlook_regime import calculate_market_outlook_r
 from modules.telegram.post_market_ui import format_post_market
 
 from .enhanced_runtime_bridge import post_market_payloads as _validated_post_market_payloads
-from .runtime import RunnerContext, append_job_log, read_json, resolve
+from .runtime import RunnerContext, append_job_log, now_wib, read_json, resolve
 
 
 def _norm(value: Any) -> str:
@@ -56,6 +56,15 @@ def _read_latest_technical(path: Path, trade_date: date) -> pd.DataFrame:
         else:
             return pd.DataFrame()
     return frame.reset_index(drop=True)
+
+
+def _read_csv_optional(path: Path) -> pd.DataFrame:
+    if not path.exists() or path.stat().st_size <= 0:
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path, low_memory=False)
+    except Exception:
+        return pd.DataFrame()
 
 
 def _trend_bucket(value: Any) -> str:
@@ -199,6 +208,7 @@ def prepare_post_market_pulse(ctx: RunnerContext) -> dict[str, Any]:
     """
     ihsg_path = ctx.path("ihsg_csv", "data/input/IHSG.csv")
     technical_path = ctx.path("technical_output_dir", "data/output/technical") / "latest_technical_features.csv"
+    candidate_path = ctx.path("candidate_output_dir", "data/output/candidates") / "technical_ranking_full.csv"
     warnings: list[str] = []
 
     should_refresh = not bool(ctx.preview_existing) and not bool(ctx.dry_run)
@@ -226,16 +236,22 @@ def prepare_post_market_pulse(ctx: RunnerContext) -> dict[str, Any]:
         as_of_date=ctx.trade_date,
     )
     technical = _read_latest_technical(technical_path, ctx.trade_date)
+    candidates = _read_csv_optional(candidate_path)
     breadth = _technical_breadth(technical)
-    setups = _setup_distribution(technical)
+    # Setup_Type is produced by Candidate Selector, not Technical Feature Engine.
+    # Prefer the full candidate ranking so distribution reflects the same
+    # post-market universe without inventing setup labels from raw indicators.
+    setups = _setup_distribution(candidates) or _setup_distribution(technical)
 
     data_date = str(regime.get("data_date") or "")[:10]
     current_session = data_date == ctx.trade_date.isoformat()
     if not current_session:
         warnings.append(f"IHSG_SESSION_NOT_CURRENT:{data_date or 'MISSING'}")
 
+    calculated_at = now_wib().isoformat(timespec="seconds")
     pulse = {
         "trade_date": ctx.trade_date.isoformat(),
+        "calculated_at": calculated_at,
         "market_regime": regime.get("market_regime") if current_session else "DATA_NOT_CURRENT",
         "execution_mode": regime.get("execution_mode") if current_session else "SELECTIVE",
         "ihsg_change": regime.get("ihsg_change_pct") if current_session else None,
@@ -259,6 +275,7 @@ def prepare_post_market_pulse(ctx: RunnerContext) -> dict[str, Any]:
         append_job_log(ctx, "POST_MARKET_PULSE_READY", str({
             "ihsg_data_date": data_date,
             "technical_rows": len(technical),
+            "candidate_rows": len(candidates),
             "breadth": breadth,
         }))
     return pulse
@@ -269,7 +286,6 @@ def _render_data(ctx: RunnerContext, manifest: dict[str, Any], payload: Any, pul
     requested = int(validated.get("symbols_requested", manifest.get("symbols_requested", 0)) or 0)
     loaded = int(validated.get("symbols_loaded", manifest.get("symbols_loaded", 0)) or 0)
     valid = int(validated.get("symbols_valid", manifest.get("symbols_valid", 0)) or 0)
-    failed = int(validated.get("symbols_failed", manifest.get("symbols_failed", 0)) or 0)
     skipped = int(validated.get("symbols_skipped", manifest.get("symbols_skipped", 0)) or 0)
     not_loaded = max(0, requested - loaded)
     invalid = max(0, loaded - valid)
@@ -282,6 +298,7 @@ def _render_data(ctx: RunnerContext, manifest: dict[str, Any], payload: Any, pul
         or manifest.get("finished_at")
         or manifest.get("completed_at")
         or pulse.get("calculated_at")
+        or now_wib().isoformat(timespec="seconds")
     )
     candidate_count = int(manifest.get("Candidate_Count", manifest.get("candidate_count", 0)) or 0)
     broker_ready = bool(manifest.get("Broker_Navigator_Path") or manifest.get("broker_navigator_path"))
