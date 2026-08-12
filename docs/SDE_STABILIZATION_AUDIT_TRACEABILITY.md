@@ -2,25 +2,27 @@
 
 ## Purpose
 
-This document is the cumulative tracking register for the audit-driven work on
+This is the cumulative tracking register for audit-driven work on
 `audit/sde-stabilization`.
 
 It does **not** replace `docs/SDE_AUDIT_BASELINE.md`. The audit baseline remains
-the immutable statement of what was observed at audited baseline `121bc58`.
-This register answers what happened to every finding after implementation work
-started: owner commit, current status, implementation evidence, validation
-status, and residual/deferred work.
+the immutable statement of observations at audited commit
+`121bc58b0f6a62dc3a844ee59575fe48ce86cc7d`.
 
-## Source of truth and branch chain
+This register answers what every finding is, which commit owns it, what evidence
+supports the implementation, what new findings appeared, and what still needs
+final re-audit.
 
-- Audit baseline: `121bc58b0f6a62dc3a844ee59575fe48ce86cc7d`
-- Stabilization branch: `audit/sde-stabilization`
-- Package/config version: `1.7.0-multisource`
+## Branch and frozen operating contract
+
+- Audited baseline: `121bc58b0f6a62dc3a844ee59575fe48ce86cc7d`
+- Branch: `audit/sde-stabilization`
+- Package/config: `1.7.0-multisource`
 - Production profile: `MODERATE_BASELINE`
 - Auto-entry: `false`
-- Approved operation remains supervised/shadow only until final re-audit.
+- Approved operation until re-audit: supervised/shadow only
 
-Planned stabilization ownership:
+Planned ownership:
 
 1. Commit 1 — audit baseline + quant freeze
 2. Commit 2 — artifact integrity
@@ -31,32 +33,33 @@ Planned stabilization ownership:
 
 ## Status vocabulary
 
-- `OPEN` — audit finding is not implemented yet.
-- `IMPLEMENTED / PENDING RE-AUDIT` — scoped code change exists, but the audit
-  finding is not considered closed until final evidence/re-audit confirms it.
-- `CLOSED BY RE-AUDIT` — only used after final audit evidence confirms closure.
-- `DEFERRED` — intentionally outside the P0/P1 stabilization scope.
-- `EVIDENCE UPDATE` — observed evidence changed or was corrected without
-  changing production behavior.
+- `OPEN` — not implemented yet.
+- `IMPLEMENTED / PENDING RE-AUDIT` — scoped implementation exists, but closure
+  has not yet been proven by final audit evidence.
+- `CLOSED BY RE-AUDIT` — final audit confirmed closure.
+- `DEFERRED` — intentionally outside current P0/P1 stabilization scope.
+- `EVIDENCE UPDATE` — evidence was corrected without changing behavior.
+- `STALE TEST CONTRACT` — a test encodes behavior explicitly identified as an
+  audit defect and must be rewritten rather than forcing production backward.
 
 ## Master audit finding register
 
-| ID | Priority | Audit finding | Baseline classification | Owner | Current status | Evidence / notes |
+| ID | Priority | Audit finding | Baseline classification | Owner | Current status | Evidence / next proof |
 |---|---|---|---|---|---|---|
-| AF-P0-001 | P0 | CI suite red | CONFIRMED ISSUE | Commit 6 | OPEN | Historical audit recorded 28 failed / 492 passed. Commit 1 re-characterized current `121bc58` Actions evidence as 27 failed / 510 passed / 3 subtests passed; compile PASS. Full closure is a release gate. |
-| AF-P0-002 | P0 | Shared `FINAL_DECISION_V2.csv` writer not entirely protected by global/shared writer control; overwrite race possible | CONFIRMED ISSUE; race POTENTIAL RISK | Commit 2 | IMPLEMENTED / PENDING RE-AUDIT | Production route now uses `broker_fusion_publisher.py`; dedicated exclusive V2 writer lock, run-scoped V2 evidence, atomic canonical publish, SHA equality check, and stale sidecar rejection. Scoped regression: 5 tests PASS. Quant fusion engine unchanged. |
-| AF-P1-001 | P1 | Canonical data layer is not yet the production execution boundary | CONFIRMED ISSUE | Commit 5 | OPEN | DataSourceManager/canonical facade exists, but audited Stage 1/2 execution still relies on legacy historical/technical subprocess paths. |
-| AF-P1-002 | P1 | TP1/lifecycle semantics differ across engine/tracker/DB/evaluation paths | CONFIRMED ISSUE | Commit 3 | OPEN | Must unify TP1 trailing activation, TP2 full close, same-candle precedence, max-hold, entry reference, and outcome vocabulary without changing frozen entry/SL/TP price calculation. |
-| AF-P1-003 | P1 | Resend/delivery path can overwrite engine `*_latest.json` status | CONFIRMED ISSUE | Commit 4 | OPEN | Engine/job status and resend/delivery status ownership must be separated. |
-| AF-P1-004 | P1 | Interrupt can leave inconsistent terminal state such as FAILED with exit code 0 | CONFIRMED ISSUE | Commit 4 | OPEN | Must make terminalization, error/traceback evidence, exit code, finished_at, and lock cleanup consistent. |
-| AF-P1-005 | P1 | Conflicting market dates can select a winner while fail-closed is false | CONFIRMED ISSUE | Commit 5 | OPEN | Canonical date conflict must block/propagate invalid data quality instead of loosely choosing one date. |
-| AF-P2-001 | P2 | Telegram idempotency check/write is not transaction-locked | POTENTIAL RISK | Post-stabilization | DEFERRED | Explicitly outside P0/P1 branch scope. Preserve for consolidated discussion after stabilization. |
-| AF-P2-002 | P2 | Hotfix workflow has `contents: write` and auto-push behavior | CONFIRMED ISSUE | Post-stabilization | DEFERRED | Governance/security work remains outside current stabilization commits. |
-| AF-P2-003 | P2 | DB revision history is not fully immutable | POTENTIAL RISK | Post-stabilization | DEFERRED | Do not silently expand Commit 3/4 into full DB revision redesign. |
+| AF-P0-001 | P0 | CI suite red | CONFIRMED ISSUE | Commit 6 | OPEN | Historical audit: 28 failed / 492 passed. Commit 1 current baseline evidence: 27 failed / 510 passed / 3 subtests passed; compile PASS. Final full-suite closure required. |
+| AF-P0-002 | P0 | Shared `FINAL_DECISION_V2.csv` writer not fully serialized/locked; overwrite race possible | CONFIRMED ISSUE; race POTENTIAL RISK | Commit 2 | IMPLEMENTED / PENDING RE-AUDIT | Dedicated V2 writer lock, run-scoped artifact, atomic canonical publish, SHA equivalence, stale sidecar rejection. |
+| AF-P1-001 | P1 | Canonical data layer is not the production execution boundary | CONFIRMED ISSUE | Commit 5 | OPEN | DataSourceManager exists, but audited Stage 1/2 still use legacy execution subprocess paths. |
+| AF-P1-002 | P1 | TP1/lifecycle semantics differ across Exit Engine, outcome tracker, DB, shadow and backtest | CONFIRMED ISSUE | Commit 3 | IMPLEMENTED / PENDING RE-AUDIT | `SDE_SWING_LIFECYCLE_V1` added. TP1 milestone/open, TP2 full close, stop same-candle priority, max-hold and actual trigger entry unified for canonical plan-backed paths. Final runtime/re-audit proof still required. |
+| AF-P1-003 | P1 | Resend/delivery can overwrite engine `*_latest.json` status | CONFIRMED ISSUE | Commit 4 | OPEN | Engine/job status and delivery/resend status ownership must be separated. |
+| AF-P1-004 | P1 | Interrupt can leave inconsistent terminal state such as FAILED + exit code 0 | CONFIRMED ISSUE | Commit 4 | OPEN | Terminalization, nonzero exit, finished_at, traceback/error evidence and lock cleanup must be consistent. |
+| AF-P1-005 | P1 | Conflicting market dates can select a winner with fail-closed false | CONFIRMED ISSUE | Commit 5 | OPEN | Canonical date conflict must block and propagate invalid quality. |
+| AF-P2-001 | P2 | Telegram idempotency check/write not transaction-locked | POTENTIAL RISK | Post-stabilization | DEFERRED | Explicitly out of P0/P1 scope. |
+| AF-P2-002 | P2 | Hotfix workflow has `contents: write` and auto-push | CONFIRMED ISSUE | Post-stabilization | DEFERRED | Governance/security follow-up after stabilization. |
+| AF-P2-003 | P2 | DB revision history not fully immutable | POTENTIAL RISK | Post-stabilization | DEFERRED | No full DB revision redesign inside Commit 3/4. |
 
-## Baseline operational facts retained from audit
+## Baseline evidence retained
 
-The validated audit run remains baseline evidence, not a new release verdict:
+Validated audit run remains historical baseline evidence:
 
 - Run ID: `SWING-20260812-223409-24a9`
 - Technical date: `2026-08-12`
@@ -69,25 +72,15 @@ The validated audit run remains baseline evidence, not a new release verdict:
 - AVOID: `17`
 - Auto-entry: `false`
 
-The stabilization branch must not use later implementation work to rewrite this
-historical baseline evidence.
+Implementation work must not rewrite these historical facts.
 
-## Implemented commit register
+## Commit register
 
-### Commit 1 — audit baseline + quant freeze
+### Commit 1 — Audit baseline + quant freeze
 
 Commit: `78231c9f624c287fe0bdc24e090bb5015accecbd`
 
 Status: IMPLEMENTED
-
-Purpose:
-
-- root stabilization work at audited `121bc58`;
-- freeze `MODERATE_BASELINE` and protected quant behavior;
-- record current CI characterization;
-- add quant drift validator and regression guard;
-- prohibit silent changes to scoring, thresholds, hard blockers, entry, SL, TP,
-  risk settings, and auto-entry.
 
 Evidence:
 
@@ -96,104 +89,122 @@ Evidence:
 - `tests/test_audit_quant_freeze.py`
 - `docs/SDE_STABILIZATION_BASELINE.md`
 
-### Commit 2 — artifact integrity
+Protected contract includes `MODERATE_BASELINE`, weights/scoring, thresholds,
+hard blockers, closed-candle policy, entry/SL/TP price calculation, risk/RR
+parameters, and `auto_entry_enabled=false`.
 
-Commit at time of this register: implementation originally created as
-`9e68e0dafc9fc324ec50107e776d4ab566f1b079`; if this documentation is amended
-into Commit 2, the final Commit 2 SHA is the branch parent of Commit 3 and must
-be recorded here/at final re-audit.
+### Commit 2 — Artifact integrity
+
+Commit: `07efef3accfc864406a7e7d18a97a10bd3a8ff3b`
 
 Status: IMPLEMENTED / PENDING RE-AUDIT
-
-Purpose:
-
-- serialize V2 publication;
-- create run-scoped evidence;
-- publish canonical V2 atomically;
-- verify run-scoped/canonical SHA equivalence;
-- preserve run/source lineage;
-- reject stale V2 sidecar publication.
 
 Evidence:
 
 - `modules/broker_fusion/broker_fusion_publisher.py`
 - `tests/test_artifact_integrity_v2.py`
 - `docs/SDE_STABILIZATION_COMMIT2_ARTIFACT_INTEGRITY.md`
-- production fusion engine `modules/broker_fusion/broker_fusion.py` remains the
-  frozen calculation owner.
+
+Quant owner `modules/broker_fusion/broker_fusion.py` remains unchanged.
+
+### Commit 3 — Lifecycle consistency
+
+Commit: this commit; final SHA is the parent of Commit 4 and will be pinned at
+final re-audit.
+
+Status: IMPLEMENTED / PENDING RE-AUDIT
+
+Canonical contract: `SDE_SWING_LIFECYCLE_V1`
+
+Evidence:
+
+- `modules/analytics/lifecycle_contract.py`
+- `modules/exit_engine/exit_engine.py` facade + `exit_engine_baseline.py`
+- `modules/analytics/outcome_tracker.py` facade + `outcome_tracker_baseline.py`
+- `modules/database/swing_history_db.py` facade + `swing_history_db_baseline.py`
+- `modules/backtesting/backtest_engine.py` facade + `backtest_engine_baseline.py`
+- `modules/analytics/profile_shadow.py` facade + `profile_shadow_baseline.py`
+- `tests/test_lifecycle_contract_v1.py`
+- `tests/test_lifecycle_commit3_verification.py`
+- `docs/SDE_STABILIZATION_COMMIT3_LIFECYCLE_CONSISTENCY.md`
+
+Canonical semantics:
+
+- TP1 = milestone + trailing-active state, not full close;
+- TP2 = full close;
+- stop has conservative priority if stop and target coexist in one daily bar;
+- new BE/trailing stop calculated from close applies from the next candle;
+- max-hold counts executable holding sessions and same-session reruns do not
+  advance holding age twice;
+- plan-backed evaluation uses actual trigger entry;
+- entered-trade final outcome = WIN / LOSS / AMBIGUOUS / OPEN;
+- entry/initial-stop/TP1/TP2 prices are not recalculated by Commit 3.
 
 ## New findings discovered during stabilization
 
-New observations are never silently converted into implementation scope. They
-are assigned an ID and tracked here; detail is retained in
-`docs/SDE_STABILIZATION_DEFERRED_FINDINGS.md` when deferred.
+Every new observation gets `NF-C<commit>-NNN`.
 
-| ID | Found during | Observation | Classification | Owner / disposition | Status |
+| ID | Found during | Observation | Classification | Disposition | Status |
 |---|---|---|---|---|---|
-| NF-C1-001 | Commit 1 | Historical audit test count `28 failed / 492 passed` is stale versus current Actions evidence on `121bc58`: `27 failed / 510 passed / 3 subtests passed`. | Evidence staleness, not quant defect | Commit 6 release evidence | EVIDENCE UPDATE |
-| NF-C1-002 | Commit 1 | CI push trigger covers `main` and `agent/**`, not `audit/**`; the stabilization branch therefore does not receive an automatic push-triggered Actions run, although PR trigger remains configured. | CI/release-process observation | Commit 6 / final validation | DEFERRED |
-| NF-C2-001 | Commit 2 | Generic `swing_utils.atomic_csv()` uses deterministic `<destination>.tmp`; concurrent callers for the same destination could collide. | Potential generic artifact race outside dedicated V2 path | Post-stabilization discussion | DEFERRED |
-| NF-C2-002 | Commit 2 | Generic JSON writers outside the narrow V2 sidecar path are not uniformly atomic and span status/delivery/snapshot/manifest concerns. | Broader observability/artifact hardening | Post-stabilization discussion unless directly owned by Commit 4 | DEFERRED |
+| NF-C1-001 | Commit 1 | Historical audit test count 28/492 differs from current `121bc58` Actions evidence 27/510/3 subtests | Evidence staleness | Commit 6 final evidence | EVIDENCE UPDATE |
+| NF-C1-002 | Commit 1 | `audit/**` is not included in CI push trigger; PR trigger remains configured | CI/release process | Commit 6 | DEFERRED |
+| NF-C2-001 | Commit 2 | Generic `swing_utils.atomic_csv()` uses deterministic `<destination>.tmp` | Potential generic artifact race | Post-stabilization | DEFERRED |
+| NF-C2-002 | Commit 2 | Generic JSON writers outside V2 are not uniformly atomic | Broader artifact/observability hardening | Post-stabilization unless directly needed by Commit 4 | DEFERRED |
+| NF-C3-001 | Commit 3 | DB and backtest used D7/reference-price shortcuts instead of ordered actual-entry lifecycle | Direct child of AF-P1-002 | Commit 3 | IMPLEMENTED / PENDING RE-AUDIT |
+| NF-C3-002 | Commit 3 | Profile shadow inferred TP1/TP2/SL rates from final-outcome text, incompatible with canonical final-outcome vocabulary | Lifecycle metric defect | Commit 3 | IMPLEMENTED / PENDING RE-AUDIT |
+| NF-C3-003 | Commit 3 | Live Exit Engine has runtime-only exits (broker distribution, decision downgrade, close-below-EMA20) that a price-only historical evaluator cannot reproduce without historical context | Evaluation reproducibility gap outside minimum audited lifecycle contract | Consolidated post-stabilization discussion | DEFERRED |
+| NF-C3-004 | Commit 3 | Exit active state did not persist explicit TP1-hit/trailing-active milestone fields | Lifecycle state persistence | Commit 3 | IMPLEMENTED / PENDING RE-AUDIT |
+| NF-C3-005 | Commit 3 | Outcome tracker could constrain same-sync post-entry evaluation to the waiting-trigger expiry window instead of continuing through available holding data | Lifecycle evaluation-window defect | Commit 3 | IMPLEMENTED / PENDING RE-AUDIT |
+| NF-C3-006 | Commit 3 | Existing regression `test_waiting_trigger_opens_then_closes_at_tp1_with_events` encodes TP1-as-full-close, the exact audited defect | Test-contract staleness | Rewrite against canonical semantics before final release evidence | STALE TEST CONTRACT |
+| NF-C3-007 | Commit 3 verification | Exit Engine incremented `Holding_Days` on every invocation, so repeated same-session runs could advance max-hold without a new trading session | Lifecycle session-count defect | Commit 3; same-session idempotency guard + regression | IMPLEMENTED / PENDING RE-AUDIT |
+| NF-C3-008 | Commit 3 verification | Initial backtest facade fallback referenced the patched `evaluate_signal`, creating a recursive compatibility path for legacy no-plan datasets | Implementation verification defect caught before finalization | Commit 3; preserve original baseline callable before patch + regression | IMPLEMENTED / PENDING RE-AUDIT |
 
-Future new findings must be added to this table as `NF-C<commit>-NNN` and, when
-deferred, described in the deferred findings log.
+Detailed deferred observations are maintained in
+`docs/SDE_STABILIZATION_DEFERRED_FINDINGS.md`.
 
 ## Guardrail traceability
-
-The following audited guardrails remain mandatory through every commit:
 
 | Guardrail | Current state |
 |---|---|
 | `auto_entry_enabled=false` | FROZEN by Commit 1 |
+| `MODERATE_BASELINE` | FROZEN by Commit 1 |
+| Scoring/weights/thresholds | FROZEN by Commit 1 |
+| Hard blockers | FROZEN by Commit 1 |
+| Entry-zone calculation | FROZEN by Commit 1 |
+| Initial SL calculation | FROZEN by Commit 1 |
+| TP1/TP2 price calculation | FROZEN by Commit 1 |
 | Closed-candle policy | FROZEN by Commit 1 |
 | Broker date/coverage validation | MUST REMAIN |
 | Data-quality propagation | MUST REMAIN |
-| Exchange status / suspended / UMA handling | MUST REMAIN |
-| Liquidity and broker-distribution hard blockers | FROZEN by Commit 1 |
+| Exchange/suspended/UMA handling | MUST REMAIN |
 | Protected decision columns | MUST REMAIN |
 | Deterministic AI fallback | MUST REMAIN |
-| Telegram escaping/splitting | MUST REMAIN; P2 enhancements deferred |
 | Config hash/run manifest | MUST REMAIN |
-| SQLite integrity/WAL/foreign-key checks | MUST REMAIN |
+| SQLite integrity/WAL/FK checks | MUST REMAIN |
 | Lifecycle event idempotency | MUST REMAIN |
 | Shadow-only profile comparison | MUST REMAIN |
 
-A guardrail change is not authorized by this stabilization register unless it
-is explicitly required to close an audited P0/P1 contract inconsistency and is
-covered by regression evidence.
-
 ## Release-gate tracking
 
-The branch must not be declared production-grade merely because Commit 2-5 are
-implemented. Final sign-off in Commit 6/re-audit must prove at minimum:
+Commit 6/re-audit must prove:
 
-- required test suite has no unwaived failures;
-- quant freeze still passes;
-- final run lineage can be reconstructed from run ID through V2/V3/exit/DB and
-  delivery evidence;
-- V2 shared output publication is serialized/atomic and hash-consistent;
-- engine status and resend/delivery status are distinguishable;
-- lifecycle/outcome semantics are identical across evaluators;
-- canonical data path is the actual production execution boundary and date
-  conflicts fail closed;
+- no unwaived required-test failures;
+- quant freeze passes;
+- final run lineage reconstructs V2 -> V3 -> exit -> DB -> delivery;
+- V2 publication remains serialized/atomic/hash-consistent;
+- engine and resend/delivery statuses are distinct;
+- canonical lifecycle semantics are identical across required evaluators;
+- canonical data path is the actual production boundary;
+- conflicting dates fail closed;
 - auto-entry remains false;
-- security/CI governance has no release-blocking violation or has an explicit
-  written waiver.
+- no release-blocking CI/security governance defect lacks explicit waiver.
 
-## Final re-audit closure section
+## Final re-audit closure
 
-Do not fill this section until Commit 6.
+Do not mark an `AF-*` finding `CLOSED BY RE-AUDIT` until Commit 6.
 
-For each `AF-*` item, final audit must record:
+For every item record final status, final owning SHA, tests/results, runtime run
+ID/evidence, hashes/lineage where relevant, residual risk, and release impact.
 
-- final status: `CLOSED BY RE-AUDIT`, `OPEN`, or `DEFERRED`;
-- final commit SHA;
-- tests executed and result;
-- runtime run ID/evidence paths;
-- hashes/lineage evidence where relevant;
-- residual risk;
-- release impact.
-
-The overall AMBER/RED baseline verdict and 64/100 health score remain historical
-and provisional until a full re-audit on the stabilization descendant produces
-a new signed-off verdict.
+The historical AMBER/RED and 64/100 verdict remain provisional until that
+re-audit is complete.
