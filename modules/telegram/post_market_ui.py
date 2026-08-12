@@ -35,6 +35,14 @@ def _date(value: Any, *, long: bool = False) -> str:
     return f"{days[parsed.weekday()]}, {parsed.day} {full_months[parsed.month]} {parsed.year}"
 
 
+def _full_date(value: Any) -> str:
+    parsed = _dt(value)
+    if parsed is None:
+        return ""
+    months = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+    return f"{parsed.day:02d} {months[parsed.month]} {parsed.year}"
+
+
 def _time(value: Any) -> str:
     parsed = _dt(value)
     return parsed.strftime("%H:%M") if parsed else ""
@@ -77,10 +85,6 @@ def _coverage_pct(value: Any) -> str:
     if 0 <= abs(number) <= 1:
         number *= 100.0
     return _pct(number, decimals=1)
-
-
-def _metric(icon: str, label: str, value: str) -> str:
-    return f"{icon} {label:<13}: <b>{escape(value)}</b>"
 
 
 def _counts(data: Mapping[str, Any]) -> tuple[int, int, int]:
@@ -146,30 +150,38 @@ def _market_label(data: Mapping[str, Any]) -> str:
     return "SELECTIVE"
 
 
-def _sector_line(data: Mapping[str, Any]) -> str:
+def _sector_values(data: Mapping[str, Any]) -> list[str]:
     leading = data.get("leading") if isinstance(data.get("leading"), (list, tuple)) else []
     rotating = data.get("rotating_in") if isinstance(data.get("rotating_in"), (list, tuple)) else []
     values = [str(item).strip() for item in [*leading, *rotating] if str(item).strip()]
-    return ", ".join(list(dict.fromkeys(values))[:4])
+    return list(dict.fromkeys(values))[:4]
 
 
-def _guidance(data: Mapping[str, Any]) -> str:
+def _guidance(data: Mapping[str, Any]) -> list[str]:
     market = _market_label(data)
     if market == "RISK-ON":
-        return (
-            "Pasar ditutup dengan bias positif. Fokus pada saham dengan technical score tinggi, "
-            "setup matang, dan broker confirmation yang mendukung. Hindari mengejar harga yang "
-            "sudah terlalu jauh dari area entry."
-        )
+        return [
+            "Pasar ditutup dengan bias positif dan breadth bullish.",
+            "Fokus pada saham dengan setup matang, technical score tinggi,",
+            "dan broker confirmation yang mendukung.",
+            "",
+            "Hindari mengejar saham yang sudah terlalu jauh dari area entry.",
+        ]
     if market == "RISK-OFF":
-        return (
-            "Pasar ditutup defensif. Utamakan proteksi modal dan hanya pertahankan kandidat dengan "
-            "setup sangat kuat serta risk/reward layak. Hindari entry agresif sebelum tekanan pasar mereda."
-        )
-    return (
-        "Pasar masih selektif. Fokus pada kandidat dengan confluence teknikal paling kuat, "
-        "entry yang efisien, dan broker confirmation yang mendukung."
-    )
+        return [
+            "Pasar ditutup dengan bias defensif dan breadth cenderung bearish.",
+            "Fokus pada proteksi modal dan kandidat dengan setup paling kuat,",
+            "serta broker confirmation yang benar-benar mendukung.",
+            "",
+            "Hindari entry agresif sebelum tekanan pasar mereda.",
+        ]
+    return [
+        "Pasar ditutup dalam kondisi selektif.",
+        "Fokus pada saham dengan setup matang, technical score tinggi,",
+        "dan broker confirmation yang mendukung.",
+        "",
+        "Hindari mengejar saham yang sudah terlalu jauh dari area entry.",
+    ]
 
 
 def _status_icon(value: Any) -> str:
@@ -181,25 +193,6 @@ def _status_icon(value: Any) -> str:
     if any(token in status for token in ("SUCCESS", "READY", "VALID", "CURRENT")):
         return "🟢"
     return "🟡"
-
-
-def _issues(data: Mapping[str, Any]) -> tuple[int, list[str]]:
-    total = 0
-    notes: list[str] = []
-    for key, label in (
-        ("symbols_not_loaded", "tidak dimuat"),
-        ("symbols_invalid", "gagal validasi"),
-        ("symbols_skipped", "dilewati"),
-    ):
-        try:
-            count = int(float(data.get(key) or 0))
-        except Exception:
-            count = 0
-        if count <= 0:
-            continue
-        total += count
-        notes.append(f"{count} saham {label}")
-    return total, notes
 
 
 def _setup_items(data: Mapping[str, Any]) -> list[tuple[str, int]]:
@@ -226,124 +219,8 @@ def _join(lines: list[str]) -> str:
     return "\n".join(result).strip()
 
 
-def _current_section_status(value: Any) -> str:
-    return _upper(value) or "NOT AVAILABLE"
-
-
-def _current_candidate_line(item: Mapping[str, Any], index: int) -> str:
-    symbol = str(item.get("symbol") or "").strip().upper()
-    if not symbol or "AVOID" in _upper(item.get("decision")) or "AVOID" in _upper(item.get("candidate_status")):
-        return ""
-    parts = [f"{index}. <b>{escape(symbol)}</b>"]
-    setup = _upper(item.get("setup"))
-    if setup:
-        parts.append(f"Setup {escape(setup)}")
-    score = _number(item.get("score"))
-    if score is not None:
-        parts.append(f"Score {score:.1f}")
-    readiness = _number(item.get("entry_readiness"))
-    readiness_class = _upper(item.get("entry_readiness_class"))
-    if readiness is not None:
-        parts.append(f"Readiness {readiness:.1f}")
-    elif readiness_class:
-        parts.append(f"Readiness {escape(readiness_class)}")
-    quality = _upper(item.get("data_quality"))
-    if quality:
-        parts.append(f"Data {escape(quality)}")
-    return " | ".join(parts)
-
-
-def _format_current_post_market(data: Mapping[str, Any]) -> str:
-    """Current hierarchical Post Market contract used by official runtime."""
-    lines = ["<b>🌆 SDE SWING — POST MARKET</b>"]
-    trade_date = _date(data.get("trade_date"), long=True)
-    if trade_date:
-        lines.append(f"📅 {escape(trade_date)}")
-    finished = _time(data.get("finished_at") or data.get("generated_at") or data.get("completed_at"))
-    if finished:
-        lines.append(f"🕒 {escape(finished)} WIB")
-    lines += [SEPARATOR, "", "<b>PROCESS STATUS</b>"]
-    lines.append(_metric(_status_icon(data.get("process_status")), "Status", _current_section_status(data.get("process_status"))))
-
-    lines += ["", "<b>MARKET SUMMARY</b>"]
-    regime = _current_section_status(data.get("market_regime"))
-    lines.append(_metric("🧭", "Regime", regime))
-    ihsg_status = _upper(data.get("ihsg_status"))
-    change = _pct(data.get("ihsg_change"), signed=True, decimals=2)
-    if ihsg_status == "CURRENT SESSION" and change:
-        lines.append(_metric("📊", "IHSG", change))
-    else:
-        dated = str(data.get("ihsg_data_date") or "NOT AVAILABLE")
-        lines.append(_metric("🟡", "IHSG", f"NOT CURRENT ({dated})"))
-    lines.append(_metric("📈", "Breadth", _breadth_label(data)))
-    setup_items = _setup_items(data)
-    if setup_items:
-        dominant_setup = setup_items[0]
-        lines.append(_metric("🔥", "Dominant setup", f"{dominant_setup[0]} ({dominant_setup[1]})"))
-    else:
-        lines.append(_metric("🔥", "Dominant setup", "NOT AVAILABLE"))
-
-    lines += ["", "<b>SECTOR BIAS</b>"]
-    sector_items: list[str] = []
-    for key, label in (("leading", "LEADING"), ("rotating_in", "ROTATING IN"), ("weakening", "WEAKENING"), ("lagging", "LAGGING")):
-        values = data.get(key) if isinstance(data.get(key), (list, tuple)) else []
-        cleaned = [str(value).strip() for value in values if str(value).strip()]
-        if cleaned:
-            sector_items.append(f"{label}: {', '.join(cleaned[:4])}")
-    lines.extend(sector_items or ["🟡 Sector bias: <b>NOT AVAILABLE</b>"])
-
-    funnel = data.get("candidate_funnel") if isinstance(data.get("candidate_funnel"), Mapping) else {}
-    lines += ["", "<b>DATA QUALITY</b>"]
-    coverage = _coverage_pct(data.get("coverage")) or "NOT AVAILABLE"
-    lines.append(_metric("📦", "Coverage", coverage))
-    lines.append(_metric("🧪", "Technical", _current_section_status(data.get("technical_status"))))
-    technical_date = str(data.get("technical_data_date") or "NOT AVAILABLE")
-    lines.append(_metric("📅", "Technical date", technical_date))
-    if data.get("warnings"):
-        lines.append(f"⚠️ Warning: <b>{escape('; '.join(str(item) for item in data.get('warnings', [])[:2]))}</b>")
-
-    lines += ["", "<b>CANDIDATE FUNNEL — HEALTH CHECK</b>"]
-    lines.append(
-        "Technical {0} → Candidate {1} → Pass {2} → Ready {3} → Developing {4} → AVOID {5}".format(
-            _int_text(funnel.get("technical_rows")),
-            _int_text(funnel.get("candidate_rows")),
-            _int_text(funnel.get("pass_rows")),
-            _int_text(funnel.get("ready_rows")),
-            _int_text(funnel.get("developing_rows")),
-            _int_text(funnel.get("avoid_rows")),
-        )
-    )
-    lines.append("Candidate Funnel adalah health check, bukan Final Watchlist.")
-
-    lines += ["", "<b>FILTER DOMINAN</b>", escape(str(data.get("dominant_filter_reason") or "NOT AVAILABLE"))]
-    lines += ["", "<b>SCREENING RESULT</b>"]
-    lines.append(_metric("🎯", "Screening", _current_section_status(data.get("screening_result"))))
-    top = data.get("top_screening_watchlist") if isinstance(data.get("top_screening_watchlist"), (list, tuple)) else []
-    rendered_top = [_current_candidate_line(item, index) for index, item in enumerate(top[:5], 1) if isinstance(item, Mapping)]
-    rendered_top = [line for line in rendered_top if line]
-    if rendered_top:
-        lines += ["<b>POST MARKET TOP WATCHLIST (MAX 5)</b>", *rendered_top]
-    else:
-        lines.append("Post Market Top Watchlist: NOT AVAILABLE")
-    lines.append("Post Market Top Watchlist adalah health check, bukan Final Watchlist dan tidak membuat keputusan entry.")
-
-    lines += ["", "<b>PIPELINE STATUS</b>", _current_section_status(data.get("pipeline_status"))]
-    lines += ["", "<b>SOURCE STATUS</b>"]
-    source_status = data.get("source_status") if isinstance(data.get("source_status"), Mapping) else {}
-    for source, status in source_status.items():
-        lines.append(_metric("•", str(source), _current_section_status(status)))
-    if not source_status:
-        lines.append("🟡 Source status: <b>NOT AVAILABLE</b>")
-
-    lines += ["", "<b>NEXT PROCESS</b>", "Final Watchlist menentukan kandidat prioritas, broker PRIMARY, entry, SL, TP, dan keputusan final."]
-    if _present(data.get("run_id")):
-        lines += ["", f"<code>{escape(str(data['run_id']))}</code>"]
-    return _join(lines)
-
-
 def format_post_market(data: dict[str, Any]) -> str:
-    if str(data.get("post_market_report_version") or "").upper() == "CURRENT_V2":
-        return _format_current_post_market(data)
+    """Render the single stable compact Telegram Post Market contract."""
     bullish, neutral, bearish = _counts(data)
     bullish_pct, bearish_pct, directional = _directional_share(data)
     breadth_label = _breadth_label(data)
@@ -359,14 +236,11 @@ def format_post_market(data: dict[str, Any]) -> str:
     lines += [SEPARATOR, "", "<b>📊 MARKET PULSE</b>"]
 
     if directional > 0 and bullish_pct is not None and bearish_pct is not None:
-        lines.append(
-            f"🟢 BULLISH <b>{bullish_pct:.0f}%</b>  vs  🔴 BEARISH <b>{bearish_pct:.0f}%</b>"
-        )
+        lines.append(f"🟢 BULLISH <b>{bullish_pct:.0f}%</b>  vs  🔴 BEARISH <b>{bearish_pct:.0f}%</b>")
         bar = _pulse_bar(bullish_pct, bearish_pct)
         if bar:
             lines.append(bar)
-        if neutral > 0:
-            lines.append(f"🟡 Neutral: <b>{_int_text(neutral)} saham</b> — tidak dipaksa ke sisi bullish/bearish")
+        lines.append(f"🟡 Neutral : <b>{_int_text(neutral)} saham</b>")
     else:
         lines.append("🟡 Arah teknikal: <b>DATA BELUM CUKUP</b>")
 
@@ -375,73 +249,71 @@ def format_post_market(data: dict[str, Any]) -> str:
     if ihsg_status == "CURRENT SESSION" and ihsg_change:
         change = _number(data.get("ihsg_change")) or 0.0
         icon = "🟢" if change > 0 else "🔴" if change < 0 else "⚪"
-        lines.append(f"{icon} IHSG        : <b>{escape(ihsg_change)}</b>")
+        lines += ["", f"{icon} IHSG    : <b>{escape(ihsg_change)}</b>"]
     elif ihsg_change and not ihsg_status:
         change = _number(data.get("ihsg_change")) or 0.0
         icon = "🟢" if change > 0 else "🔴" if change < 0 else "⚪"
-        lines.append(f"{icon} IHSG        : <b>{escape(ihsg_change)}</b>")
+        lines += ["", f"{icon} IHSG    : <b>{escape(ihsg_change)}</b>"]
     else:
-        lines.append("🟡 IHSG        : <b>DATA SESI TERKINI TIDAK TERSEDIA</b>")
+        lines += ["", "🟡 IHSG    : <b>DATA SESI TERKINI TIDAK TERSEDIA</b>"]
+    lines.append(f"🧭 Market  : <b>{escape(market_label)}</b>")
+    lines.append(f"📊 Breadth : <b>{escape(breadth_label)}</b>")
 
-    lines.append(f"🧭 Market      : <b>{escape(market_label)}</b>")
-    lines.append(f"📊 Breadth     : <b>{escape(breadth_label)}</b>")
-    sector = _sector_line(data)
-    if sector:
-        lines.append(f"🔥 Sektor kuat : <b>{escape(sector)}</b>")
+    sectors = _sector_values(data)
+    if sectors:
+        lines += ["", "<b>🔥 Sektor kuat</b>"]
+        lines += [f"• {escape(sector)}" for sector in sectors]
 
     lines += [
         "",
         "<b>📈 TECHNICAL BREADTH</b>",
-        f"✅ Valid       : <b>{_int_text(data.get('symbols_valid'))} saham</b>",
+        f"✅ Valid   : <b>{_int_text(data.get('symbols_valid'))} saham</b>",
     ]
     if bullish + neutral + bearish > 0:
         lines += [
-            f"🟢 Bullish     : <b>{_int_text(bullish)}</b>",
-            f"🟡 Neutral     : <b>{_int_text(neutral)}</b>",
-            f"🔴 Bearish     : <b>{_int_text(bearish)}</b>",
+            f"🟢 Bullish : <b>{_int_text(bullish)}</b>",
+            f"🟡 Neutral : <b>{_int_text(neutral)}</b>",
+            f"🔴 Bearish : <b>{_int_text(bearish)}</b>",
         ]
 
     setups = _setup_items(data)
     if setups:
         lines += ["", "<b>🔥 SETUP DISTRIBUTION</b>"]
-        lines += [f"• {escape(label)}: <b>{count}</b>" for label, count in setups]
+        lines += [f"• {escape(label)} : <b>{count}</b>" for label, count in setups]
 
-    lines += ["", "<b>🧭 ARAHAN BESOK</b>", escape(_guidance(data))]
+    lines += ["", "<b>🧭 ARAHAN BESOK</b>", *_guidance(data)]
 
     broker_status = _upper(data.get("broker_status") or data.get("stockbit_status"))
     if broker_status:
-        lines += ["", "<b>🏦 BROKER STATUS</b>", _metric(_status_icon(broker_status), "Stockbit", broker_status)]
+        lines += [
+            "",
+            "<b>🏦 BROKER STATUS</b>",
+            f"{_status_icon(broker_status)} Stockbit : <b>{escape(broker_status)}</b>",
+        ]
         if "READY" in broker_status and "NOT READY" not in broker_status:
-            lines.append("Broker siap dipakai sebagai konfirmasi pada Final Watchlist.")
+            lines.append("Broker siap digunakan sebagai konfirmasi di Final Watchlist.")
         elif "WAIT" in broker_status:
             lines.append("Final Watchlist menunggu broker context yang dipilih sebelum keputusan final.")
 
-    issue_total, issue_notes = _issues(data)
-    coverage = _coverage_pct(data.get("coverage"))
-    impact = _upper(data.get("data_impact"))
     health: list[str] = []
+    coverage = _coverage_pct(data.get("coverage"))
     if coverage:
         coverage_number = _number(data.get("coverage")) or 0.0
         if 0 <= coverage_number <= 1:
             coverage_number *= 100.0
-        health.append(_metric("🟢" if coverage_number >= 90 else "🟡", "Coverage", coverage))
-    if issue_total:
-        health.append(_metric("⚠️", "Data issue", f"{issue_total} saham"))
-        health.append(escape(" • ".join(issue_notes)))
-    if impact:
-        health.append(_metric("🎯", "Impact", impact))
-    yahoo_status = _upper(data.get("historical_status") or data.get("yahoo_status"))
-    if yahoo_status:
-        health.append(_metric(_status_icon(yahoo_status), "Yahoo", yahoo_status))
+        health.append(f"{'🟢' if coverage_number >= 90 else '🟡'} Coverage  : <b>{escape(coverage)}</b>")
+
     technical_status = _upper(data.get("technical_status"))
     if technical_status:
-        health.append(_metric(_status_icon(technical_status), "Technical", technical_status))
-    candidate_status = _upper(data.get("candidate_status"))
-    if candidate_status:
-        health.append(_metric(_status_icon(candidate_status), "Screening", candidate_status))
-    if ihsg_status and ihsg_status != "CURRENT SESSION":
-        date_text = str(data.get("ihsg_data_date") or "tidak tersedia")
-        health.append(f"⚠️ IHSG session : <b>{escape(ihsg_status)}</b> ({escape(date_text)})")
+        health.append(f"{_status_icon(technical_status)} Technical : <b>{escape(technical_status)}</b>")
+
+    screening_status = _upper(data.get("screening_result") or data.get("candidate_status"))
+    if screening_status:
+        health.append(f"{_status_icon(screening_status)} Screening : <b>{escape(screening_status)}</b>")
+
+    technical_date = _full_date(data.get("technical_data_date"))
+    if technical_date:
+        health.append(f"📅 Data      : <b>{escape(technical_date)}</b>")
 
     if health:
         lines += ["", "<b>📦 SYSTEM HEALTH</b>", *health]
@@ -449,10 +321,14 @@ def format_post_market(data: dict[str, Any]) -> str:
     lines += [
         "",
         "<b>🎯 NEXT — FINAL WATCHLIST</b>",
-        "Final Watchlist akan menentukan kandidat prioritas, kesiapan entry, broker confirmation, Entry/SL/TP, serta alasan utama dan risiko.",
+        "Final Watchlist akan menentukan kandidat prioritas,",
+        "broker confirmation, Entry, SL, TP, serta keputusan final.",
         "",
-        "📌 Post Market menggambarkan kondisi pasar dan hasil screening. Keputusan trading final tetap menunggu Final Watchlist.",
+        "📌 Post Market hanya menggambarkan kondisi pasar setelah penutupan.",
+        "Keputusan trading tetap ditentukan pada Final Watchlist.",
     ]
+
     if _present(data.get("run_id")):
         lines += ["", f"<code>{escape(str(data['run_id']))}</code>"]
+
     return _join(lines)
