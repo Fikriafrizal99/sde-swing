@@ -54,6 +54,14 @@ if "!ROUTE_RC!"=="0" (
 )
 echo.
 
+echo [0/2] Sinkron metadata histori broker legacy...
+%SDE_PYTHON_CMD% -u modules\portfolio\repair_legacy_broker_backfill_provenance.py --db data\database\sde_swing_history.db
+set "BROKER_META_RC=!ERRORLEVEL!"
+if not "!BROKER_META_RC!"=="0" (
+  echo [WARNING] Repair metadata broker gagal. Analisis tetap dilanjutkan tanpa mengubah raw broker data.
+)
+
+echo.
 echo [1/2] Refresh data posisi OPEN...
 %SDE_PYTHON_CMD% -u modules\portfolio\refresh_open_positions.py --config config\pipeline.json --trade-date "!TRADE_DATE!"
 set "REFRESH_RC=!ERRORLEVEL!"
