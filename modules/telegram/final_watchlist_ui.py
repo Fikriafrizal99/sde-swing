@@ -432,21 +432,16 @@ def _interpretive_reason(row: Mapping[str, Any]) -> str:
                 f"Buy/Sell {pulse_buy}/{pulse_sell}; alignment {alignment}."
             )
 
-    text = " ".join(
-        part
-        for part in (
-            opening,
-            primary_text,
-            broker_text,
-            participant_text,
-            cost_text,
-            pulse_text,
-            action,
-        )
-        if part
-    )
-    text = re.sub(r"\s+", " ", text).strip()
-    return html.escape(text, quote=False)
+    blocks = [
+        opening,
+        " ".join(part for part in (primary_text, broker_text) if part),
+        participant_text,
+        cost_text,
+        pulse_text,
+        f"➡️ {action}" if action else "",
+    ]
+    blocks = [re.sub(r"\s+", " ", block).strip() for block in blocks if block]
+    return "\n\n".join(html.escape(block, quote=False) for block in blocks)
 
 
 def _technical_status(row: Mapping[str, Any]) -> str:
