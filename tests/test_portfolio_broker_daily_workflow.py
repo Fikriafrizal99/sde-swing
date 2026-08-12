@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from modules.database.swing_history_db import connect, init_schema
 from modules.portfolio.broker_portfolio_backfill import archive_backfill
-from modules.portfolio.portfolio_broker_daily import sync_tasks
+from modules.portfolio.portfolio_broker_daily import resolve_completed_broker_date, sync_tasks
 
 
 ROOT = Path(__file__).resolve().parents[1]
+JAKARTA = ZoneInfo("Asia/Jakarta")
 
 
 def _summary_row(symbol: str, day: str) -> dict:
@@ -119,6 +122,68 @@ def test_sync_clears_stale_tasks_after_history_complete_or_position_closed(tmp_p
     assert tasks == []
     assert meta["status"] == "NO_OPEN_POSITION"
     assert coverage == []
+    assert pd.read_csv(output).empty
+
+
+def test_midnight_next_calendar_day_does_not_create_missing_today():
+    target, meta = resolve_completed_broker_date(
+        calendar_path=ROOT / "config/trading_calendar.json",
+        scheduler_path=ROOT / "config/scheduler.json",
+        now=datetime(2026, 8, 13, 0, 28, tzinfo=JAKARTA),
+    )
+
+    assert target == "2026-08-12"
+    assert meta["target_reason"] == "TODAY_SESSION_NOT_COMPLETED"
+    assert meta["data_ready_time"] == "16:30"
+
+
+def test_today_becomes_eligible_only_after_post_market_cutoff():
+    before_target, _ = resolve_completed_broker_date(
+        calendar_path=ROOT / "config/trading_calendar.json",
+        scheduler_path=ROOT / "config/scheduler.json",
+        now=datetime(2026, 8, 13, 15, 0, tzinfo=JAKARTA),
+    )
+    after_target, meta = resolve_completed_broker_date(
+        calendar_path=ROOT / "config/trading_calendar.json",
+        scheduler_path=ROOT / "config/scheduler.json",
+        now=datetime(2026, 8, 13, 16, 31, tzinfo=JAKARTA),
+    )
+
+    assert before_target == "2026-08-12"
+    assert after_target == "2026-08-13"
+    assert meta["target_reason"] == "TODAY_SESSION_COMPLETED"
+
+
+def test_daily_sync_at_midnight_caps_tasks_at_previous_completed_session(tmp_path):
+    db = tmp_path / "history.db"
+    output = tmp_path / "tasks.csv"
+    archive_root = tmp_path / "archive"
+    conn = connect(db)
+    try:
+        _insert_open(conn, "TINS", "2026-08-11")
+        archive_backfill(
+            conn,
+            pd.DataFrame([
+                _summary_row("TINS", "2026-08-11"),
+                _summary_row("TINS", "2026-08-12"),
+            ]),
+            source_path=tmp_path / "complete.csv",
+            archive_root=archive_root,
+        )
+    finally:
+        conn.close()
+
+    tasks, meta, coverage = sync_tasks(
+        db_path=db,
+        calendar_path=ROOT / "config/trading_calendar.json",
+        scheduler_path=ROOT / "config/scheduler.json",
+        output_path=output,
+        now=datetime(2026, 8, 13, 0, 28, tzinfo=JAKARTA),
+    )
+
+    assert meta["to_date"] == "2026-08-12"
+    assert tasks == []
+    assert coverage[0]["missing"] == 0
     assert pd.read_csv(output).empty
 
 
