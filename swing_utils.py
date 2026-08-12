@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import re
 import uuid
 from datetime import date, datetime, time, timedelta
@@ -54,9 +55,45 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    ensure_dir(path.parent)
+    temp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    try:
+        with temp.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    finally:
+        if temp.exists():
+            temp.unlink()
+
+
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     ensure_dir(path.parent)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    body = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+
+    # FINAL_DECISION_V2 is a shared compatibility artifact. Never allow a
+    # delayed writer to publish a sidecar that describes different CSV bytes.
+    # Other JSON artifacts intentionally retain their existing write behavior;
+    # broader observability atomicity is outside Commit 2.
+    if path.name == "FINAL_DECISION_V2.manifest.json":
+        canonical_csv = path.parent / "FINAL_DECISION_V2.csv"
+        expected_hash = str(
+            payload.get("canonical_output_hash")
+            or payload.get("output_hash")
+            or ""
+        ).strip()
+        actual_hash = file_sha256(canonical_csv) if canonical_csv.exists() else ""
+        if expected_hash and actual_hash and expected_hash != actual_hash:
+            raise RuntimeError(
+                "STALE_FINAL_DECISION_V2_MANIFEST_WRITE_BLOCKED: "
+                f"expected {expected_hash}, canonical {actual_hash}"
+            )
+        _atomic_write_text(path, body)
+        return
+
+    path.write_text(body, encoding="utf-8")
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -229,4 +266,3 @@ def csv_latest_date(path: Path, *date_aliases: str) -> str:
     if parsed.dropna().empty:
         return ""
     return parsed.max().date().isoformat()
-

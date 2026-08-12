@@ -17,7 +17,7 @@
     "broker_summary_latest": "data/input/broker/BROKER_SUMMARY_LATEST.csv",
     "broker_summary_engine": "data/input/FINAL_DECISION_V2.csv",
     "broker_multiday_output_dir": "data/output/broker_multiday",
-    "broker_fusion": "modules/broker_fusion/broker_fusion.py",
+    "broker_fusion": "modules/broker_fusion/broker_fusion_publisher.py",
     "decision_source": "data/input/FINAL_DECISION_V2.csv",
     "decision_engine": "modules/decision_engine/decision_engine.py",
     "decision_output_dir": "data/output/decision",
