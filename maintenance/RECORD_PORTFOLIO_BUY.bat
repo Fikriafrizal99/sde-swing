@@ -11,12 +11,16 @@ if not defined SDE_PYTHON_CMD (
   exit /b 9009
 )
 
+set "BROKER_DAILY_PY=modules\portfolio\portfolio_broker_daily.py"
+set "BROKER_TASK_FILE=data\input\broker\BROKER_PORTFOLIO_BACKFILL_TASKS.csv"
+
 :MENU
 cls
 echo ================================================================
 echo          SDE - PORTFOLIO AKTUAL PENGGUNA
 echo ================================================================
 echo Source of truth: data\database\sde_swing_history.db
+echo Broker task otomatis disinkronkan setelah BUY / SELL / edit posisi.
 echo.
 echo [1] Catat BUY aktual
 echo [2] Catat SELL aktual
@@ -92,6 +96,7 @@ if defined PLAN_ARGS (
     echo [WARNING] BUY sudah tersimpan, tetapi initial TP/SL manual gagal. Exit code !PLAN_RC!.
   )
 )
+call :SYNC_BROKER_TASKS
 pause
 goto MENU
 
@@ -115,7 +120,12 @@ if defined SELL_DATE set "DATE_ARG=--sell-date !SELL_DATE!"
 %SDE_PYTHON_CMD% -u modules\analytics\outcome_tracker.py portfolio --db data\database\sde_swing_history.db record-sell --price "!PRICE!" !POSITION_ARG! !SYMBOL_ARG! !DATE_ARG!
 set "RC=!ERRORLEVEL!"
 echo.
-if "!RC!"=="0" (echo [OK] SELL aktual tersimpan.) else (echo [FAILED] SELL gagal. Exit code !RC!.)
+if "!RC!"=="0" (
+  echo [OK] SELL aktual tersimpan.
+  call :SYNC_BROKER_TASKS
+) else (
+  echo [FAILED] SELL gagal. Exit code !RC!.
+)
 pause
 goto MENU
 
@@ -193,6 +203,23 @@ if defined NOTES set EDIT_ARGS=!EDIT_ARGS! --notes "!NOTES!"
 %SDE_PYTHON_CMD% -u modules\portfolio\edit_position.py --db data\database\sde_swing_history.db !EDIT_ARGS!
 set "RC=!ERRORLEVEL!"
 echo.
-if "!RC!"=="0" (echo [OK] Edit posisi selesai.) else (echo [FAILED] Edit posisi gagal. Exit code !RC!.)
+if "!RC!"=="0" (
+  echo [OK] Edit posisi selesai.
+  call :SYNC_BROKER_TASKS
+) else (
+  echo [FAILED] Edit posisi gagal. Exit code !RC!.
+)
 pause
 goto MENU
+
+:SYNC_BROKER_TASKS
+echo.
+echo [SYNC] Menyesuaikan task broker dengan portfolio OPEN + database...
+%SDE_PYTHON_CMD% -u %BROKER_DAILY_PY% --output "%BROKER_TASK_FILE%" daily >nul 2>&1
+set "SYNC_RC=!ERRORLEVEL!"
+if "!SYNC_RC!"=="0" (
+  echo [OK] Task broker portfolio sudah sinkron.
+) else (
+  echo [WARNING] Portfolio tersimpan, tetapi sinkron task broker gagal. Jalankan menu Broker Portfolio - UPDATE HARIAN.
+)
+exit /b 0
