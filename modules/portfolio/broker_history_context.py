@@ -13,6 +13,8 @@ exists. A current broker signal with fewer than three observations is therefore
 kept as a warning and cannot by itself drive Position Management.
 """
 
+import hashlib
+import inspect
 import json
 import math
 import sqlite3
@@ -57,6 +59,22 @@ CREATE TABLE IF NOT EXISTS position_broker_context_history (
 );
 CREATE INDEX IF NOT EXISTS idx_position_broker_context_position_date
     ON position_broker_context_history(position_id, analysis_date);
+
+CREATE TABLE IF NOT EXISTS portfolio_broker_scored_daily (
+    broker_snapshot_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    broker_date TEXT NOT NULL,
+    scoring_version TEXT NOT NULL,
+    state TEXT NOT NULL,
+    score REAL,
+    confidence REAL,
+    direction_score REAL,
+    net_flow REAL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (broker_snapshot_id, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_portfolio_broker_scored_daily_date
+    ON portfolio_broker_scored_daily(symbol, broker_date);
 """
 
 _CANONICAL_ALIASES: dict[str, tuple[str, ...]] = {
@@ -240,21 +258,94 @@ def _canonicalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _score_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _broker_scoring_version() -> str:
+    """Fingerprint the exact scoring implementation used for a frozen daily row."""
+    try:
+        source = inspect.getsource(broker_score_frame)
+    except (OSError, TypeError):
+        return "broker_score_frame:unknown"
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
+    return f"broker_score_frame:{digest}"
+
+
+def _score_records(
+    conn: sqlite3.Connection,
+    records: list[dict[str, Any]],
+    symbol: str,
+) -> list[dict[str, Any]]:
+    """Use immutable portfolio scoring once a daily snapshot has been seen.
+
+    Existing raw Broker Summary rows remain untouched. On first portfolio use,
+    the current broker formula is applied once and persisted by snapshot+symbol.
+    Future formula revisions therefore cannot retroactively rewrite historical
+    1D direction/score/confidence used by an already captured portfolio day.
+    """
     if not records:
         return []
     payloads = [_canonicalize_payload(dict(record.get("payload") or {})) for record in records]
     scored = broker_score_frame(pd.DataFrame(payloads))
+    scoring_version = _broker_scoring_version()
     output: list[dict[str, Any]] = []
-    for record, (_, row) in zip(records, scored.iterrows()):
+    inserted = False
+
+    for record, payload, (_, row) in zip(records, payloads, scored.iterrows()):
+        snapshot_id = str(record.get("snapshot_id") or "")
+        cached = conn.execute(
+            """
+            SELECT scoring_version, state, score, confidence, direction_score, net_flow
+            FROM portfolio_broker_scored_daily
+            WHERE broker_snapshot_id=? AND symbol=?
+            """,
+            (snapshot_id, symbol),
+        ).fetchone()
+        if cached:
+            state = str(cached[1] or "NEUTRAL").upper()
+            score = _as_float(cached[2])
+            confidence = _as_float(cached[3])
+            direction_score = _as_float(cached[4])
+            net_flow = _as_float(cached[5]) or 0.0
+            frozen_version = str(cached[0] or "UNKNOWN")
+        else:
+            state = str(row.get("Broker_Direction", "NEUTRAL") or "NEUTRAL").upper()
+            score = _as_float(row.get("Broker_Score"))
+            confidence = _as_float(row.get("Broker_Confidence"))
+            direction_score = _as_float(row.get("Broker_Direction_Score"))
+            net_flow = _as_float(_payload_get(payload, "NET_FLOW")) or 0.0
+            frozen_version = scoring_version
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO portfolio_broker_scored_daily (
+                    broker_snapshot_id, symbol, broker_date, scoring_version,
+                    state, score, confidence, direction_score, net_flow, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot_id,
+                    symbol,
+                    str(record.get("broker_date") or "")[:10],
+                    frozen_version,
+                    state,
+                    score,
+                    confidence,
+                    direction_score,
+                    net_flow,
+                    datetime.now().astimezone().isoformat(timespec="seconds"),
+                ),
+            )
+            inserted = True
+
         output.append({
             **record,
-            "state": str(row.get("Broker_Direction", "NEUTRAL") or "NEUTRAL").upper(),
-            "score": _as_float(row.get("Broker_Score")),
-            "confidence": _as_float(row.get("Broker_Confidence")),
-            "direction_score": _as_float(row.get("Broker_Direction_Score")),
-            "net_flow": _as_float(row.get("NET_FLOW")) or 0.0,
+            "state": state,
+            "score": score,
+            "confidence": confidence,
+            "direction_score": direction_score,
+            "net_flow": net_flow,
+            "scoring_version": frozen_version,
         })
+
+    if inserted:
+        conn.commit()
     return output
 
 
@@ -367,7 +458,7 @@ def load_broker_history(
             "source": "STOCKBIT_1D",
             "payload": payload if isinstance(payload, dict) else {},
         }
-    return _score_records([by_date[key] for key in sorted(by_date)])
+    return _score_records(conn, [by_date[key] for key in sorted(by_date)], symbol)
 
 
 def _context_from_direction_score(value: float | None) -> str:
@@ -627,6 +718,7 @@ def build_position_broker_context(
         "current_score": current_for_pulse.get("score"),
         "current_confidence": current_for_pulse.get("confidence"),
         "current_net_flow": current_for_pulse.get("net_flow"),
+        "current_scoring_version": current_for_pulse.get("scoring_version", ""),
         "current_source": current_for_pulse.get("source", "STOCKBIT_1D") if current_for_pulse else "NOT_AVAILABLE",
         "current_snapshot_id": current_for_pulse.get("snapshot_id", "") if current_for_pulse else "",
         "effective_state": effective_state,

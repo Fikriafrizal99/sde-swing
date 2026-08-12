@@ -33,19 +33,26 @@ from modules.portfolio.manual_position_plan import apply_manual_plan_to_initial_
 from modules.portfolio.portfolio_report_interpreter import PortfolioGroqInterpreter
 
 
+def _compact_decimal(value: float, digits: int = 2) -> str:
+    text = f"{value:.{digits}f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
 def fmt_money(value: Any) -> str:
     number = base.as_float(value)
     if number is None:
         return "-"
     absolute = abs(number)
     sign = "+" if number > 0 else "-" if number < 0 else ""
-    if absolute >= 1_000_000_000_000:
-        return f"{sign}Rp{absolute / 1_000_000_000_000:.2f} T".replace(".", ",")
     if absolute >= 1_000_000_000:
-        return f"{sign}Rp{absolute / 1_000_000_000:.2f} M".replace(".", ",")
-    if absolute >= 1_000_000:
-        return f"{sign}Rp{absolute / 1_000_000:.2f} jt".replace(".", ",")
-    return f"{sign}Rp{absolute:,.0f}".replace(",", ".")
+        label = f"Rp{_compact_decimal(absolute / 1_000_000_000)}B"
+    elif absolute >= 1_000_000:
+        label = f"Rp{_compact_decimal(absolute / 1_000_000)}M"
+    elif absolute >= 1_000:
+        label = f"Rp{_compact_decimal(absolute / 1_000)}K"
+    else:
+        label = f"Rp{absolute:,.0f}".replace(",", ".")
+    return sign + label
 
 
 def _fallback_context_from_latest(broker_path: Path, symbol: str, analysis_date: str) -> dict[str, Any]:
@@ -76,6 +83,7 @@ def _fallback_context_from_latest(broker_path: Path, symbol: str, analysis_date:
         "current_score": latest.get("score") if pulse_available else None,
         "current_confidence": None,
         "current_net_flow": latest.get("net_flow") if pulse_available else None,
+        "current_scoring_version": "LATEST_ONLY_FALLBACK" if pulse_available else "",
         # Latest-only broker evidence is warning-only. It must not change the
         # deterministic management action without historical confirmation.
         "effective_state": "UNAVAILABLE" if state == "UNAVAILABLE" else "NEUTRAL",
@@ -252,6 +260,7 @@ def analyze_position(
         "broker_effective_state": broker_context.get("effective_state"),
         "broker_source": broker_context.get("current_source", "STOCKBIT_1D"),
         "broker_snapshot_id": broker_context.get("current_snapshot_id", ""),
+        "broker_scoring_version": broker_context.get("current_scoring_version", ""),
         "today_pulse_available": bool(broker_context.get("today_pulse_available")),
         "today_pulse_status": broker_context.get("today_pulse_status", "NOT_AVAILABLE"),
         "today_pulse_source": broker_context.get("today_pulse_source", "NOT_AVAILABLE"),
@@ -709,41 +718,143 @@ def _action_emoji(action: str) -> str:
     }.get(str(action or "").upper(), "⚪")
 
 
+def _compact_action(action: Any) -> str:
+    return {
+        "HOLD_STRONG": "HOLD+",
+        "HOLD": "HOLD",
+        "HOLD_AFTER_TP1": "HOLD TP1",
+        "HOLD_AFTER_TP2": "HOLD TP2",
+        "TIGHTEN_RISK": "TIGHTEN",
+        "PROTECT_PROFIT": "PROTECT",
+        "EXIT": "EXIT",
+        "REVIEW_DATA": "REVIEW",
+    }.get(str(action or "").upper(), str(action or "-").replace("_", " "))
+
+
+def _render_table(headers: list[str], rows: list[list[str]], *, left_columns: set[int] | None = None) -> str:
+    left_columns = left_columns or {0, len(headers) - 1}
+    normalized = [[str(cell) for cell in row] for row in rows]
+    widths = [len(header) for header in headers]
+    for row in normalized:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+
+    def render(row: list[str]) -> str:
+        cells: list[str] = []
+        for index, cell in enumerate(row):
+            cells.append(cell.ljust(widths[index]) if index in left_columns else cell.rjust(widths[index]))
+        return " ".join(cells).rstrip()
+
+    return "\n".join([render(headers), *(render(row) for row in normalized)])
+
+
+def _attention_priority(row: dict[str, Any]) -> tuple[int, str]:
+    action = str(row.get("management_action") or "").upper()
+    rank = {
+        "EXIT": 0,
+        "REVIEW_DATA": 1,
+        "PROTECT_PROFIT": 2,
+        "TIGHTEN_RISK": 3,
+        "HOLD_AFTER_TP2": 4,
+        "HOLD_AFTER_TP1": 5,
+    }.get(action, 99)
+    return rank, str(row.get("symbol") or "")
+
+
 def telegram_text(results: list[dict[str, Any]], analysis_date: str) -> str:
+    actions = [str(row.get("management_action") or "").upper() for row in results]
+    hold_count = sum(action in {"HOLD", "HOLD_STRONG", "HOLD_AFTER_TP1", "HOLD_AFTER_TP2"} for action in actions)
+    monitor_count = sum(action in {"TIGHTEN_RISK", "REVIEW_DATA"} for action in actions)
+    protect_count = actions.count("PROTECT_PROFIT")
+    exit_count = actions.count("EXIT")
+
+    table_rows: list[list[str]] = []
+    for row in results:
+        milestone_rank = base.MILESTONE_RANK.get(str(row.get("milestone") or "PRE_TARGET"), 0)
+        tp1 = base.fmt_price(row.get("initial_tp1")) + ("✓" if milestone_rank >= 1 and row.get("initial_tp1") else "")
+        tp2 = base.fmt_price(row.get("initial_tp2")) + ("✓" if milestone_rank >= 2 and row.get("initial_tp2") else "")
+        active_sl = row.get("active_stop_loss") if row.get("active_stop_loss") is not None else row.get("initial_stop_loss")
+        table_rows.append([
+            str(row.get("symbol") or "-").upper(),
+            base.fmt_price(row.get("buy_price")),
+            base.fmt_price(row.get("current_price")),
+            base.fmt_pct(row.get("pnl_pct")),
+            base.fmt_price(active_sl),
+            tp1,
+            tp2,
+            _compact_action(row.get("management_action")),
+        ])
+
     lines = [
         "📊 <b>SDE SWING — ACTIVE PORTFOLIO</b>",
-        f"🕒 {html.escape(analysis_date)}",
+        f"📅 {html.escape(analysis_date)}",
         "━━━━━━━━━━━━━━━━━━━",
+        "",
+        "<b>PORTFOLIO</b>",
+        f"Total : {len(results)} posisi",
+        f"🟢 Hold    : {hold_count}",
+        f"🟡 Monitor : {monitor_count}",
+        f"🟠 Protect : {protect_count}",
+        f"🔴 Exit    : {exit_count}",
     ]
-    for index, row in enumerate(results):
+    if table_rows:
+        lines.extend([
+            "",
+            "<pre>" + html.escape(_render_table(
+                ["EMT", "BUY", "NOW", "P/L", "ACTIVE SL", "TP1", "TP2", "ACTION"],
+                table_rows,
+            )) + "</pre>",
+        ])
+
+    attention_actions = {
+        "TIGHTEN_RISK",
+        "PROTECT_PROFIT",
+        "HOLD_AFTER_TP1",
+        "HOLD_AFTER_TP2",
+        "EXIT",
+        "REVIEW_DATA",
+    }
+    attention = sorted(
+        [row for row in results if str(row.get("management_action") or "").upper() in attention_actions],
+        key=_attention_priority,
+    )
+
+    lines.extend(["", "⚠️ <b>NEEDS ATTENTION</b>", "━━━━━━━━━━━━━━━━━━━"])
+    if not attention:
+        lines.append("✅ Tidak ada posisi yang membutuhkan tindakan khusus.")
+        return "\n".join(lines)
+
+    for index, row in enumerate(attention):
         if index:
-            lines.extend(["", "━━━━━━━━━━━━━━━━━━━"])
-        tp1_mark = " ✅" if base.MILESTONE_RANK.get(row["milestone"], 0) >= 1 and row.get("initial_tp1") else ""
-        tp2_mark = " ✅" if base.MILESTONE_RANK.get(row["milestone"], 0) >= 2 and row.get("initial_tp2") else ""
+            lines.append("")
         action = str(row.get("management_action") or "-").upper()
         action_label = action.replace("_", " ")
+        milestone_rank = base.MILESTONE_RANK.get(str(row.get("milestone") or "PRE_TARGET"), 0)
         active_sl = row.get("active_stop_loss") if row.get("active_stop_loss") is not None else row.get("initial_stop_loss")
-        lines.extend([
-            f"📌 <b>{html.escape(row['symbol'])}</b> | {base.fmt_price(row.get('current_price'))} | {base.fmt_pct(row.get('pnl_pct'))}",
-            f"{_action_emoji(action)} <b>{html.escape(action_label)}</b>",
-            "",
-            f"🎯 TP1 : {base.fmt_price(row.get('initial_tp1'))}{tp1_mark}",
-            f"🚀 TP2 : {base.fmt_price(row.get('initial_tp2'))}{tp2_mark}",
-            f"🛡️ SL  : {base.fmt_price(active_sl)}",
-        ])
+        detail_rows = [
+            ["Now", base.fmt_price(row.get("current_price"))],
+            ["P/L", base.fmt_pct(row.get("pnl_pct"))],
+            ["Active SL", base.fmt_price(active_sl)],
+            ["TP1", base.fmt_price(row.get("initial_tp1")) + (" ✓" if milestone_rank >= 1 and row.get("initial_tp1") else "")],
+            ["TP2", base.fmt_price(row.get("initial_tp2")) + (" ✓" if milestone_rank >= 2 and row.get("initial_tp2") else "")],
+        ]
         if row.get("extended_target") is not None:
-            lines.append(f"🎯 Extended : {base.fmt_price(row.get('extended_target'))}")
+            detail_rows.append(["Extended", base.fmt_price(row.get("extended_target"))])
+        detail_text = "\n".join(f"{label.ljust(9)} {value}" for label, value in detail_rows)
         lines.extend([
+            f"{_action_emoji(action)} <b>{html.escape(str(row.get('symbol') or '-').upper())} | {html.escape(action_label)}</b>",
+            "<pre>" + html.escape(detail_text) + "</pre>",
             "",
-            "🧠 <b>Reason:</b>",
+            "🧠 <b>REASON</b>",
             html.escape(str(row.get("interpretation_main_reason") or "-")),
         ])
         risk = str(row.get("interpretation_main_risk") or "").strip()
         if risk:
-            lines.extend(["⚠️ <b>Risk:</b>", html.escape(risk)])
+            lines.extend(["", "⚠️ <b>RISK</b>", html.escape(risk)])
         note = str(row.get("interpretation_execution_note") or "").strip()
         if note:
-            lines.extend(["➡️ <b>Action:</b>", html.escape(note)])
+            lines.extend(["", "➡️ <b>ACTION</b>", html.escape(note)])
+
     return "\n".join(lines)
 
 
@@ -866,6 +977,7 @@ def main() -> int:
                 "shared_technical_features",
                 "broker_summary_latest",
                 "broker_summary_history",
+                "portfolio_broker_scored_daily",
                 "position_broker_context_history",
             ),
             row_count=len(results),

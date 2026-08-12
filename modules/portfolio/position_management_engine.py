@@ -289,10 +289,29 @@ def technical_snapshot(historical_dir: Path, symbol: str, buy_date: str) -> dict
 
     features = features.sort_values("Date").reset_index(drop=True)
     latest = features.iloc[-1]
+    feature_dates = pd.to_datetime(features["Date"], errors="coerce").dt.normalize()
     buy_ts = pd.to_datetime(buy_date, errors="coerce")
-    since = features[pd.to_datetime(features["Date"], errors="coerce") >= buy_ts].copy() if pd.notna(buy_ts) else features.copy()
-    if since.empty:
-        since = features.tail(1).copy()
+    buy_day = buy_ts.normalize() if pd.notna(buy_ts) else pd.NaT
+
+    # Daily candles do not reveal whether the buy happened before or after the
+    # intraday High/Low on the BUY date.  Never use that day's High/Low to
+    # infer TP/SL events.  The BUY-date Close is safe as an end-of-session
+    # observation, while all later sessions may use their full High/Low range.
+    if pd.notna(buy_day):
+        later = features.loc[feature_dates > buy_day].copy()
+        buy_rows = features.loc[feature_dates == buy_day]
+        buy_close = as_float(buy_rows.iloc[-1].get("Close")) if not buy_rows.empty else None
+    else:
+        later = features.copy()
+        buy_close = None
+
+    event_highs = pd.to_numeric(later.get("High", pd.Series(dtype=float)), errors="coerce").dropna().tolist()
+    event_lows = pd.to_numeric(later.get("Low", pd.Series(dtype=float)), errors="coerce").dropna().tolist()
+    if buy_close is not None:
+        event_highs.append(buy_close)
+        event_lows.append(buy_close)
+    max_high_since_buy = max(event_highs) if event_highs else None
+    min_low_since_buy = min(event_lows) if event_lows else None
 
     current = as_float(latest.get("Close"))
     sma20 = as_float(latest.get("SMA_20"))
@@ -335,8 +354,9 @@ def technical_snapshot(historical_dir: Path, symbol: str, buy_date: str) -> dict
         "strong_bullish": strong_bullish,
         "bearish": bearish,
         "overextended": overextended,
-        "max_high_since_buy": as_float(pd.to_numeric(since["High"], errors="coerce").max()),
-        "min_low_since_buy": as_float(pd.to_numeric(since["Low"], errors="coerce").min()),
+        "max_high_since_buy": max_high_since_buy,
+        "min_low_since_buy": min_low_since_buy,
+        "buy_day_range_policy": "CLOSE_ONLY_ON_BUY_DATE",
     }
 
 
