@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from swing_utils import write_json as _durable_write_json
+from swing_utils import file_sha256, write_json as _durable_write_json
 
 from modules.market_data.market_outlook_regime import calculate_market_outlook_regime
 from modules.telegram.post_market_ui import format_post_market
@@ -83,6 +83,211 @@ def _artifact_trade_date(frame: pd.DataFrame, *aliases: str) -> str:
         return ""
     dates = {timestamp.date().isoformat() for timestamp in parsed}
     return next(iter(dates)) if len(dates) == 1 else ""
+
+
+def _broker_presentation_context(
+    ctx: RunnerContext,
+    manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Verify an existing broker summary for presentation, without producing it."""
+    manifest = manifest or {}
+    explicit_path = str(
+        manifest.get("Broker_Summary_Path")
+        or manifest.get("broker_summary_path")
+        or ""
+    ).strip()
+    if explicit_path:
+        candidate = Path(explicit_path)
+        broker_path = candidate if candidate.is_absolute() else resolve(candidate)
+    else:
+        broker_path = ctx.path(
+            "broker_summary_latest",
+            "data/input/broker/BROKER_SUMMARY_LATEST.csv",
+        )
+
+    result: dict[str, Any] = {
+        "broker_status": "NOT_READY",
+        "broker_artifact_available": False,
+        "broker_data_verified": False,
+        "broker_data_current": False,
+        "broker_data_date": "",
+        "broker_artifact_path": str(broker_path),
+        "broker_upstream_status": "UNAVAILABLE",
+        "broker_readiness_reason": "FILE_NOT_FOUND",
+    }
+    try:
+        artifact_exists = broker_path.exists()
+        artifact_size = broker_path.stat().st_size if artifact_exists else 0
+    except OSError as exc:
+        result.update({
+            "broker_upstream_status": "ARTIFACT_ACCESS_FAILED",
+            "broker_readiness_reason": f"ARTIFACT_ACCESS_FAILED:{type(exc).__name__}",
+        })
+        return result
+    if not artifact_exists or artifact_size <= 0:
+        return result
+
+    result["broker_artifact_available"] = True
+    try:
+        frame = pd.read_csv(broker_path, low_memory=False)
+    except Exception as exc:
+        result.update({
+            "broker_upstream_status": "PARSE_FAILED",
+            "broker_readiness_reason": f"PARSE_FAILED:{type(exc).__name__}",
+        })
+        return result
+    if frame.empty:
+        result.update({
+            "broker_upstream_status": "EMPTY_DATA",
+            "broker_readiness_reason": "EMPTY_DATA",
+        })
+        return result
+
+    symbol_col = _column(frame, "EMITEN", "Symbol", "Ticker")
+    date_col = _column(frame, "TO_DATE", "TO_DATE_BROKER", "Broker_Data_Date", "Trade_Date")
+    buy_col = _column(frame, "TOTAL_BUY", "Total_Buy")
+    sell_col = _column(frame, "TOTAL_SELL", "Total_Sell")
+    missing = [
+        label for label, column in (
+            ("SYMBOL", symbol_col),
+            ("DATE", date_col),
+            ("TOTAL_BUY", buy_col),
+            ("TOTAL_SELL", sell_col),
+        ) if column is None
+    ]
+    if missing:
+        result.update({
+            "broker_upstream_status": "SCHEMA_INVALID",
+            "broker_readiness_reason": f"SCHEMA_INVALID:{','.join(missing)}",
+        })
+        return result
+    assert symbol_col and date_col and buy_col and sell_col
+
+    symbols = frame[symbol_col].dropna().astype(str).str.strip()
+    parsed_dates = pd.to_datetime(frame[date_col], errors="coerce")
+    buy_values = pd.to_numeric(frame[buy_col], errors="coerce")
+    sell_values = pd.to_numeric(frame[sell_col], errors="coerce")
+    if symbols.empty or (symbols == "").any() or parsed_dates.isna().any():
+        result.update({
+            "broker_upstream_status": "CONTENT_INVALID",
+            "broker_readiness_reason": "CONTENT_INVALID:SYMBOL_OR_DATE",
+        })
+        return result
+    if buy_values.isna().any() or sell_values.isna().any():
+        result.update({
+            "broker_upstream_status": "INVALID_NUMERIC_DATA",
+            "broker_readiness_reason": "INVALID_NUMERIC_DATA",
+        })
+        return result
+
+    csv_dates = {value.date().isoformat() for value in parsed_dates}
+    if len(csv_dates) != 1:
+        result.update({
+            "broker_upstream_status": "DATE_CONFLICT",
+            "broker_readiness_reason": "DATE_CONFLICT",
+        })
+        return result
+    csv_date = next(iter(csv_dates))
+
+    sidecar_path = broker_path.with_suffix(".manifest.json")
+    sidecar_exists = sidecar_path.exists()
+    sidecar = read_json(sidecar_path)
+    if sidecar_exists and not sidecar:
+        result.update({
+            "broker_upstream_status": "LINEAGE_INVALID",
+            "broker_readiness_reason": "LINEAGE_INVALID:SIDECAR_UNREADABLE",
+        })
+        return result
+    status_keys = (
+        "status", "Status", "Data_Quality_Status", "data_quality_status",
+        "freshness_status", "broker_freshness_status",
+    )
+    statuses = [
+        str(sidecar.get(key)).strip().upper().replace("_", " ")
+        for key in status_keys
+        if str(sidecar.get(key) or "").strip()
+    ]
+    status_text = " | ".join(dict.fromkeys(statuses)) or "ARTIFACT_VALIDATED"
+    result["broker_upstream_status"] = status_text
+
+    failure_tokens = (
+        "FAILED", "ERROR", "INVALID", "FILE NOT FOUND", "EMPTY DATA",
+        "PARSE FAILED", "SCHEMA INVALID", "BLOCKED", "UNAVAILABLE",
+        "NOT AVAILABLE",
+    )
+    if any(token in status for status in statuses for token in failure_tokens):
+        result["broker_readiness_reason"] = f"UPSTREAM_FAILED:{status_text}"
+        return result
+
+    manifest_date_keys = (
+        "broker_date", "to_date", "broker_period_end", "trade_date", "Trade_Date",
+    )
+    manifest_dates: set[str] = set()
+    for key in manifest_date_keys:
+        raw = sidecar.get(key)
+        if raw in (None, ""):
+            continue
+        parsed = pd.to_datetime(raw, errors="coerce")
+        if pd.isna(parsed):
+            result.update({
+                "broker_upstream_status": "LINEAGE_INVALID",
+                "broker_readiness_reason": f"LINEAGE_INVALID:{key}",
+            })
+            return result
+        manifest_dates.add(parsed.date().isoformat())
+    if len(manifest_dates) > 1:
+        result.update({
+            "broker_upstream_status": "LINEAGE_DATE_CONFLICT",
+            "broker_readiness_reason": "LINEAGE_DATE_CONFLICT",
+        })
+        return result
+    manifest_date = next(iter(manifest_dates)) if manifest_dates else ""
+    if manifest_date and manifest_date != csv_date:
+        result.update({
+            "broker_upstream_status": "LINEAGE_DATE_CONFLICT",
+            "broker_readiness_reason": "CSV_MANIFEST_DATE_MISMATCH",
+        })
+        return result
+
+    expected_hash = str(
+        sidecar.get("summary_hash")
+        or sidecar.get("summary_source_hash")
+        or sidecar.get("source_hash")
+        or ""
+    ).strip().lower()
+    try:
+        actual_hash = file_sha256(broker_path)
+    except OSError as exc:
+        result.update({
+            "broker_upstream_status": "HASH_READ_FAILED",
+            "broker_readiness_reason": f"HASH_READ_FAILED:{type(exc).__name__}",
+        })
+        return result
+    if expected_hash and expected_hash != actual_hash:
+        result.update({
+            "broker_upstream_status": "HASH_MISMATCH",
+            "broker_readiness_reason": "HASH_MISMATCH",
+        })
+        return result
+
+    data_date = manifest_date or csv_date
+    result["broker_data_date"] = data_date
+    stale_tokens = ("STALE", "NOT CURRENT", "DATE MISMATCH")
+    stale_status = any(token in status for status in statuses for token in stale_tokens)
+    if stale_status or data_date != ctx.trade_date.isoformat():
+        result.update({
+            "broker_status": "WAITING",
+            "broker_readiness_reason": "BROKER_DATA_NOT_CURRENT",
+        })
+        return result
+
+    result.update({
+        "broker_status": "READY",
+        "broker_data_verified": True,
+        "broker_data_current": True,
+        "broker_readiness_reason": "CURRENT_USABLE_BROKER_ARTIFACT",
+    })
+    return result
 
 
 def _trend_bucket(value: Any) -> str:
@@ -562,12 +767,7 @@ def _render_data(ctx: RunnerContext, manifest: dict[str, Any], payload: Any, pul
         or pulse.get("calculated_at")
         or now_wib().isoformat(timespec="seconds")
     )
-    candidate_count = int(
-        manifest.get("Candidate_Count", manifest.get("candidate_count", 0))
-        or (pulse.get("candidate_funnel") or {}).get("candidate_rows", 0)
-        or 0
-    )
-    broker_ready = bool(manifest.get("Broker_Navigator_Path") or manifest.get("broker_navigator_path"))
+    broker_context = _broker_presentation_context(ctx, manifest)
     technical_current = str(pulse.get("technical_data_date") or "") == ctx.trade_date.isoformat()
     candidate_current = bool(pulse.get("candidate_ranking_current")) and str(
         pulse.get("candidate_data_date") or ""
@@ -594,7 +794,7 @@ def _render_data(ctx: RunnerContext, manifest: dict[str, Any], payload: Any, pul
         "data_impact": "TIDAK MATERIAL" if coverage >= 90 else "MATERIAL",
         "technical_status": "READY" if valid > 0 and technical_current else "NOT CURRENT",
         "candidate_status": screening_result if candidate_current else "NOT CURRENT",
-        "broker_status": "READY" if broker_ready else "WAITING",
+        **broker_context,
         "historical_status": "VALID" if valid > 0 else "FAILED",
         "pipeline_status": "READY_FOR_FINAL_WATCHLIST" if valid > 0 else "BLOCKED_DATA",
         "source_status": {
@@ -602,7 +802,7 @@ def _render_data(ctx: RunnerContext, manifest: dict[str, Any], payload: Any, pul
             "TECHNICAL": "CURRENT" if str(pulse.get("technical_data_date") or "") == ctx.trade_date.isoformat() else "NOT_CURRENT",
             "BREADTH": pulse.get("breadth_status", "NOT_AVAILABLE"),
             "CANDIDATE_RANKING": "AVAILABLE" if int((pulse.get("candidate_funnel") or {}).get("candidate_rows", 0) or 0) > 0 else "NOT_AVAILABLE",
-            "BROKER": "READY" if broker_ready else "WAITING",
+            "BROKER": broker_context["broker_status"],
         },
         "data_note": " • ".join(
             text for text in (

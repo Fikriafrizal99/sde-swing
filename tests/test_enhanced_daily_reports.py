@@ -281,7 +281,7 @@ def test_post_market_matches_final_agreed_sections_and_counts(tmp_path: Path) ->
     positions = [text.index(section) for section in ordered_sections]
     assert positions == sorted(positions)
     assert "🕒 18:37 WIB" in text
-    assert "Buy 80% · Neutral 11% · Sell 9%" in text
+    assert "Bullish 80% · Neutral 11% · Bearish 9%" in text
     assert "🟢 IHSG    : +1,69%" in text
     assert "🧭 Market  : RISK-ON" in text
     assert "📊 Breadth : BULLISH DOMINANT" in text

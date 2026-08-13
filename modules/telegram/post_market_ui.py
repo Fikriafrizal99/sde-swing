@@ -142,7 +142,10 @@ def _percentages(data: Mapping[str, Any]) -> tuple[int, int, int] | None:
 
 def _technical_current(data: Mapping[str, Any]) -> bool:
     status = _upper(data.get("breadth_status"))
-    if status in {"NOT CURRENT", "STALE", "UNAVAILABLE", "FAILED"}:
+    if status in {
+        "NOT CURRENT", "STALE", "UNAVAILABLE", "NOT AVAILABLE",
+        "NOT READY", "FAILED", "INVALID", "ERROR",
+    }:
         return False
     trade_date = _iso_date(data.get("trade_date"))
     technical_date = _iso_date(data.get("technical_data_date"))
@@ -164,7 +167,10 @@ def _ihsg_current(data: Mapping[str, Any]) -> bool:
 
 def _candidate_current(data: Mapping[str, Any]) -> bool:
     status = _upper(data.get("candidate_status"))
-    if status in {"NOT CURRENT", "STALE", "UNAVAILABLE", "FAILED"}:
+    if status in {
+        "NOT CURRENT", "STALE", "UNAVAILABLE", "NOT AVAILABLE",
+        "NOT READY", "FAILED", "INVALID", "ERROR",
+    }:
         return False
     trade_date = _iso_date(data.get("trade_date"))
     candidate_date = _iso_date(
@@ -175,6 +181,54 @@ def _candidate_current(data: Mapping[str, Any]) -> bool:
     return (not trade_date and not candidate_date) or (
         bool(trade_date and candidate_date) and trade_date == candidate_date
     )
+
+
+def _true_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "ready", "current", "valid"}
+
+
+def _broker_presentation_status(data: Mapping[str, Any]) -> str:
+    """Return a fail-closed presentation status for current broker data."""
+    declared = _upper(data.get("broker_status") or data.get("stockbit_status"))
+    upstream = _upper(
+        data.get("broker_upstream_status")
+        or data.get("broker_data_status")
+        or data.get("broker_freshness_status")
+    )
+    reason = _upper(data.get("broker_readiness_reason"))
+    combined = " ".join(value for value in (declared, upstream, reason) if value)
+
+    failure_tokens = (
+        "FAILED", "ERROR", "INVALID", "FILE NOT FOUND", "EMPTY DATA",
+        "PARSE FAILED", "SCHEMA INVALID", "UNAVAILABLE", "BLOCKED",
+        "NOT AVAILABLE", "NOT READY",
+    )
+    if any(token in combined for token in failure_tokens):
+        return "NOT READY"
+
+    available = _true_flag(data.get("broker_artifact_available"))
+    verified = _true_flag(data.get("broker_data_verified"))
+    current = _true_flag(data.get("broker_data_current"))
+    if not available:
+        return "NOT READY"
+
+    stale_tokens = ("STALE", "NOT CURRENT", "DATE MISMATCH", "FILE WRITING")
+    if any(token in combined for token in stale_tokens):
+        return "WAITING"
+
+    trade_date = _iso_date(data.get("trade_date"))
+    broker_date = _iso_date(
+        data.get("broker_data_date")
+        or data.get("broker_date")
+        or data.get("broker_trade_date")
+    )
+    if trade_date and (not broker_date or broker_date != trade_date):
+        return "WAITING"
+    if not verified or not current or declared != "READY":
+        return "WAITING"
+    return "READY"
 
 
 def _sector_payload(data: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -218,8 +272,13 @@ def _market_label(data: Mapping[str, Any]) -> str:
     if breadth in {"DATA NOT CURRENT", "INSUFFICIENT DATA"}:
         return "SELECTIVE"
 
+    # Market regime and IHSG direction share the IHSG session lineage.  A
+    # stale/missing IHSG session must not be reused to present RISK-ON/OFF.
+    if not _ihsg_current(data):
+        return "SELECTIVE"
+
     regime = _upper(data.get("market_regime"))
-    ihsg = _number(data.get("ihsg_change")) if _ihsg_current(data) else None
+    ihsg = _number(data.get("ihsg_change"))
     explicit = regime.replace("-", " ")
     if explicit in {"RISK ON", "RISK OFF", "SELECTIVE"}:
         if explicit == "RISK ON" and breadth == "BULLISH DOMINANT":
@@ -280,53 +339,60 @@ def _status_icon(value: Any) -> str:
     return "🟡"
 
 
+def _market_breadth_sentence(data: Mapping[str, Any]) -> str:
+    """Describe IHSG direction and the already-classified breadth fact."""
+    breadth = _breadth_label(data)
+    ihsg = _number(data.get("ihsg_change")) if _ihsg_current(data) else None
+
+    if breadth == "DATA NOT CURRENT":
+        return "Data technical breadth sesi berjalan belum tersedia."
+    if breadth == "INSUFFICIENT DATA":
+        return "Breadth sesi berjalan belum cukup untuk menyimpulkan kondisi pasar."
+
+    if ihsg is None:
+        if breadth == "BULLISH DOMINANT":
+            return "Breadth sesi berjalan didominasi saham bullish; data IHSG current belum tersedia."
+        if breadth == "BEARISH DOMINANT":
+            return "Breadth sesi berjalan didominasi saham bearish; data IHSG current belum tersedia."
+        if breadth == "NEUTRAL DOMINANT":
+            return "Breadth sesi berjalan cenderung netral; data IHSG current belum tersedia."
+        return "Breadth sesi berjalan menunjukkan kondisi campuran; data IHSG current belum tersedia."
+
+    direction = "menguat" if ihsg > 0 else "melemah" if ihsg < 0 else "datar"
+    subject = "Pasar" if ihsg != 0 else "IHSG"
+    if breadth == "BULLISH DOMINANT":
+        if ihsg < 0:
+            return "Pasar ditutup melemah, namun breadth masih didominasi saham bullish."
+        return f"{subject} ditutup {direction} dengan breadth didominasi saham bullish."
+    if breadth == "BEARISH DOMINANT":
+        if ihsg > 0:
+            return "IHSG ditutup menguat, namun breadth pasar masih didominasi saham bearish."
+        return f"{subject} ditutup {direction} dengan breadth didominasi saham bearish."
+    if breadth == "NEUTRAL DOMINANT":
+        return f"{subject} ditutup {direction} dengan breadth cenderung netral."
+    return f"{subject} ditutup {direction} dengan breadth campuran."
+
+
 def _guidance(data: Mapping[str, Any], setups: list[tuple[str, int]], broker: str) -> list[str]:
     breadth = _breadth_label(data)
     market = _market_label(data)
-    ihsg = _number(data.get("ihsg_change")) if _ihsg_current(data) else None
-    broker_ready = broker == "READY"
+    lines = [_market_breadth_sentence(data)]
 
-    if ihsg is not None and ihsg < 0 and breadth == "BEARISH DOMINANT":
-        return [
-            "Pasar ditutup melemah dengan breadth didominasi saham bearish.",
+    if market == "RISK-OFF" or breadth == "BEARISH DOMINANT":
+        lines.extend([
             "Prioritaskan proteksi modal dan batasi kandidat pada setup",
-            "dengan technical quality dan broker confirmation terbaik.",
-        ]
-    if ihsg is not None and ihsg > 0 and breadth == "BULLISH DOMINANT":
-        return [
-            "Pasar ditutup menguat dengan breadth didominasi saham bullish.",
-            "Fokus pada setup matang yang masih berada di area entry",
-            "dan mendapat broker confirmation yang mendukung.",
-        ]
-    if ihsg is not None and ihsg < 0:
-        lines = [
-            "Pasar ditutup melemah dengan breadth cenderung netral.",
-            "Fokus pada saham dengan setup matang, technical score tinggi,",
-            "dan broker confirmation yang mendukung." if broker_ready else "dan tunggu broker confirmation yang mendukung.",
-        ]
-    elif ihsg is not None and ihsg > 0:
-        lines = [
-            "Pasar ditutup menguat dengan breadth cenderung selektif.",
-            "Fokus pada saham dengan setup matang yang masih berada di area entry",
-            "dan broker confirmation yang mendukung." if broker_ready else "dan tunggu broker confirmation yang mendukung.",
-        ]
-    elif market == "RISK-OFF" or breadth == "BEARISH DOMINANT":
-        lines = [
-            "Pasar berada dalam kondisi defensif dengan breadth bearish.",
-            "Prioritaskan proteksi modal dan batasi kandidat pada setup",
-            "dengan technical quality dan broker confirmation terbaik.",
-        ]
+            "dengan technical quality terbaik dan konfirmasi yang lengkap.",
+        ])
     elif market == "RISK-ON" or breadth == "BULLISH DOMINANT":
-        lines = [
-            "Pasar berada dalam kondisi positif dengan breadth bullish.",
+        lines.extend([
             "Fokus pada setup matang yang masih berada di area entry",
-            "dan mendapat broker confirmation yang mendukung.",
-        ]
+            "dan memiliki konfirmasi yang lengkap.",
+        ])
     else:
-        lines = [
-            "Pasar berada dalam kondisi selektif dengan breadth campuran.",
-            "Fokus pada saham dengan setup matang dan konfirmasi yang lengkap.",
-        ]
+        lines.append("Fokus pada saham dengan setup matang dan konfirmasi yang lengkap.")
+
+    if broker != "READY":
+        lines.append("Tunggu data broker sesi berjalan sebelum menggunakannya sebagai konfirmasi.")
 
     if not setups:
         lines.append("Setup current belum tersedia untuk sesi ini.")
@@ -351,6 +417,8 @@ def _health_lines(data: Mapping[str, Any], trade_date: str) -> list[str]:
         technical_status = "UNAVAILABLE"
 
     screening_status = _upper(data.get("screening_result") or data.get("candidate_status"))
+    if not _candidate_current(data):
+        screening_status = "NOT CURRENT"
     if not screening_status:
         screening_status = "WAITING"
 
@@ -387,7 +455,7 @@ def format_post_market(data: dict[str, Any]) -> str:
     market = _market_label(data)
     sectors = _sector_values(data)
     setups = _setup_items(data)
-    broker = _upper(data.get("broker_status") or data.get("stockbit_status")) or "WAITING"
+    broker = _broker_presentation_status(data)
 
     lines = [
         "🌆 SDE SWING — POST MARKET",
@@ -401,9 +469,9 @@ def format_post_market(data: dict[str, Any]) -> str:
     if percentages is None:
         lines.append("Data technical sesi berjalan tidak tersedia.")
     else:
-        buy, neutral, sell = percentages
+        bullish, neutral, bearish = percentages
         lines.append(_pulse_bar(data))
-        lines.append(f"Buy {buy}% · Neutral {neutral}% · Sell {sell}%")
+        lines.append(f"Bullish {bullish}% · Neutral {neutral}% · Bearish {bearish}%")
     lines += [_ihsg_line(data), f"🧭 Market  : {market}", f"📊 Breadth : {breadth}"]
 
     lines += ["", "🔥 Sektor kuat"]
@@ -438,10 +506,10 @@ def format_post_market(data: dict[str, Any]) -> str:
     ]
     if broker == "READY":
         lines.append("Broker siap digunakan sebagai konfirmasi di Final Watchlist.")
-    elif broker in {"WAITING", "NOT AVAILABLE", "UNAVAILABLE"}:
-        lines.append("Broker belum siap digunakan sebagai konfirmasi di Final Watchlist.")
+    elif broker == "WAITING":
+        lines.append("Data broker belum terverifikasi untuk sesi berjalan.")
     else:
-        lines.append("Status broker mengikuti artifact runtime yang tersedia.")
+        lines.append("Data broker belum tersedia untuk konfirmasi.")
 
     lines += ["", "📦 SYSTEM HEALTH", *_health_lines(data, trade_date)]
     lines += [
