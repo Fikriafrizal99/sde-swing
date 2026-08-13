@@ -7,12 +7,13 @@ import subprocess
 import sys
 import time
 from datetime import date, datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from swing_utils import file_sha256, find_col, read_json as read_json_safely, write_json
+from swing_utils import atomic_csv, file_sha256, find_col, read_json as read_json_safely, write_json
 from modules.data_sources.config import load_data_source_config
 from modules.market_data.zapi_enrichment import ZapiEnrichmentService
 
@@ -1101,6 +1102,20 @@ def run_broker_fusion_from_snapshot(
     canonical_raw_hash = file_sha256(broker_raw)
 
     def fusion_matches_period(candidate: dict[str, Any]) -> bool:
+        canonical_hash = file_sha256(decision_source)
+        published_hash = str(
+            candidate.get("canonical_output_hash")
+            or candidate.get("output_hash")
+            or ""
+        )
+        if (
+            str(candidate.get("publication_status", "")) != "PUBLISHED_ATOMIC"
+            or str(candidate.get("artifact_integrity_version", ""))
+            != "V2_SERIALIZED_ATOMIC_V1"
+            or not canonical_hash
+            or published_hash != canonical_hash
+        ):
+            return False
         if str(candidate.get("broker_date", "")) != ctx.trade_date.isoformat():
             return False
         if not period_sidecar_active:
@@ -1178,7 +1193,7 @@ def run_broker_fusion_from_snapshot(
     command = [
         sys.executable,
         "-u",
-        str(resolve(paths.get("broker_fusion", "modules/broker_fusion/broker_fusion.py"))),
+        str(resolve(paths.get("broker_fusion", "modules/broker_fusion/broker_fusion_publisher.py"))),
         str(candidate),
         str(broker_summary),
         "--output",
@@ -1204,7 +1219,7 @@ def run_broker_fusion_from_snapshot(
     if broker_date != ctx.trade_date.isoformat():
         raise RuntimeError(f"BROKER_DATE_MISMATCH: {broker_date} != {ctx.trade_date.isoformat()}")
     if period_sidecar_active:
-        fusion_manifest.update({
+        expected_period_lineage = {
             "broker_period_snapshot_id": period_sidecar.get("snapshot_id") or period_sidecar.get("broker_snapshot_id", ""),
             "broker_period_type": period_sidecar.get("broker_period_type", ""),
             "broker_period_start": period_sidecar.get("broker_period_start", ""),
@@ -1212,9 +1227,17 @@ def run_broker_fusion_from_snapshot(
             "broker_period_source": period_sidecar.get("broker_period_source", ""),
             "broker_period_summary_hash": period_sidecar.get("summary_snapshot_hash") or period_sidecar.get("summary_source_hash", ""),
             "broker_period_raw_snapshot_hash": period_sidecar.get("raw_snapshot_hash") or period_sidecar.get("raw_source_hash", ""),
-        })
-        write_json(fusion_manifest_path, fusion_manifest)
-        write_json(decision_source.with_suffix(".manifest.json"), fusion_manifest)
+        }
+        mismatched_lineage = {
+            key: {"expected": value, "actual": fusion_manifest.get(key)}
+            for key, value in expected_period_lineage.items()
+            if str(fusion_manifest.get(key, "")) != str(value or "")
+        }
+        if mismatched_lineage:
+            raise RuntimeError(
+                "BROKER_FUSION_PERIOD_LINEAGE_MISMATCH: "
+                + json.dumps(mismatched_lineage, ensure_ascii=False, default=str)
+            )
     return {
         "candidate": candidate,
         "decision_source": decision_source,
@@ -1478,6 +1501,132 @@ def run_broker_multiday_stage(ctx: RunnerContext) -> dict[str, Any]:
     }
 
 
+def _read_canonical_v2_frame(
+    canonical_path: Path,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Read a hash-consistent publisher generation without locking the writer."""
+
+    from modules.broker_fusion.broker_fusion_publisher import (
+        read_published_v2_snapshot,
+    )
+
+    payload, publication_manifest = read_published_v2_snapshot(canonical_path)
+    try:
+        frame = pd.read_csv(BytesIO(payload), low_memory=False)
+    except Exception as exc:
+        raise RuntimeError(
+            f"FINAL_DECISION_V2_PUBLISHED_CONTENT_INVALID:{canonical_path}"
+        ) from exc
+    if frame.empty:
+        raise RuntimeError(f"FINAL_DECISION_V2_PUBLISHED_CONTENT_EMPTY:{canonical_path}")
+    return frame, publication_manifest
+
+
+def _publish_derived_v2_context(
+    ctx: RunnerContext,
+    *,
+    frame: pd.DataFrame,
+    canonical_path: Path,
+    canonical_manifest: dict[str, Any],
+    bridge_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Publish a run-scoped decision input while leaving canonical V2 immutable."""
+
+    paths = ctx.config.get("paths", {})
+    artifact_root = resolve(
+        paths.get("broker_fusion_artifact_root", "data/output/fusion")
+    )
+    derived_output = artifact_root / ctx.run_id / "FINAL_DECISION_V2_CONTEXT.csv"
+    atomic_csv(frame, derived_output, encoding="utf-8-sig")
+    derived_hash = file_sha256(derived_output)
+    if not derived_hash:
+        raise RuntimeError(f"DERIVED_FINAL_DECISION_V2_HASH_UNAVAILABLE:{derived_output}")
+
+    canonical_hash = str(
+        canonical_manifest.get("canonical_output_hash")
+        or canonical_manifest.get("output_hash")
+        or ""
+    )
+    derived_manifest_path = derived_output.with_suffix(".manifest.json")
+    derived_manifest = {
+        "schema_version": 1,
+        "artifact_contract": "SDE_V2_DERIVED_CONTEXT_V1",
+        "artifact_role": "DERIVED_DECISION_INPUT",
+        "Run_ID": ctx.run_id,
+        "output": str(derived_output.resolve()),
+        "output_hash": derived_hash,
+        "publication_status": "PUBLISHED_ATOMIC",
+        "artifact_integrity_version": "V2_DERIVED_CONTEXT_ATOMIC_V1",
+        "canonical_owner": "modules/broker_fusion/broker_fusion_publisher.py",
+        "canonical_source": str(canonical_path.resolve()),
+        "canonical_source_hash": canonical_hash,
+        "canonical_source_run_id": canonical_manifest.get("Run_ID", ""),
+        "canonical_source_published_at": canonical_manifest.get("published_at", ""),
+        "multi_day_context_bridge": bridge_metadata,
+    }
+    write_json(derived_manifest_path, derived_manifest)
+    return {
+        "decision_input_path": str(derived_output),
+        "derived_artifact": str(derived_output),
+        "derived_manifest_path": str(derived_manifest_path),
+        "derived_output_hash": derived_hash,
+        "canonical_fusion_path": str(canonical_path),
+        "canonical_output_hash": canonical_hash,
+    }
+
+
+def _prepare_context_free_decision_input(
+    ctx: RunnerContext,
+    *,
+    canonical_path: Path,
+    context_columns: tuple[str, ...],
+    bridge_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Clear legacy context only in a derived input, never in canonical V2."""
+
+    frame, canonical_manifest = _read_canonical_v2_frame(canonical_path)
+    populated_context_columns = [
+        column
+        for column in context_columns
+        if column in frame.columns
+        and frame[column].fillna("").astype(str).str.strip().ne("").any()
+    ]
+    canonical_hash = str(
+        canonical_manifest.get("canonical_output_hash")
+        or canonical_manifest.get("output_hash")
+        or ""
+    )
+    if not populated_context_columns:
+        return {
+            "decision_input_path": str(canonical_path),
+            "derived_artifact": "",
+            "canonical_fusion_path": str(canonical_path),
+            "canonical_output_hash": canonical_hash,
+            "cleared_context_columns": [],
+        }
+
+    for column in context_columns:
+        if column in frame.columns:
+            frame[column] = ""
+    metadata = dict(bridge_metadata)
+    metadata.update(
+        {
+            "operation": "CLEAR_STALE_CONTEXT_IN_DERIVED_INPUT",
+            "columns": list(context_columns),
+            "cleared_context_columns": populated_context_columns,
+        }
+    )
+    result = _publish_derived_v2_context(
+        ctx,
+        frame=frame,
+        canonical_path=canonical_path,
+        canonical_manifest=canonical_manifest,
+        bridge_metadata=metadata,
+    )
+    result["cleared_context_columns"] = populated_context_columns
+    return result
+
+
 def attach_broker_multiday_context(
     ctx: RunnerContext,
     *,
@@ -1517,7 +1666,7 @@ def attach_broker_multiday_context(
     validate_broker_multiday_source(summary, summary_path)
     validate_broker_multiday_source(detail, detail_path)
     fusion = resolve(fusion_path or ctx.path("broker_summary_engine", "data/input/FINAL_DECISION_V2.csv"))
-    frame = pd.read_csv(fusion, low_memory=False)
+    frame, canonical_manifest = _read_canonical_v2_frame(fusion)
 
     fusion_symbol = find_col(frame, "Symbol", "EMITEN", "Ticker")
     summary_symbol = find_col(summary, "Symbol", "EMITEN", "Ticker")
@@ -1564,29 +1713,22 @@ def attach_broker_multiday_context(
     for column, before in protected.items():
         if not frame[column].equals(before):
             raise RuntimeError(f"BROKER_MULTI_DAY_PROTECTED_COLUMN_CHANGED:{column}")
-    frame.to_csv(fusion, index=False, encoding="utf-8-sig")
     bridge_metadata = {
+        "operation": "ATTACH_CONTEXT_TO_DERIVED_INPUT",
         "manifest": str(manifest_path),
         "columns": list(CONTEXT_COLUMNS),
         "symbols_attached": len([symbol for symbol in symbols if symbol]),
     }
-    fusion_artifact_manifest = fusion.with_suffix(".manifest.json")
-    manifest_candidates = {fusion_artifact_manifest}
-    fusion_run_id = str(read_json_safely(fusion_artifact_manifest).get("Run_ID", ""))
-    if fusion_run_id:
-        manifest_candidates.add(
-            resolve(ctx.config.get("paths", {}).get("manifest_dir", "data/output/manifests"))
-            / f"BROKER_FUSION_MANIFEST_{fusion_run_id}.json"
-        )
-    for manifest_candidate in manifest_candidates:
-        fusion_manifest_payload = read_json_safely(manifest_candidate)
-        if not fusion_manifest_payload:
-            continue
-        fusion_manifest_payload["output_hash"] = file_sha256(fusion)
-        fusion_manifest_payload["multi_day_context_bridge"] = bridge_metadata
-        write_json(manifest_candidate, fusion_manifest_payload)
+    derived = _publish_derived_v2_context(
+        ctx,
+        frame=frame,
+        canonical_path=fusion,
+        canonical_manifest=canonical_manifest,
+        bridge_metadata=bridge_metadata,
+    )
     return {
-        "fusion_path": str(fusion),
+        "fusion_path": derived["decision_input_path"],
+        **derived,
         "symbols_attached": len([symbol for symbol in symbols if symbol]),
         "manifest_path": str(manifest_path),
         "context_columns": list(CONTEXT_COLUMNS),
@@ -1652,6 +1794,7 @@ def run_final_from_snapshot(ctx: RunnerContext) -> dict[str, Any]:
     manifest["Output_Files"]["Fusion"] = str(decision_source)
     write_json(run_manifest_path, manifest)
     context_bridge: dict[str, Any] = {}
+    decision_input = decision_source
     if str(ctx.config_provenance.get("config_version", "")) == "1.7.0-multisource":
         from modules.data_sources.decision_bridge import CONTEXT_COLUMNS
 
@@ -1664,6 +1807,12 @@ def run_final_from_snapshot(ctx: RunnerContext) -> dict[str, Any]:
 
             try:
                 context_bridge = attach_broker_multiday_context(ctx, fusion_path=decision_source)
+                decision_input = Path(
+                    str(
+                        context_bridge.get("decision_input_path")
+                        or context_bridge["fusion_path"]
+                    )
+                )
             except ReportSourceValidationError:
                 raise
             except Exception as exc:
@@ -1679,15 +1828,6 @@ def run_final_from_snapshot(ctx: RunnerContext) -> dict[str, Any]:
                     source_of_truth=[output_dir / "BROKER_MULTIDAY_DETAIL.csv", decision_source],
                 ) from exc
         else:
-            # Clear stale context from a reused fusion artifact.  Protected
-            # decision/status/score columns are untouched, and the decision
-            # engine proceeds using only valid one-day broker fusion data.
-            if decision_source.exists():
-                fusion_frame = pd.read_csv(decision_source, low_memory=False)
-                for column in CONTEXT_COLUMNS:
-                    if column in fusion_frame.columns:
-                        fusion_frame[column] = ""
-                fusion_frame.to_csv(decision_source, index=False, encoding="utf-8-sig")
             context_bridge = {
                 "status": "SKIPPED_INSUFFICIENT_HISTORY" if multiday_quality else "SKIPPED_NOT_AVAILABLE",
                 "reason": str(multiday_manifest.get("data_quality_status") or "BROKER_MULTIDAY_MANIFEST_NOT_FOUND"),
@@ -1695,16 +1835,27 @@ def run_final_from_snapshot(ctx: RunnerContext) -> dict[str, Any]:
                 "minimum_sessions": multiday_manifest.get("minimum_sessions", 20),
                 "session_count": multiday_manifest.get("session_count", 0),
             }
+            if decision_source.exists():
+                context_free = _prepare_context_free_decision_input(
+                    ctx,
+                    canonical_path=decision_source,
+                    context_columns=CONTEXT_COLUMNS,
+                    bridge_metadata=context_bridge,
+                )
+                context_bridge.update(context_free)
+                decision_input = Path(context_free["decision_input_path"])
         manifest["Decision_Context_Bridge"] = context_bridge
-        if context_bridge.get("fusion_path"):
-            manifest["Output_Files"]["Decision_Context"] = context_bridge["fusion_path"]
-        write_json(run_manifest_path, manifest)
+        if context_bridge.get("derived_artifact"):
+            manifest["Output_Files"]["Decision_Context"] = context_bridge["derived_artifact"]
+    manifest["Decision_Input"] = str(decision_input)
+    manifest["Output_Files"]["Decision_Input"] = str(decision_input)
+    write_json(run_manifest_path, manifest)
     decision_dir.mkdir(parents=True, exist_ok=True)
     run_command(ctx, "DECISION ENGINE", [
         sys.executable,
         "-u",
         str(resolve(paths.get("decision_engine", "modules/decision_engine/decision_engine.py"))),
-        str(decision_source),
+        str(decision_input),
         str(decision_dir),
         "--ihsg",
         str(ihsg),
@@ -1818,7 +1969,7 @@ def run_final_from_snapshot(ctx: RunnerContext) -> dict[str, Any]:
                 "--broker-summary",
                 str(broker_summary),
                 "--fusion",
-                str(decision_source),
+                str(decision_input),
                 "--decision",
                 str(final),
                 "--exit-dir",

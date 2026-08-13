@@ -46,7 +46,8 @@ Commit ownership:
 | ID | Priority | Audit finding | Owner | Final status | Evidence |
 |---|---|---|---|---|---|
 | AF-P0-001 | P0 | CI suite red | Commit 6 | **CLOSED BY RE-AUDIT** | Historical audit retained at 28 failed / 492 passed; audited-base re-characterization was 27 failed / 510 passed / 3 subtests. Commit 6 candidate full CI: **565 passed, 3 subtests passed, 0 failed** plus all release gates PASS. |
-| AF-P0-002 | P0 | Shared `FINAL_DECISION_V2.csv` writer not fully serialized/locked | Commit 2 | **CLOSED BY RE-AUDIT** | Dedicated V2 writer lock, run-scoped artifact, atomic canonical publish, SHA equivalence and stale-sidecar rejection; full regression suite PASS. |
+| AF-P0-002 | P0 | Shared `FINAL_DECISION_V2.csv` writer not fully serialized/locked | Commit 2 + FR-NF-001 follow-up | **CLOSED BY RE-AUDIT** | Commit 2 added the dedicated publisher. Final independent review reopened the finding after locating direct context/cleanup writes; the FR-NF-001 follow-up removes those writes, makes context a run-scoped derived input, and proves concurrent stale context cannot overwrite canonical V2. |
+| FR-NF-001 | BLOCKER | Runtime context bridge bypasses the canonical V2 publisher and can overwrite a newer generation | `fix canonical V2 writer ownership regression` | **CLOSED BY RE-AUDIT** | Official publisher is the only active canonical CSV/manifest owner; period lineage is publisher-owned; direct runtime writers are forbidden; concurrency, interruption, cleanup, and hash-consistency regressions pass. |
 | AF-P1-001 | P1 | Canonical data layer is not production execution boundary | Commit 5 | **CLOSED BY RE-AUDIT** | Production technical wrapper materializes provider rows through `DataSourceManager.route` into run-scoped canonical DailyBar CSVs; full canonical/data-path tests and contract validator PASS. |
 | AF-P1-002 | P1 | TP1/lifecycle semantics differ across Exit Engine, tracker, DB, shadow and backtest | Commit 3 | **CLOSED BY RE-AUDIT** | `SDE_SWING_LIFECYCLE_V1`: TP1 milestone/open, TP2 close, same-candle stop priority, max-hold and actual trigger entry; cross-path tests PASS. |
 | AF-P1-003 | P1 | Resend/delivery can overwrite engine `*_latest.json` | Commit 4 | **CLOSED BY RE-AUDIT** | `SDE_RUNTIME_STATUS_V1`: engine and delivery channels separated; resend declares no engine mutation; full suite PASS. |
@@ -378,3 +379,23 @@ and reliability readiness is **GO WITH HARDENING** for supervised/shadow use.
 The combined operating posture remains **SUPERVISED ONLY**, and autonomous
 trading remains **NO-GO** because `auto_entry_enabled=false` and no autonomous
 execution audit was performed.
+
+### FR-NF-001 targeted re-audit closure
+
+The independent review of Phase 2 HEAD `50100fba` reopened `AF-P0-002` as
+`FR-NF-001` after finding direct context and cleanup writers to canonical
+`FINAL_DECISION_V2.csv`.
+
+The follow-up commit `fix canonical V2 writer ownership regression` makes the
+official publisher the sole active canonical CSV/manifest owner. Multi-day
+context and compatibility cleanup now produce atomic run-scoped derived
+decision inputs. A concurrent generation-B publisher cannot be overwritten by
+context processing that began from generation A, and interruption cannot
+partially write canonical V2.
+
+Targeted ownership tests: **11 passed**. Broker/final-watchlist/runtime
+integration tests: **127 passed**. Full suite: **601 passed, 3 subtests passed,
+0 failed**. Compile, quant freeze, stabilization release, runtime config, and
+contract gates pass. `FR-NF-001` is therefore **CLOSED BY RE-AUDIT**, and
+`AF-P0-002` is closed again. The separate `FR-NF-002`, `FR-NF-003`, and
+`FR-NF-004` findings remain outside this change.

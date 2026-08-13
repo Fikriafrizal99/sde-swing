@@ -15,11 +15,13 @@ It deliberately does not modify broker scoring, thresholds, or decision semantic
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
 import socket
 import sys
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -86,6 +88,87 @@ def _atomic_publish_file(source: Path, destination: Path) -> str:
             f"run_scoped={source_hash or 'MISSING'} canonical={destination_hash or 'MISSING'}"
         )
     return destination_hash
+
+
+def read_published_v2_snapshot(
+    canonical_output: Path,
+    *,
+    attempts: int = 40,
+    retry_delay_seconds: float = 0.005,
+) -> tuple[bytes, dict[str, Any]]:
+    """Read one complete canonical V2 publication generation.
+
+    The publisher replaces the CSV before replacing its manifest.  A reader
+    can therefore briefly observe a new CSV with the preceding manifest.  A
+    context consumer must retry that transition instead of treating either
+    file independently or taking the writer lock itself.
+
+    Returning immutable bytes lets downstream code create run-scoped derived
+    artifacts without ever writing back to the canonical publication.
+    """
+
+    canonical = _resolve(canonical_output)
+    manifest_path = canonical.with_suffix(".manifest.json")
+    last_error = "publication files unavailable"
+    for attempt in range(max(1, int(attempts))):
+        try:
+            manifest_before = manifest_path.read_bytes()
+            artifact = canonical.read_bytes()
+            manifest_after = manifest_path.read_bytes()
+            if manifest_before != manifest_after:
+                last_error = "manifest changed while reading"
+            else:
+                manifest = json.loads(manifest_after.decode("utf-8"))
+                expected_hash = str(
+                    manifest.get("canonical_output_hash")
+                    or manifest.get("output_hash")
+                    or ""
+                ).strip()
+                actual_hash = hashlib.sha256(artifact).hexdigest()
+                publication_status = str(manifest.get("publication_status", ""))
+                integrity_version = str(manifest.get("artifact_integrity_version", ""))
+                if publication_status != "PUBLISHED_ATOMIC":
+                    last_error = f"unexpected publication status {publication_status or 'MISSING'}"
+                elif integrity_version != "V2_SERIALIZED_ATOMIC_V1":
+                    last_error = f"unexpected integrity version {integrity_version or 'MISSING'}"
+                elif not expected_hash or expected_hash != actual_hash:
+                    last_error = (
+                        "manifest/artifact hash mismatch "
+                        f"{expected_hash or 'MISSING'} != {actual_hash}"
+                    )
+                else:
+                    return artifact, manifest
+        except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        if attempt < max(1, int(attempts)) - 1:
+            time.sleep(max(0.0, float(retry_delay_seconds)))
+    raise RuntimeError(f"FINAL_DECISION_V2_STABLE_SNAPSHOT_UNAVAILABLE: {last_error}")
+
+
+def _broker_period_lineage(broker_path: Path) -> dict[str, Any]:
+    """Return optional broker-period lineage owned by this publication."""
+
+    sidecar_path = broker_path.with_suffix(".manifest.json")
+    try:
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    snapshot_id = str(
+        sidecar.get("snapshot_id") or sidecar.get("broker_snapshot_id") or ""
+    ).strip()
+    if not snapshot_id:
+        return {}
+    return {
+        "broker_period_snapshot_id": snapshot_id,
+        "broker_period_type": sidecar.get("broker_period_type", ""),
+        "broker_period_start": sidecar.get("broker_period_start", ""),
+        "broker_period_end": sidecar.get("broker_period_end", ""),
+        "broker_period_source": sidecar.get("broker_period_source", ""),
+        "broker_period_summary_hash": sidecar.get("summary_snapshot_hash")
+        or sidecar.get("summary_source_hash", ""),
+        "broker_period_raw_snapshot_hash": sidecar.get("raw_snapshot_hash")
+        or sidecar.get("raw_source_hash", ""),
+    }
 
 
 def _process_alive(pid: int) -> bool:
@@ -296,6 +379,7 @@ def _run_fusion(args: argparse.Namespace) -> tuple[Any, Path, dict[str, Any]]:
         raise RuntimeError(
             f"Invalid run-scoped Broker Fusion manifest: {staged_manifest_path}"
         ) from exc
+    base_manifest.update(_broker_period_lineage(broker_path))
     return result, run_scoped_output, base_manifest
 
 
