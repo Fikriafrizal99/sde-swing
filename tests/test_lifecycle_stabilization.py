@@ -9,8 +9,11 @@ import pandas as pd
 import pytest
 
 from modules.analytics.outcome_tracker import (
+    canonical_performance_df,
     connect,
+    performance_row,
     record_lifecycle_event,
+    refresh_lifecycle_integrity_flags,
     register_decision_file,
     update_outcomes,
 )
@@ -260,3 +263,118 @@ def test_same_day_entry_and_stop_remains_valid_within_one_lifecycle(tmp_path: Pa
     assert ("ENTRY_TRIGGERED", "WAITING_TRIGGER", "OPEN") in transitions
     assert ("STOP_LOSS_HIT", "OPEN", "CLOSED") in transitions
     conn.close()
+
+
+def test_legacy_tp1_terminal_is_flagged_and_excluded_without_rewriting_raw_row(
+    tmp_path: Path,
+) -> None:
+    conn = connect(tmp_path / "history.db")
+    conn.execute(
+        """
+        INSERT INTO signal_outcome_ledger (
+            signal_id, symbol, signal_date, raw_decision, data_quality_status,
+            current_status, entry_date, entry_price, exit_date, exit_price,
+            exit_reason, final_outcome, realized_return_pct, holding_days,
+            tp1_hit, tp2_hit, trailing_active
+        ) VALUES (
+            'LEGACY-TP1', 'PNLF', '2026-08-10', 'BUY CANDIDATE', 'VALID',
+            'CLOSED', '2026-08-11', 228, '2026-08-13', 237,
+            'TP1_HIT', 'WIN', 3.9, 3, 1, 0, 0
+        )
+        """
+    )
+    raw_before = dict(conn.execute(
+        "SELECT * FROM signal_outcome_ledger WHERE signal_id='LEGACY-TP1'"
+    ).fetchone())
+
+    assert refresh_lifecycle_integrity_flags(conn) >= 1
+    flag = conn.execute(
+        "SELECT * FROM lifecycle_integrity_flags WHERE signal_id='LEGACY-TP1'"
+    ).fetchone()
+    assert flag["reason"] == "LEGACY_TP1_TERMINAL_QUARANTINE"
+    assert flag["canonical_eligible"] == 0
+    assert canonical_performance_df(conn).empty
+    raw_after = dict(conn.execute(
+        "SELECT * FROM signal_outcome_ledger WHERE signal_id='LEGACY-TP1'"
+    ).fetchone())
+    assert raw_after == raw_before
+    conn.close()
+
+
+def test_negative_return_win_is_generically_quarantined(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "history.db")
+    conn.execute(
+        """
+        INSERT INTO signal_outcome_ledger (
+            signal_id, symbol, signal_date, raw_decision, data_quality_status,
+            current_status, entry_date, exit_date, exit_reason, final_outcome,
+            realized_return_pct, tp1_hit, tp2_hit
+        ) VALUES (
+            'NEGATIVE-WIN', 'MDKA', '2026-08-04', 'BUY CANDIDATE', 'VALID',
+            'CLOSED', '2026-08-10', '2026-08-11', 'TP1_HIT', 'WIN',
+            -0.09, 1, 0
+        )
+        """
+    )
+    refresh_lifecycle_integrity_flags(conn)
+    reasons = {
+        row[0]
+        for row in conn.execute(
+            "SELECT reason FROM lifecycle_integrity_flags WHERE signal_id='NEGATIVE-WIN'"
+        )
+    }
+    assert "LEGACY_TP1_TERMINAL_QUARANTINE" in reasons
+    assert "NON_POSITIVE_RETURN_WIN_QUARANTINE" in reasons
+    assert canonical_performance_df(conn).empty
+    conn.close()
+
+
+def test_current_recommendations_counts_only_active_and_preserves_episode_count() -> None:
+    frame = pd.DataFrame([
+        {
+            "current_status": "OPEN",
+            "raw_decision": "BUY CANDIDATE",
+            "data_quality_status": "VALID",
+            "entry_date": "2026-08-11",
+            "final_outcome": "OPEN",
+            "realized_return_pct": None,
+            "tp1_hit": 0,
+            "tp2_hit": 0,
+            "sl_hit": 0,
+            "holding_days": 1,
+            "mfe_pct": 1,
+            "mae_pct": -1,
+        },
+        {
+            "current_status": "WAITING_TRIGGER",
+            "raw_decision": "BUY CANDIDATE",
+            "data_quality_status": "VALID",
+            "entry_date": None,
+            "final_outcome": None,
+            "realized_return_pct": None,
+            "tp1_hit": 0,
+            "tp2_hit": 0,
+            "sl_hit": 0,
+            "holding_days": None,
+            "mfe_pct": None,
+            "mae_pct": None,
+        },
+        {
+            "current_status": "CLOSED",
+            "raw_decision": "BUY CANDIDATE",
+            "data_quality_status": "VALID",
+            "entry_date": "2026-08-01",
+            "final_outcome": "WIN",
+            "realized_return_pct": 5,
+            "tp1_hit": 1,
+            "tp2_hit": 1,
+            "sl_hit": 0,
+            "holding_days": 3,
+            "mfe_pct": 6,
+            "mae_pct": -1,
+        },
+    ])
+    summary = performance_row(frame, "ALL")
+    assert summary["Current_Recommendations"] == 2
+    assert summary["Historical_Signal_Episodes"] == 3
+    assert summary["Closed"] == 1

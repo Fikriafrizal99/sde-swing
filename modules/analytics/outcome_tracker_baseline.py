@@ -201,6 +201,21 @@ CREATE INDEX IF NOT EXISTS idx_lifecycle_ingest_quarantine_signal
 CREATE INDEX IF NOT EXISTS idx_lifecycle_ingest_quarantine_symbol
     ON lifecycle_ingest_quarantine(symbol, effective_date);
 
+CREATE TABLE IF NOT EXISTS lifecycle_integrity_flags (
+    flag_id TEXT PRIMARY KEY,
+    signal_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    detected_at TEXT NOT NULL,
+    contract_version TEXT NOT NULL,
+    canonical_eligible INTEGER NOT NULL CHECK(canonical_eligible IN (0,1)),
+    details_json TEXT,
+    UNIQUE(signal_id, reason, contract_version)
+);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_integrity_flags_signal
+    ON lifecycle_integrity_flags(signal_id, canonical_eligible);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_integrity_flags_reason
+    ON lifecycle_integrity_flags(reason, canonical_eligible);
+
 CREATE TABLE IF NOT EXISTS portfolio_positions (
     position_id TEXT PRIMARY KEY,
     signal_id TEXT,
@@ -634,6 +649,137 @@ def _ensure_one_actionable_lifecycle_index(conn: sqlite3.Connection) -> None:
     )
 
 
+def _flag_lifecycle_integrity(
+    conn: sqlite3.Connection,
+    *,
+    signal_id: str,
+    reason: str,
+    canonical_eligible: bool,
+    contract_version: str = "SDE_SWING_LIFECYCLE_V1",
+    details: Mapping[str, Any] | None = None,
+) -> str:
+    normalized_reason = norm_text(reason).upper()
+    identifier = hashlib.sha256(
+        "|".join([signal_id, normalized_reason, contract_version]).encode("utf-8")
+    ).hexdigest()[:32]
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO lifecycle_integrity_flags (
+            flag_id, signal_id, reason, detected_at, contract_version,
+            canonical_eligible, details_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            identifier,
+            signal_id,
+            normalized_reason,
+            now_text(),
+            contract_version,
+            int(canonical_eligible),
+            json.dumps(dict(details or {}), ensure_ascii=False, sort_keys=True, default=str),
+        ),
+    )
+    return identifier
+
+
+def refresh_lifecycle_integrity_flags(conn: sqlite3.Connection) -> int:
+    """Detect canonical exclusions without rewriting raw lifecycle evidence."""
+    before = conn.total_changes
+    for row in conn.execute(
+        """
+        SELECT signal_id, symbol, current_status, final_outcome,
+               realized_return_pct, exit_reason, tp1_hit, tp2_hit
+        FROM signal_outcome_ledger
+        WHERE current_status='CLOSED'
+          AND COALESCE(tp1_hit,0)<>0
+          AND COALESCE(tp2_hit,0)=0
+          AND UPPER(COALESCE(exit_reason,'')) IN ('TP1_HIT','TARGET_1_HIT')
+        """
+    ).fetchall():
+        _flag_lifecycle_integrity(
+            conn,
+            signal_id=row["signal_id"],
+            reason="LEGACY_TP1_TERMINAL_QUARANTINE",
+            canonical_eligible=False,
+            details={
+                "symbol": row["symbol"],
+                "current_status": row["current_status"],
+                "final_outcome": row["final_outcome"],
+                "exit_reason": row["exit_reason"],
+            },
+        )
+    for row in conn.execute(
+        """
+        SELECT signal_id, symbol, realized_return_pct
+        FROM signal_outcome_ledger
+        WHERE final_outcome='WIN'
+          AND realized_return_pct IS NOT NULL
+          AND realized_return_pct<=0
+        """
+    ).fetchall():
+        _flag_lifecycle_integrity(
+            conn,
+            signal_id=row["signal_id"],
+            reason="NON_POSITIVE_RETURN_WIN_QUARANTINE",
+            canonical_eligible=False,
+            details={
+                "symbol": row["symbol"],
+                "realized_return_pct": row["realized_return_pct"],
+            },
+        )
+    for row in conn.execute(
+        """
+        SELECT older.signal_id AS older_signal_id,
+               newer.signal_id AS newer_signal_id,
+               older.symbol AS symbol,
+               older.exit_date AS older_exit_date,
+               newer.signal_date AS newer_signal_date
+        FROM signal_outcome_ledger older
+        JOIN signal_outcome_ledger newer
+          ON newer.symbol=older.symbol
+         AND newer.signal_id<>older.signal_id
+         AND newer.signal_date>older.signal_date
+        WHERE older.exit_date IS NOT NULL AND older.exit_date<>''
+          AND newer.signal_date<=older.exit_date
+        """
+    ).fetchall():
+        for signal_id, peer_id in (
+            (row["older_signal_id"], row["newer_signal_id"]),
+            (row["newer_signal_id"], row["older_signal_id"]),
+        ):
+            _flag_lifecycle_integrity(
+                conn,
+                signal_id=signal_id,
+                reason="HISTORICAL_ACTIONABLE_OVERLAP",
+                canonical_eligible=True,
+                details={
+                    "symbol": row["symbol"],
+                    "peer_signal_id": peer_id,
+                    "older_exit_date": row["older_exit_date"],
+                    "newer_signal_date": row["newer_signal_date"],
+                },
+            )
+    return conn.total_changes - before
+
+
+def canonical_performance_df(conn: sqlite3.Connection) -> pd.DataFrame:
+    """Return canonical analytics rows while retaining raw ledger evidence."""
+    refresh_lifecycle_integrity_flags(conn)
+    conn.commit()
+    return pd.read_sql_query(
+        """
+        SELECT l.*
+        FROM signal_outcome_ledger l
+        WHERE NOT EXISTS (
+            SELECT 1 FROM lifecycle_integrity_flags f
+            WHERE f.signal_id=l.signal_id AND f.canonical_eligible=0
+        )
+        ORDER BY l.signal_date DESC, l.symbol
+        """,
+        conn,
+    )
+
+
 def row_value(row: pd.Series | dict[str, Any], *aliases: str, default: Any = None) -> Any:
     if isinstance(row, pd.Series):
         mapping = {str(c).strip().lower().replace(" ", "_"): c for c in row.index}
@@ -689,6 +835,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     )
     _ensure_one_actionable_lifecycle_index(conn)
     _ensure_legacy_recommendation_baselines(conn)
+    refresh_lifecycle_integrity_flags(conn)
     conn.commit()
     return conn
 
@@ -1941,8 +2088,9 @@ def safe_ratio(numerator: float, denominator: float) -> float | None:
 
 def performance_row(group: pd.DataFrame, label: str) -> dict[str, Any]:
     quality = group["data_quality_status"].astype(str).str.upper() if "data_quality_status" in group.columns else pd.Series("UNKNOWN", index=group.index)
-    raw_decisions = group["raw_decision"].astype(str).str.upper() if "raw_decision" in group.columns else pd.Series("", index=group.index)
-    current_recommendations = group[raw_decisions.isin(CURRENT_RECOMMENDATION_DECISIONS)].copy()
+    current_recommendations = group[
+        group["current_status"].isin(ACTIVE_STATUSES)
+    ].copy()
     valid = group[
         ~group["current_status"].isin({"INVALID_DATA", "INVALIDATED_BEFORE_ENTRY"})
         & quality.isin(VALID_SIGNAL_QUALITY)
@@ -1961,6 +2109,7 @@ def performance_row(group: pd.DataFrame, label: str) -> dict[str, Any]:
         "Group": label,
         "Signals": len(valid),
         "Current_Recommendations": len(current_recommendations),
+        "Historical_Signal_Episodes": len(group),
         "Historical_Evaluated_Signals": len(valid),
         "Excluded_Invalid_Data": excluded,
         "Invalidated_Before_Entry": invalidated,
@@ -2234,7 +2383,10 @@ def export_reports(
     (output_dir / "STATUS_CHANGES_TELEGRAM.txt").write_text(
         _status_changes_telegram(pending), encoding="utf-8"
     )
-    overall = performance_row(df, "ALL")
+    canonical_df = canonical_performance_df(conn)
+    overall = performance_row(canonical_df, "ALL")
+    overall["Raw_Historical_Signal_Episodes"] = len(df)
+    overall["Canonical_Excluded_Episodes"] = len(df) - len(canonical_df)
     overall["Start_Date"] = df["signal_date"].min() if not df.empty else "-"
     overall["End_Date"] = df["signal_date"].max() if not df.empty else "-"
     replay_contract = historical_replay_metadata()
@@ -2242,10 +2394,10 @@ def export_reports(
     overall.update(replay_columns)
     overall_df = pd.DataFrame([overall])
     overall_df.to_csv(output_dir / "PERFORMANCE_SUMMARY.csv", index=False, encoding="utf-8-sig")
-    by_setup = grouped_performance(df, "setup_type")
-    by_signal = grouped_performance(df, "signal_type")
-    by_broker = grouped_performance(df, "broker_confidence_bucket")
-    by_regime = grouped_performance(df, "market_regime")
+    by_setup = grouped_performance(canonical_df, "setup_type")
+    by_signal = grouped_performance(canonical_df, "signal_type")
+    by_broker = grouped_performance(canonical_df, "broker_confidence_bucket")
+    by_regime = grouped_performance(canonical_df, "market_regime")
     for frame in (by_setup, by_signal, by_broker, by_regime):
         for column, value in replay_columns.items():
             frame[column] = value
