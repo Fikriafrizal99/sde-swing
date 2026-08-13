@@ -81,7 +81,8 @@ LEDGER_COLUMNS = [
     "return_d3", "return_d5", "return_d7", "max_price", "min_price",
     "mfe_pct", "mae_pct", "tp1_hit", "tp2_hit", "sl_hit",
     "final_outcome", "realized_return_pct", "created_at", "updated_at",
-    "source_json",
+    "source_json", "parent_signal_id", "supersedes_signal_id",
+    "reentry_reason",
 ]
 
 SCHEMA_SQL = """
@@ -143,7 +144,10 @@ CREATE TABLE IF NOT EXISTS signal_outcome_ledger (
     realized_return_pct REAL,
     created_at TEXT,
     updated_at TEXT,
-    source_json TEXT
+    source_json TEXT,
+    parent_signal_id TEXT,
+    supersedes_signal_id TEXT,
+    reentry_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_signal_ledger_symbol_status
     ON signal_outcome_ledger(symbol, current_status);
@@ -605,6 +609,31 @@ def _ensure_legacy_recommendation_baselines(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_one_actionable_lifecycle_index(conn: sqlite3.Connection) -> None:
+    """Install the storage invariant without choosing a duplicate winner."""
+    duplicates = conn.execute(
+        """
+        SELECT symbol, GROUP_CONCAT(signal_id) AS signal_ids, COUNT(*) AS count
+        FROM signal_outcome_ledger
+        WHERE current_status IN ('WAITING_TRIGGER','OPEN')
+        GROUP BY symbol HAVING COUNT(*) > 1
+        ORDER BY symbol
+        """
+    ).fetchall()
+    if duplicates:
+        evidence = "; ".join(
+            f"{row['symbol']}=[{row['signal_ids']}]" for row in duplicates
+        )
+        raise RuntimeError(f"DUPLICATE_ACTIONABLE_LIFECYCLE:{evidence}")
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_signal_ledger_one_actionable_symbol
+        ON signal_outcome_ledger(symbol)
+        WHERE current_status IN ('WAITING_TRIGGER','OPEN')
+        """
+    )
+
+
 def row_value(row: pd.Series | dict[str, Any], *aliases: str, default: Any = None) -> Any:
     if isinstance(row, pd.Series):
         mapping = {str(c).strip().lower().replace(" ", "_"): c for c in row.index}
@@ -639,9 +668,26 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA_SQL)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(signal_outcome_ledger)")}
-    for name in ("latest_scan_status", "latest_scan_date", "latest_scan_run_id"):
+    additive_columns = {
+        "latest_scan_status": "TEXT",
+        "latest_scan_date": "TEXT",
+        "latest_scan_run_id": "TEXT",
+        "parent_signal_id": "TEXT",
+        "supersedes_signal_id": "TEXT",
+        "reentry_reason": "TEXT",
+    }
+    for name, ddl in additive_columns.items():
         if name not in existing:
-            conn.execute(f"ALTER TABLE signal_outcome_ledger ADD COLUMN {name} TEXT")
+            conn.execute(f"ALTER TABLE signal_outcome_ledger ADD COLUMN {name} {ddl}")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_signal_ledger_parent "
+        "ON signal_outcome_ledger(parent_signal_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_signal_ledger_supersedes "
+        "ON signal_outcome_ledger(supersedes_signal_id)"
+    )
+    _ensure_one_actionable_lifecycle_index(conn)
     _ensure_legacy_recommendation_baselines(conn)
     conn.commit()
     return conn
@@ -812,6 +858,9 @@ def build_signal_record(
         "created_at": now_text(),
         "updated_at": now_text(),
         "source_json": json.dumps(source, ensure_ascii=False, default=str),
+        "parent_signal_id": None,
+        "supersedes_signal_id": None,
+        "reentry_reason": None,
     }
 
 
@@ -945,6 +994,59 @@ def _rebase_new_lifecycle(record: dict[str, Any], recommendation_date: str) -> d
     return rebased
 
 
+def _terminal_effective_date(record: Mapping[str, Any] | sqlite3.Row) -> str:
+    return parse_date(record["exit_date"]) or parse_date(record["signal_date"])
+
+
+def _reentry_reason(record: Mapping[str, Any] | sqlite3.Row) -> str:
+    status = norm_text(record["current_status"]).upper()
+    exit_reason = norm_text(record["exit_reason"]).upper()
+    if status == "EXPIRED":
+        return "AFTER_EXPIRED"
+    if status == "INVALIDATED_BEFORE_ENTRY":
+        return "AFTER_INVALIDATED"
+    if "STOP" in exit_reason:
+        return "AFTER_STOP_LOSS"
+    if "TP2" in exit_reason:
+        return "AFTER_TP2"
+    if "MAX_HOLD" in exit_reason:
+        return "AFTER_MAX_HOLD"
+    if "TP1" in exit_reason:
+        return "AFTER_LEGACY_TP1_TERMINAL"
+    return "AFTER_CLOSED"
+
+
+def _latest_terminal_lifecycle(
+    conn: sqlite3.Connection,
+    symbol: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT * FROM signal_outcome_ledger
+        WHERE symbol=?
+          AND current_status IN ('CLOSED','EXPIRED','INVALIDATED_BEFORE_ENTRY')
+        ORDER BY COALESCE(NULLIF(exit_date,''), signal_date) DESC,
+                 signal_date DESC, updated_at DESC, signal_id DESC
+        LIMIT 1
+        """,
+        (normalize_symbol(symbol),),
+    ).fetchone()
+
+
+def _prepare_reentry_record(
+    record: dict[str, Any],
+    recommendation_date: str,
+    parent: Mapping[str, Any] | sqlite3.Row,
+) -> dict[str, Any]:
+    prepared = dict(record)
+    if parse_date(prepared.get("signal_date")) != recommendation_date:
+        prepared = _rebase_new_lifecycle(prepared, recommendation_date)
+    prepared["parent_signal_id"] = parent["signal_id"]
+    prepared["supersedes_signal_id"] = parent["signal_id"]
+    prepared["reentry_reason"] = _reentry_reason(parent)
+    return prepared
+
+
 def upsert_signal(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
     """Insert a signal or refresh the same active lifecycle in place.
 
@@ -984,17 +1086,13 @@ def upsert_signal(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
             details={"lifecycle_signal_date": exact["signal_date"]},
         )
         return "QUARANTINED"
+    reentry_parent: sqlite3.Row | None = None
     if exact and norm_text(exact["current_status"]).upper() in TERMINAL_STATUSES:
         terminal_date = parse_date(exact["exit_date"]) or parse_date(exact["signal_date"])
-        if (
-            norm_text(exact["current_status"]).upper() == "EXPIRED"
-            and recommendation_date
-            and terminal_date
-            and recommendation_date > terminal_date
-        ):
-            # A stale scan can reproduce the old deterministic signal_id.  A
-            # later valid recommendation after EXPIRED is still a new thesis
-            # and must receive a new lifecycle identity.
+        if terminal_date and recommendation_date > terminal_date:
+            # A stale deterministic signal ID cannot revive terminal history.
+            # A later recommendation becomes a distinct, lineaged episode.
+            reentry_parent = exact
             record = _rebase_new_lifecycle(record, recommendation_date)
             exact = None
         else:
@@ -1131,21 +1229,31 @@ def upsert_signal(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
             raw_decision=record.get("raw_decision", ""),
         )
         return "UPDATED_ACTIVE" if active or exact else "SKIPPED"
-    prior_expired = conn.execute(
-        """
-        SELECT signal_id, signal_date
-        FROM signal_outcome_ledger
-        WHERE symbol=? AND current_status='EXPIRED'
-        ORDER BY signal_date DESC LIMIT 1
-        """,
-        (record["symbol"],),
-    ).fetchone()
-    if (
-        recommendation_date
-        and prior_expired
-        and recommendation_date > norm_text(prior_expired["signal_date"])
-    ):
-        record = _rebase_new_lifecycle(record, recommendation_date)
+    parent = reentry_parent or _latest_terminal_lifecycle(conn, record["symbol"])
+    if parent:
+        terminal_date = _terminal_effective_date(parent)
+        if terminal_date and recommendation_date <= terminal_date:
+            _quarantine_lifecycle_occurrence(
+                conn,
+                signal_id=parent["signal_id"],
+                symbol=record["symbol"],
+                effective_date=recommendation_date,
+                occurrence_type="REENTRY_RECOMMENDATION",
+                reason=(
+                    "REENTRY_SAME_SESSION_SUPPRESSED"
+                    if recommendation_date == terminal_date
+                    else "REENTRY_PRECEDES_TERMINAL_REJECTED"
+                ),
+                run_id=record.get("run_id", ""),
+                raw_decision=record.get("raw_decision", ""),
+                details={
+                    "parent_signal_id": parent["signal_id"],
+                    "terminal_date": terminal_date,
+                    "terminal_status": parent["current_status"],
+                },
+            )
+            return "QUARANTINED"
+        record = _prepare_reentry_record(record, recommendation_date, parent)
 
     columns = LEDGER_COLUMNS
     placeholders = ",".join("?" for _ in columns)

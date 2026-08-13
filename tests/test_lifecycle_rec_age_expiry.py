@@ -183,14 +183,34 @@ def test_invalidated_before_entry_is_not_expired(tmp_path: Path) -> None:
     conn.close()
 
 
-def test_expiry_day_creates_new_lifecycle_without_old_plan_or_rec(tmp_path: Path) -> None:
+def test_expiry_day_suppresses_reentry_until_next_session(tmp_path: Path) -> None:
     conn = connect(tmp_path / "history.db")
     for index, day in enumerate(("2026-08-12", "2026-08-13", "2026-08-14", "2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21"), 1):
         _register(conn, tmp_path, day, f"RUN-OLD-{index}")
-    _register(
+    suppressed = _register(
         conn,
         tmp_path,
         "2026-08-24",
+        "RUN-SAME-SESSION",
+        entry_low=200,
+        entry_high=205,
+        stop=190,
+        tp1=220,
+        tp2=230,
+    )
+    assert suppressed.inserted == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM signal_outcome_ledger WHERE current_status IN ('WAITING_TRIGGER','OPEN')"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM lifecycle_ingest_quarantine "
+        "WHERE reason='REENTRY_SAME_SESSION_SUPPRESSED'"
+    ).fetchone()[0] == 1
+
+    _register(
+        conn,
+        tmp_path,
+        "2026-08-26",
         "RUN-NEW",
         entry_low=200,
         entry_high=205,
@@ -206,7 +226,10 @@ def test_expiry_day_creates_new_lifecycle_without_old_plan_or_rec(tmp_path: Path
     assert old["signal_id"] != new["signal_id"]
     assert recommendation_count(conn, old["signal_id"]) == 7
     assert recommendation_count(conn, new["signal_id"]) == 1
-    assert new["signal_date"] == "2026-08-24"
+    assert new["signal_date"] == "2026-08-26"
+    assert new["parent_signal_id"] == old["signal_id"]
+    assert new["supersedes_signal_id"] == old["signal_id"]
+    assert new["reentry_reason"] == "AFTER_EXPIRED"
     assert new["entry_zone_low"] == 200
     assert new["stop_loss"] == 190
     active = active_recommendations_df(conn, tmp_path / "prices")

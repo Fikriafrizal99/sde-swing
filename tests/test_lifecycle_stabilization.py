@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from modules.analytics.outcome_tracker import (
     connect,
     record_lifecycle_event,
     register_decision_file,
+    update_outcomes,
 )
 
 
@@ -143,3 +146,117 @@ def test_direct_baseline_cli_is_blocked() -> None:
     assert result.returncode != 0
     assert "DIRECT_BASELINE_EXECUTION_DISABLED" in result.stderr
     assert "USE_CANONICAL_OUTCOME_TRACKER" in result.stderr
+
+
+def test_storage_rejects_duplicate_actionable_symbol_and_migration_fails_closed(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "history.db"
+    conn = connect(db)
+    decisions, plans = _write_signal(tmp_path, symbol="BBRI", signal_date="2026-08-11")
+    register_decision_file(conn, decisions, plans, "RUN-1", "2026-08-11")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """
+            INSERT INTO signal_outcome_ledger (
+                signal_id, symbol, signal_date, current_status
+            ) VALUES ('DUPLICATE-ACTIVE', 'BBRI', '2026-08-12', 'OPEN')
+            """
+        )
+    conn.rollback()
+
+    conn.execute("DROP INDEX uq_signal_ledger_one_actionable_symbol")
+    conn.execute(
+        """
+        INSERT INTO signal_outcome_ledger (
+            signal_id, symbol, signal_date, current_status
+        ) VALUES ('DUPLICATE-ACTIVE', 'BBRI', '2026-08-12', 'OPEN')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(RuntimeError, match="DUPLICATE_ACTIONABLE_LIFECYCLE:BBRI"):
+        connect(db)
+
+
+def test_same_session_reentry_is_suppressed_and_next_session_has_lineage(
+    tmp_path: Path,
+) -> None:
+    conn = connect(tmp_path / "history.db")
+    original, plans = _write_signal(tmp_path, symbol="BRPT", signal_date="2026-08-10")
+    register_decision_file(conn, original, plans, "RUN-10", "2026-08-10")
+    parent = conn.execute("SELECT * FROM signal_outcome_ledger").fetchone()
+    conn.execute(
+        """
+        UPDATE signal_outcome_ledger
+        SET current_status='CLOSED', entry_date='2026-08-10', entry_price=7250,
+            exit_date='2026-08-11', exit_price=7000,
+            exit_reason='STOP_LOSS_HIT', final_outcome='LOSS'
+        WHERE signal_id=?
+        """,
+        (parent["signal_id"],),
+    )
+
+    same_day, same_day_plans = _write_signal(
+        tmp_path, symbol="BRPT", signal_date="2026-08-11"
+    )
+    suppressed = register_decision_file(
+        conn, same_day, same_day_plans, "RUN-11", "2026-08-11"
+    )
+    assert suppressed.inserted == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM signal_outcome_ledger WHERE current_status IN ('WAITING_TRIGGER','OPEN')"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM lifecycle_ingest_quarantine "
+        "WHERE reason='REENTRY_SAME_SESSION_SUPPRESSED'"
+    ).fetchone()[0] == 1
+
+    next_day, next_day_plans = _write_signal(
+        tmp_path, symbol="BRPT", signal_date="2026-08-12"
+    )
+    created = register_decision_file(
+        conn, next_day, next_day_plans, "RUN-12", "2026-08-12"
+    )
+    assert created.inserted == 1
+    child = conn.execute(
+        "SELECT * FROM signal_outcome_ledger WHERE current_status='WAITING_TRIGGER'"
+    ).fetchone()
+    assert child["signal_id"] != parent["signal_id"]
+    assert child["parent_signal_id"] == parent["signal_id"]
+    assert child["supersedes_signal_id"] == parent["signal_id"]
+    assert child["reentry_reason"] == "AFTER_STOP_LOSS"
+    conn.close()
+
+
+def test_same_day_entry_and_stop_remains_valid_within_one_lifecycle(tmp_path: Path) -> None:
+    historical = tmp_path / "prices"
+    historical.mkdir()
+    pd.DataFrame([{
+        "Date": "2026-08-11",
+        "Open": 7250,
+        "High": 7300,
+        "Low": 6900,
+        "Close": 7000,
+        "Volume": 1000,
+    }]).to_csv(historical / "CPRO.csv", index=False)
+    conn = connect(tmp_path / "history.db")
+    decisions, plans = _write_signal(tmp_path, symbol="CPRO", signal_date="2026-08-10")
+    register_decision_file(conn, decisions, plans, "RUN-10", "2026-08-10")
+    update_outcomes(conn, historical)
+
+    row = conn.execute("SELECT * FROM signal_outcome_ledger").fetchone()
+    assert row["entry_date"] == "2026-08-11"
+    assert row["exit_date"] == "2026-08-11"
+    assert row["current_status"] == "CLOSED"
+    assert row["exit_reason"] == "STOP_LOSS_HIT"
+    transitions = {
+        (event["event_type"], event["previous_status"], event["new_status"])
+        for event in conn.execute(
+            "SELECT event_type,previous_status,new_status FROM lifecycle_events"
+        )
+    }
+    assert ("ENTRY_TRIGGERED", "WAITING_TRIGGER", "OPEN") in transitions
+    assert ("STOP_LOSS_HIT", "OPEN", "CLOSED") in transitions
+    conn.close()
