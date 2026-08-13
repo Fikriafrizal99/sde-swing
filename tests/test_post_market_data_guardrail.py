@@ -134,8 +134,9 @@ class ValidatedTechnicalInputTests(unittest.TestCase):
             manifest_dir = root / "manifests"
             input_dir.mkdir()
             manifest_dir.mkdir()
+            canonical_row = "Date,Open,High,Low,Close,Volume\n2026-08-10,100,105,95,102,1000000\n"
             for symbol in ("BBCA", "TLKM", "ASII", "OLDX"):
-                (input_dir / f"{symbol}.csv").write_text("Date,Open,High,Low,Close,Volume\n", encoding="utf-8")
+                (input_dir / f"{symbol}.csv").write_text(canonical_row, encoding="utf-8")
 
             validated, audit = build_validated_input(
                 input_dir,

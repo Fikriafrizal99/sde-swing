@@ -32,7 +32,7 @@ def test_symbolic_telegram_ui_labels_are_not_message_thread_ids() -> None:
     assert post.fallback_to_main_chat is True
 
 
-def test_report_checker_exposes_conflict_after_symbolic_ui_falls_back_to_scheduler() -> None:
+def test_report_checker_keeps_generic_report_distinct_from_market_scheduler_topics() -> None:
     config = {
         "telegram_ui": {
             "topic_routing": {
@@ -46,20 +46,20 @@ def test_report_checker_exposes_conflict_after_symbolic_ui_falls_back_to_schedul
             "topic_routing": {
                 "market_outlook": "9",
                 "post_market": "9",
-                "report": "",
+                "report": "107",
             }
         }
     }
-    router = TelegramRouter(config, {"TELEGRAM_THREAD_REPORT_ID": "9"})
+    router = TelegramRouter(config, {"TELEGRAM_THREAD_REPORT_ID": "107"})
 
     report_thread = effective_thread(router, scheduler, "position_management", "report")
     market_thread = effective_thread(router, scheduler, "market_outlook", "market_outlook")
     post_thread = effective_thread(router, scheduler, "post_market", "post_market")
 
-    assert report_thread == "9"
+    assert report_thread == "107"
     assert market_thread == "9"
     assert post_thread == "9"
-    assert report_thread in {market_thread, post_thread}
+    assert report_thread not in {market_thread, post_thread}
 
 
 def test_definitive_topic_validation_requires_real_send_message(monkeypatch) -> None:

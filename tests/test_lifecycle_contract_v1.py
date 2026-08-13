@@ -48,7 +48,7 @@ def test_tp1_is_milestone_and_tp2_is_full_close():
     assert [event["event_type"] for event in state.events] == ["TP1_HIT"]
 
     continued = evaluate_trade_path(
-        _bars([{"Date": "2026-08-05", "Open": 112, "High": 116, "Low": 106, "Close": 115}]),
+        _bars([{"Date": "2026-08-05", "Open": 112, "High": 116, "Low": 108, "Close": 115}]),
         entry_price=100,
         initial_stop=95,
         target_1=110,

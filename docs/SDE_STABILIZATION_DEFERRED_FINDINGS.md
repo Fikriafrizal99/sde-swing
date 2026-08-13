@@ -3,11 +3,9 @@
 ## Policy
 
 This file records observations discovered during stabilization that are outside
-the currently-owned P0/P1 commit scope or cannot be safely expanded without a
-separate design decision.
-
-Items here are not silently fixed. They remain visible for one consolidated
-discussion after the audit-driven stabilization sequence is complete.
+the agreed P0/P1 scope or require a separate design/governance decision.
+Resolved items are retained here when they were previously deferred, so their
+history is not lost.
 
 Cumulative status is tracked in:
 
@@ -21,21 +19,19 @@ New finding IDs use `NF-C<commit>-NNN`.
 
 Status: EVIDENCE UPDATE
 
-Audit history contains `28 failed / 492 passed`. Current Actions evidence on
-audited `121bc58` was re-characterized as `27 failed / 510 passed / 3 subtests
-passed`, with compile PASS.
+Audit history contains `28 failed / 492 passed`. Actions re-characterization on
+the audited `121bc58` baseline was `27 failed / 510 passed / 3 subtests passed`,
+with compile PASS. Commit 6 final candidate evidence is `565 passed / 3 subtests
+passed / 0 failed`.
 
-This changes the working failure inventory, not the audit verdict.
+This updates evidence; it does not rewrite the historical audit observation.
 
-### NF-C1-002 — `audit/**` branch is not covered by CI push trigger
+### NF-C1-002 — `audit/**` branch was not covered by CI push trigger
 
-Status: DEFERRED
+Status: **RESOLVED IN COMMIT 6**
 
-Current CI has pull-request coverage and push coverage for `main` / `agent/**`,
-but not direct push coverage for `audit/**`.
-
-Commit 6 must obtain complete final CI evidence; earlier commits do not broaden
-scope merely to change workflow triggers.
+Commit 6 adds direct push coverage for `audit/**` in `.github/workflows/ci.yml`.
+The release candidate successfully ran the full audit-branch workflow.
 
 ## Commit 2 observations
 
@@ -46,19 +42,16 @@ Status: DEFERRED
 `swing_utils.atomic_csv()` uses `<destination>.tmp`. Concurrent generic callers
 for the same destination could collide.
 
-The P0 V2 path is protected by its own unique-temp publisher and exclusive lock,
-so a generic helper refactor is outside Commit 2.
+The audited P0 V2 path is protected by its dedicated unique-temp publisher and
+exclusive lock. A generic helper redesign remains outside P0/P1 stabilization.
 
 ### NF-C2-002 / DF-C2-002 — Generic JSON writers are broader than V2
 
 Status: DEFERRED
 
-Runtime JSON writers outside the narrow V2 sidecar guard are not uniformly
-atomic.
-
-A global rewrite would span status, delivery, snapshots and manifests. Commit 4
-may change only a status writer directly required to close its audited P1
-finding; the generic hardening item remains deferred.
+JSON writers outside the audited V2/runtime-status slices are not uniformly
+atomic. A global rewrite would span snapshots, manifests and unrelated runtime
+state. Commit 4 hardened only its owned engine/delivery status slice.
 
 ## Commit 3 observations
 
@@ -66,42 +59,36 @@ finding; the generic hardening item remains deferred.
 
 Status: DEFERRED
 
-Live Exit Engine can exit on:
+Live Exit Engine can also exit on time-aligned broker/decision/runtime context,
+including strong broker distribution, decision downgrade and EMA-based runtime
+signals. The canonical historical lifecycle evaluator reproduces the audited
+price-derived TP1/TP2/stop/trailing/max-hold contract but cannot truthfully
+invent missing historical broker/decision context.
 
-- strong broker distribution;
-- decision downgrade;
-- close below EMA20.
+Post-stabilization work should either supply complete time-aligned historical
+context or formally classify those exits as runtime-only overlays with a
+separate reproducibility contract.
 
-The canonical historical lifecycle evaluator can reproduce price-derived
-TP1/TP2/stop/trailing/max-hold behavior. It cannot truthfully reproduce broker
-or decision-history exits unless the historical evaluator receives the
-corresponding time-aligned decision/broker context.
+### NF-C3-006 / DF-C3-002 — Existing lifecycle regression encoded TP1 full close
 
-The minimum lifecycle contract explicitly required by the audit is unified in
-Commit 3. Commit 3 does **not** invent historical broker/decision states merely
-to make those extra live exits appear replayable.
+Status: **RESOLVED IN COMMIT 6**
 
-Post-stabilization discussion should decide whether historical evaluation should
-receive full time-aligned context, or these exits should remain explicitly
-classified as runtime-only execution overlays with a separate reproducibility
-contract.
+The stale regression was updated to the audited lifecycle contract: TP1 is a
+milestone/open state with trailing activation; TP2 is the target close.
+Production semantics were not reverted to satisfy the old assertion.
 
-### NF-C3-006 / DF-C3-002 — Existing lifecycle regression encodes TP1 full close
+## Commit 4 observations
 
-Status: STALE TEST CONTRACT
+### NF-C4-006 / DF-C4-001 — Some legacy exception branches use repository-default traceback path
 
-`tests/test_outcome_tracker_lifecycle.py::
-test_waiting_trigger_opens_then_closes_at_tp1_with_events`
+Status: DEFERRED
 
-expects TP1 to close the trade and create a companion `CLOSED` event.
+Some legacy explicit exception branches still resolve traceback output through
+the repository-default path rather than `ctx.status_root`. Commit 4 closed the
+audited interrupt/status/lock lifecycle without broad path normalization.
 
-That expectation conflicts directly with the audited lifecycle contract and
-with Exit Engine semantics. It must be rewritten to TP1 milestone/open behavior;
-production code must not be reverted merely to satisfy this stale assertion.
-
-If the existing test is not rewritten inside Commit 3, it remains an explicit
-Commit 6 release-cleanup item and must not receive a waiver that legitimizes the
-old TP1 semantics.
+A future runtime-state cleanup may normalize this, but it is not required for
+the P0/P1 closure proven by Commit 6.
 
 ## Commit 5 observations
 
@@ -110,40 +97,53 @@ old TP1 semantics.
 Status: DEFERRED
 
 `config/data_sources.json` declares `HISTORICAL_PROVIDER` as the primary owner
-for `DailyBar`, while the provider note still says “Fallback only.”
+for `DailyBar`, while a provider note still says “Fallback only.”
 
-Commit 5 uses the ownership map as the executable contract and does not change
-provider priority or behavior merely to repair wording. The wording/config
-documentation inconsistency should be reviewed in the consolidated
-post-stabilization discussion.
+Commit 5 follows the executable ownership map. Documentation/config wording
+should be reconciled separately without changing provider priority casually.
 
 ### NF-C5-004 / DF-C5-002 — Generic canonical quality engine lacks configured BEI holiday injection
 
 Status: DEFERRED
 
-`DataSourceManager` constructs `DataQualityEngine()` without injecting the
-repository trading-calendar holiday/special-session configuration.
+`DataSourceManager` constructs its generic `DataQualityEngine()` without
+injecting the repository BEI holiday/special-session configuration.
 
-For Commit 5's production historical path, the Yahoo refresh manifest already
-selects the expected closed session and Yahoo files contain exchange sessions;
-the new adapter additionally requires every admitted symbol to contain that
-exact expected session.
+The stabilized production historical path remains protected by the Yahoo
+expected-closed-session manifest plus the adapter requirement that every
+admitted symbol contains the exact expected session. Manager-wide calendar
+injection would affect all canonical record types and remains a separate design
+change.
 
-Changing the manager-wide calendar construction would affect all canonical
-record types and is therefore broader than the two audited Commit 5 findings.
-It should be evaluated after the P0/P1 stabilization sequence unless final
-re-audit demonstrates release-blocking impact.
+## Commit 6 observations
 
-## Tracking rule for future commits
+Commit 6 discovered and resolved five release-cleanup observations:
 
-For Commit 6 and post-stabilization work:
+- `NF-C6-001` — compatibility facade recursion/delegation risk;
+- `NF-C6-002` — stale lifecycle/canonical/presentation regression contracts;
+- `NF-C6-003` — two distinct Post Market presentation contracts needed explicit separation;
+- `NF-C6-004` — generic REPORT ownership ambiguity between router and scheduler;
+- `NF-C6-005` — old Yahoo same-session regression contradicted the existing post-close revalidation safety contract.
 
-1. every newly observed problem receives `NF-Cx-NNN`;
-2. add it to `SDE_STABILIZATION_AUDIT_TRACEABILITY.md`;
-3. if outside current ownership, add detail here and mark `DEFERRED`;
-4. do not implement it silently under another finding;
-5. discuss remaining deferred items together after Commit 6/re-audit.
+Status for all five: **RESOLVED IN COMMIT 6**.
+
+No additional Commit 6 observation was deferred merely to make the release gate
+green. The remaining deferred list is the explicit set below.
+
+## Remaining post-stabilization discussion set
+
+1. `AF-P2-001` — Telegram idempotency check/write transaction locking.
+2. `AF-P2-002` — hotfix workflow write permission / auto-push governance.
+3. `AF-P2-003` — full DB revision immutability.
+4. `NF-C2-001` — generic `atomic_csv()` deterministic temp path.
+5. `NF-C2-002` — generic non-uniform JSON atomicity outside audited slices.
+6. `NF-C3-003` — reproducibility contract for runtime-only contextual exits.
+7. `NF-C4-006` — legacy traceback path normalization.
+8. `NF-C5-003` — HISTORICAL_PROVIDER wording vs ownership map.
+9. `NF-C5-004` — manager-wide BEI holiday injection for generic canonical quality validation.
 
 ## Discussion state
 
-Deferred items are observations, not approved implementation work.
+The six-commit P0/P1 stabilization sequence does not authorize these deferred
+items automatically. They should be reviewed as a separate post-stabilization
+backlog after the final Commit 6 SHA and CI evidence are confirmed.

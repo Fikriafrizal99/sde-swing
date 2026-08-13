@@ -69,7 +69,7 @@ def test_telegram_format_bolds_title_sections_and_headline() -> None:
     )
     assert "📰 <b>SDE SWING — MORNING NEWS</b>" in text
     assert "🧪 <b>Manual / Off-Hours News Run</b>" in text
-    assert "🌍 <b>GLOBAL MARKET</b>" in text
+    assert "🌍 <b>GLOBAL &amp; MACRO</b>" in text
     assert "◆ <b>Oil &amp; gold rise as yields fall</b>" in text
     assert "📊 <b>1 berita berdampak terhadap market</b>" in text
     assert "https://reuters.com/example?a=1&amp;b=2" in text

@@ -125,7 +125,7 @@ def test_legacy_open_ignores_stale_tp1_but_can_close_on_valid_tp2(tmp_path: Path
     row = conn.execute("SELECT * FROM signal_outcome_ledger WHERE signal_id='LEGACY-MDKA'").fetchone()
     assert row["current_status"] == "OPEN"
     assert not row["tp1_hit"]
-    assert row["final_outcome"] is None
+    assert row["final_outcome"] == "OPEN"
 
     _write_symbol_prices(
         historical,

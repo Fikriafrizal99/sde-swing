@@ -19,9 +19,27 @@ import pandas as pd
 from modules.exit_engine import exit_engine_baseline as _baseline
 from modules.analytics.lifecycle_contract import LIFECYCLE_CONTRACT_VERSION
 
+# Preserve baseline entry-plan callable before facade overrides are installed.
+# This lets regression tests monkeypatch facade dependencies while the actual
+# quant calculation remains byte-for-byte in the frozen baseline module.
+_baseline_build_entry_plan = _baseline.build_entry_plan
+
 for _name in dir(_baseline):
     if not _name.startswith("__"):
         globals()[_name] = getattr(_baseline, _name)
+
+
+def build_entry_plan(*args, **kwargs):
+    """Delegate to the frozen plan builder while honoring facade monkeypatches."""
+    forwarded = ("determine_stop", "resistance_levels")
+    previous = {name: getattr(_baseline, name) for name in forwarded}
+    try:
+        for name in forwarded:
+            setattr(_baseline, name, globals()[name])
+        return _baseline_build_entry_plan(*args, **kwargs)
+    finally:
+        for name, value in previous.items():
+            setattr(_baseline, name, value)
 
 
 def _truthy(value) -> bool:

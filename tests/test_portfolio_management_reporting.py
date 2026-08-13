@@ -56,34 +56,31 @@ def _row() -> dict:
     }
 
 
-def test_compact_portfolio_telegram_keeps_execution_levels_and_progressive_broker_conclusion():
+def test_compact_portfolio_telegram_keeps_summary_while_hold_reason_stays_in_data():
     rows = apply_report_interpretation([_row()], interpreter=None)
+    detail = rows[0]
     text = telegram_text(rows, "2026-08-07")
 
-    assert "📌 <b>BNBR</b> | 106 | +0,95%" in text
-    assert "<b>HOLD</b>" in text
-    assert "🎯 TP1 : -" in text
-    assert "🚀 TP2 : -" in text
-    assert "🛡️ SL  : -" in text
-    assert "Distribusi muncul dalam 2 sesi sejak entry" in text
-    assert "LG -Rp42,60 jt" in text
-    assert "AK -Rp27,30 jt" in text
-    assert "belum menjadi konfirmasi 3D untuk action engine" in text
-    assert "Keputusan HOLD mengikuti engine: Thesis belum invalid dan target awal belum selesai." in text
-    assert "Histori broker baru 2 sesi" not in text
-    assert "Initial TP/SL belum lengkap" in text
+    assert "<b>PORTFOLIO</b>" in text
+    assert "BNBR" in text and "HOLD" in text
+    assert "+0,95%" in text
+    assert "NEEDS ATTENTION" in text
+    assert "Tidak ada posisi yang membutuhkan tindakan khusus" in text
+    # HOLD remains compact in Telegram, while the deterministic explanation is
+    # preserved in the report row/JSON for auditability.
+    assert "Keputusan HOLD mengikuti engine: Thesis belum invalid dan target awal belum selesai." in detail["interpretation_main_reason"]
+    assert "LG -Rp42.6M" in detail["interpretation_main_reason"]
+    assert "AK -Rp27.3M" in detail["interpretation_main_reason"]
+    assert "belum menjadi konfirmasi 3D untuk action engine" in detail["interpretation_main_reason"]
+    assert "Initial TP/SL belum lengkap" in detail["interpretation_main_risk"]
+    assert detail["interpretation_main_reason"] not in text
 
-    # Detailed broker windows remain in JSON/database, not the Telegram body.
     assert "BROKER POSITION CONTEXT" not in text
-    assert "Today       :" not in text
-    assert "3D          :" not in text
-    assert "5D          :" not in text
-    assert "7D          :" not in text
     assert "Persistence" not in text
     assert "Flow Trend" not in text
 
 
-def test_one_day_broker_is_explained_immediately_with_actor_and_nominal():
+def test_one_day_broker_is_preserved_in_interpretation_but_hold_telegram_stays_compact():
     row = _row()
     row.update({
         "broker_observation_count": 1,
@@ -97,15 +94,19 @@ def test_one_day_broker_is_explained_immediately_with_actor_and_nominal():
             {"broker": "YP", "net_value": -11_700_000.0},
         ],
     })
-    text = telegram_text(apply_report_interpretation([row], interpreter=None), "2026-08-07")
+    rows = apply_report_interpretation([row], interpreter=None)
+    reason = rows[0]["interpretation_main_reason"]
+    text = telegram_text(rows, "2026-08-07")
 
-    assert "Distribusi muncul pada 1 sesi terbaru" in text
-    assert "LG -Rp18,40 jt" in text
-    assert "YP -Rp11,70 jt" in text
-    assert "persistence belum terkonfirmasi" in text
+    assert "Distribusi muncul pada 1 sesi terbaru" in reason
+    assert "LG -Rp18.4M" in reason
+    assert "YP -Rp11.7M" in reason
+    assert "persistence belum terkonfirmasi" in reason
+    assert reason not in text
+    assert "BNBR" in text and "HOLD" in text
 
 
-def test_three_day_context_uses_confirmed_window_and_keeps_engine_reason_authoritative():
+def test_three_day_exit_attention_uses_confirmed_context_and_engine_reason():
     row = _row()
     row.update({
         "broker_observation_count": 3,
@@ -117,11 +118,15 @@ def test_three_day_context_uses_confirmed_window_and_keeps_engine_reason_authori
         "initial_tp2": 140.0,
         "reason": "Initial stop pernah terlewati; thesis awal sudah invalid. Broker history: current=DISTRIBUTION; 3D=DISTRIBUTION(3/3).",
     })
-    text = telegram_text(apply_report_interpretation([row], interpreter=None), "2026-08-07")
+    rows = apply_report_interpretation([row], interpreter=None)
+    reason = rows[0]["interpretation_main_reason"]
+    text = telegram_text(rows, "2026-08-07")
 
-    assert "Context broker 3D DISTRIBUTION" in text
-    assert "sejak entry distributor utama LG -Rp42,60 jt dan AK -Rp27,30 jt" in text
-    assert "Keputusan EXIT mengikuti engine: Initial stop pernah terlewati; thesis awal sudah invalid." in text
+    assert "Context broker 3D DISTRIBUTION" in reason
+    assert "Keputusan EXIT mengikuti engine: Initial stop pernah terlewati; thesis awal sudah invalid." in reason
+    assert "LG -Rp42.6M" in reason and "AK -Rp27.3M" in reason
+    assert "<b>BNBR | EXIT</b>" in text
+    assert "Initial stop pernah terlewati" in text
     assert "alasan yang tidak dijelaskan" not in text
 
 
@@ -195,8 +200,6 @@ def test_manual_plan_fills_blank_initial_plan_without_overwriting_machine_levels
         ).fetchone()
         assert tuple(first) == (98.0, 115.0, 125.0, "MANUAL")
 
-        # A later manual edit may update the separate manual table, but it may
-        # never rewrite initial levels that are already fixed in the plan.
         set_manual_plan(
             conn,
             position_id="p1",

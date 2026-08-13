@@ -44,6 +44,7 @@ def test_detail_reports_escape_dynamic_values_and_do_not_expose_raw_arrays() -> 
         "broker_status": "ACCUMULATION",
         "broker_net_flow": 1_200_000_000,
         "top_buyers": [{"broker": "AB", "value": 100_000_000, "avg_price": 101}],
+        "top_sellers": [{"broker": "CD", "value": -80_000_000, "avg_price": 102}],
     }
     text = format_watchlist_detail(payload)
     assert "BBCA&lt;&amp;" in text

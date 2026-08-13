@@ -33,7 +33,7 @@ echo [10] Lihat Status Semua Setting
 echo [11] Test Semua Telegram Route
 echo [12] Set / Update Brave Search API Key
 echo [13] Test Brave Search API
-echo [14] Legacy: Auto-detect REPORT TEST + Validate
+echo [14] Auto-detect REPORT TEST + Validate + Simpan
 echo [15] Tampilkan Chat ID + Forum Topic IDs dari Telegram
 echo [0] Kembali
 echo.
@@ -139,6 +139,7 @@ goto MENU
 
 :AUTO_REPORT
 cls
+echo Auto-detect REPORT TEST + Validate + Simpan
 echo Kirim tepat REPORT TEST di topic Report sebelum melanjutkan.
 echo.
 set "REPORT_ID="
@@ -149,7 +150,21 @@ if not defined REPORT_ID (
   goto MENU
 )
 echo [DETECTED] message_thread_id=!REPORT_ID!
+echo Memvalidasi topic dengan sendMessage Telegram silent + auto-delete...
+%SDE_PYTHON_CMD% -u tools\check_telegram_report_route.py --thread-id "!REPORT_ID!" --definitive
+if errorlevel 1 (
+  echo [FAILED] REPORT topic TIDAK disimpan karena sendMessage Telegram gagal.
+  pause
+  goto MENU
+)
+setx TELEGRAM_THREAD_REPORT_ID "!REPORT_ID!" >nul
+if errorlevel 1 (
+  echo [FAILED] Gagal menyimpan TELEGRAM_THREAD_REPORT_ID.
+  pause
+  goto MENU
+)
 %SDE_PYTHON_CMD% -u tools\telegram_settings.py set-topic --name report --thread-id "!REPORT_ID!"
+echo [OK] REPORT topic tervalidasi dan disimpan: !REPORT_ID!
 pause
 goto MENU
 

@@ -40,9 +40,7 @@ def test_buy_date_daily_high_low_are_not_used_before_actual_buy(monkeypatch, tmp
         {"Date": "2026-08-13", "Open": 100, "High": 104, "Low": 96, "Close": 102, "Volume": 1_100},
     ])
     monkeypatch.setattr(engine, "compute_features", lambda raw, symbol: features.copy())
-
     snapshot = engine.technical_snapshot(tmp_path, "TEST", "2026-08-12")
-
     assert snapshot["max_high_since_buy"] == 104
     assert snapshot["min_low_since_buy"] == 96
     assert snapshot["buy_day_range_policy"] == "CLOSE_ONLY_ON_BUY_DATE"
@@ -55,9 +53,7 @@ def test_buy_date_close_can_still_confirm_end_of_session_level(monkeypatch, tmp_
         {"Date": "2026-08-12", "Open": 98, "High": 110, "Low": 90, "Close": 103, "Volume": 1_000},
     ])
     monkeypatch.setattr(engine, "compute_features", lambda raw, symbol: features.copy())
-
     snapshot = engine.technical_snapshot(tmp_path, "TEST", "2026-08-12")
-
     assert snapshot["max_high_since_buy"] == 103
     assert snapshot["min_low_since_buy"] == 103
 
@@ -95,7 +91,6 @@ def test_portfolio_broker_score_is_frozen_by_snapshot(monkeypatch) -> None:
 
     monkeypatch.setattr(broker_history, "broker_score_frame", changed_formula)
     second = broker_history._score_records(conn, [record], "TEST")[0]
-
     assert second["state"] == first["state"]
     assert second["score"] == first["score"]
     assert second["confidence"] == first["confidence"]
@@ -136,13 +131,13 @@ def test_active_portfolio_telegram_is_compact_and_attention_only() -> None:
             "interpretation_execution_note": "Prioritaskan keluar.",
         },
     ]
-
     text = runtime.telegram_text(results, "2026-08-12")
-
     assert "<pre>" in text
     assert "NEEDS ATTENTION" in text
     assert "BBBB | EXIT" in text
     assert "HOLD_REASON_SHOULD_NOT_BE_DETAILED" not in text
-    assert runtime.fmt_money(1_250) == "Rp1.25K"
-    assert runtime.fmt_money(1_250_000) == "Rp1.25M"
-    assert runtime.fmt_money(1_250_000_000) == "Rp1.25B"
+    # Broker-flow money is explicitly signed; price/position formatting lives
+    # in the portfolio table and remains unsigned there.
+    assert runtime.fmt_money(1_250) == "+Rp1.25K"
+    assert runtime.fmt_money(1_250_000) == "+Rp1.25M"
+    assert runtime.fmt_money(1_250_000_000) == "+Rp1.25B"

@@ -142,8 +142,6 @@ def test_missing_exact_idx_session_does_not_backfill_older_session(tmp_path: Pat
     conn = sqlite3.connect(tmp_path / "history.db")
     try:
         ensure_schema(conn)
-        # Expected 5D ending 2026-08-12 is 06, 07, 10, 11, 12.  The older
-        # 05 session must not be used to make the window appear complete.
         for day in ("2026-08-05", "2026-08-06", "2026-08-10", "2026-08-11", "2026-08-12"):
             _insert_daily(conn, day)
         conn.commit()
@@ -271,7 +269,7 @@ def test_ai_exception_falls_back_without_changing_engine_owned_fields() -> None:
     assert all(result[key] == value for key, value in original.items())
 
 
-def test_hold_with_unconfirmed_distribution_explains_warning_without_overriding_engine() -> None:
+def test_hold_with_unconfirmed_distribution_keeps_reason_in_data_not_compact_telegram() -> None:
     row = _reason_row()
     row.update({
         "management_action": "HOLD",
@@ -287,7 +285,11 @@ def test_hold_with_unconfirmed_distribution_explains_warning_without_overriding_
         "broker_context_5d_coverage_text": "2/5",
         "reason": "Thesis belum invalid dan target awal belum tercapai. Broker history: current=DISTRIBUTION.",
     })
-    text = telegram_text(apply_report_interpretation([row], interpreter=None), "2026-08-12")
-    assert text.index("Keputusan HOLD mengikuti engine:") < text.index("Distribution adalah warning")
-    assert "belum cukup terkonfirmasi" in text
-    assert "Broker 5D" not in text
+    results = apply_report_interpretation([row], interpreter=None)
+    reason = results[0]["interpretation_main_reason"]
+    text = telegram_text(results, "2026-08-12")
+    assert reason.index("Keputusan HOLD mengikuti engine:") < reason.index("Distribution adalah warning")
+    assert "belum cukup terkonfirmasi" in reason
+    assert "Broker 5D" not in reason
+    assert reason not in text
+    assert "Tidak ada posisi yang membutuhkan tindakan khusus" in text

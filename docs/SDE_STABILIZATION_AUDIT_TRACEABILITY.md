@@ -13,7 +13,8 @@ Cumulative tracking register for audit-driven work on
 - Package/config: `1.7.0-multisource`
 - Production profile: `MODERATE_BASELINE`
 - Auto-entry: `false`
-- Approved operation until re-audit: supervised/shadow only
+- Approved autonomous operation: **not enabled**
+- Stabilization scope: P0/P1 only; P2 remains tracked separately
 
 Commit ownership:
 
@@ -32,21 +33,22 @@ Commit ownership:
 - `DEFERRED`
 - `EVIDENCE UPDATE`
 - `STALE TEST CONTRACT`
+- `RESOLVED IN COMMIT 6`
 
 ## Master audit finding register
 
-| ID | Priority | Audit finding | Owner | Current status | Evidence / next proof |
+| ID | Priority | Audit finding | Owner | Final status | Evidence |
 |---|---|---|---|---|---|
-| AF-P0-001 | P0 | CI suite red | Commit 6 | OPEN | Historical audit 28 failed / 492 passed. Current audited-base Actions evidence: 27 failed / 510 passed / 3 subtests passed; compile PASS. |
-| AF-P0-002 | P0 | Shared `FINAL_DECISION_V2.csv` writer not fully serialized/locked | Commit 2 | IMPLEMENTED / PENDING RE-AUDIT | Dedicated V2 writer lock, run-scoped artifact, atomic canonical publish, SHA equivalence, stale sidecar rejection. |
-| AF-P1-001 | P1 | Canonical data layer is not production execution boundary | Commit 5 | IMPLEMENTED / PENDING RE-AUDIT | Production technical wrapper now materializes historical rows through `DataSourceManager.route` into run-scoped canonical DailyBar CSVs; raw provider folder is not engine input. Final runtime/re-audit proof required. |
-| AF-P1-002 | P1 | TP1/lifecycle semantics differ across Exit Engine, tracker, DB, shadow and backtest | Commit 3 | IMPLEMENTED / PENDING RE-AUDIT | `SDE_SWING_LIFECYCLE_V1`; TP1 milestone/open, TP2 close, same-candle stop priority, max-hold, actual trigger entry. |
-| AF-P1-003 | P1 | Resend/delivery can overwrite engine `*_latest.json` | Commit 4 | IMPLEMENTED / PENDING RE-AUDIT | `SDE_RUNTIME_STATUS_V1`: engine channel retained; delivery/resend channel added; resend declares `engine_mutation=NONE`. |
-| AF-P1-004 | P1 | Interrupt can leave inconsistent terminal state such as FAILED + exit code 0 | Commit 4 | IMPLEMENTED / PENDING RE-AUDIT | Lock-boundary interrupt terminalization, exit 130 evidence, traceback, FAILED/nonzero invariant, ownership-safe release. |
-| AF-P1-005 | P1 | Conflicting market dates can select a winner with fail-closed false | Commit 5 | IMPLEMENTED / PENDING RE-AUDIT | `ConflictResolver` now returns no winner, `CONFLICT_FAIL_CLOSED`, `fail_closed=true`, and rejected candidate quality for market-date mismatch. Final re-audit required. |
-| AF-P2-001 | P2 | Telegram idempotency check/write not transaction-locked | Post-stabilization | DEFERRED | Explicitly outside P0/P1 scope. |
-| AF-P2-002 | P2 | Hotfix workflow has `contents: write` and auto-push | Post-stabilization | DEFERRED | Governance/security follow-up. |
-| AF-P2-003 | P2 | DB revision history not fully immutable | Post-stabilization | DEFERRED | Full DB revision redesign excluded. |
+| AF-P0-001 | P0 | CI suite red | Commit 6 | **CLOSED BY RE-AUDIT** | Historical audit retained at 28 failed / 492 passed; audited-base re-characterization was 27 failed / 510 passed / 3 subtests. Commit 6 candidate full CI: **565 passed, 3 subtests passed, 0 failed** plus all release gates PASS. |
+| AF-P0-002 | P0 | Shared `FINAL_DECISION_V2.csv` writer not fully serialized/locked | Commit 2 | **CLOSED BY RE-AUDIT** | Dedicated V2 writer lock, run-scoped artifact, atomic canonical publish, SHA equivalence and stale-sidecar rejection; full regression suite PASS. |
+| AF-P1-001 | P1 | Canonical data layer is not production execution boundary | Commit 5 | **CLOSED BY RE-AUDIT** | Production technical wrapper materializes provider rows through `DataSourceManager.route` into run-scoped canonical DailyBar CSVs; full canonical/data-path tests and contract validator PASS. |
+| AF-P1-002 | P1 | TP1/lifecycle semantics differ across Exit Engine, tracker, DB, shadow and backtest | Commit 3 | **CLOSED BY RE-AUDIT** | `SDE_SWING_LIFECYCLE_V1`: TP1 milestone/open, TP2 close, same-candle stop priority, max-hold and actual trigger entry; cross-path tests PASS. |
+| AF-P1-003 | P1 | Resend/delivery can overwrite engine `*_latest.json` | Commit 4 | **CLOSED BY RE-AUDIT** | `SDE_RUNTIME_STATUS_V1`: engine and delivery channels separated; resend declares no engine mutation; full suite PASS. |
+| AF-P1-004 | P1 | Interrupt can leave inconsistent terminal state such as FAILED + exit code 0 | Commit 4 | **CLOSED BY RE-AUDIT** | Interrupt terminalization, exit 130, traceback, FAILED/nonzero invariant and ownership-safe lock release all covered by passing regression tests. |
+| AF-P1-005 | P1 | Conflicting market dates can select a winner with fail-closed false | Commit 5 | **CLOSED BY RE-AUDIT** | `ConflictResolver` returns no winner, `CONFLICT_FAIL_CLOSED`, `fail_closed=true`; conflict regressions PASS. |
+| AF-P2-001 | P2 | Telegram idempotency check/write not transaction-locked | Post-stabilization | **DEFERRED** | Explicitly outside P0/P1 scope. |
+| AF-P2-002 | P2 | Hotfix workflow has `contents: write` and auto-push | Post-stabilization | **DEFERRED** | Governance/security follow-up. |
+| AF-P2-003 | P2 | DB revision history not fully immutable | Post-stabilization | **DEFERRED** | Full DB revision redesign excluded. |
 
 ## Historical audit evidence retained
 
@@ -61,7 +63,7 @@ Commit ownership:
 - AVOID: 17
 - Auto-entry: `false`
 
-Implementation commits must not rewrite these facts.
+Implementation commits and final re-audit do not rewrite these historical facts.
 
 ## Commit register
 
@@ -69,7 +71,7 @@ Implementation commits must not rewrite these facts.
 
 Commit: `78231c9f624c287fe0bdc24e090bb5015accecbd`
 
-Status: IMPLEMENTED
+Status: IMPLEMENTED / VERIFIED BY FINAL RE-AUDIT
 
 Evidence: `config/audit_quant_freeze.json`, `tools/ci_validate_quant_freeze.py`,
 `tests/test_audit_quant_freeze.py`, `docs/SDE_STABILIZATION_BASELINE.md`.
@@ -78,24 +80,22 @@ Evidence: `config/audit_quant_freeze.json`, `tools/ci_validate_quant_freeze.py`,
 
 Commit: `07efef3accfc864406a7e7d18a97a10bd3a8ff3b`
 
-Status: IMPLEMENTED / PENDING RE-AUDIT
+Status: CLOSED BY RE-AUDIT
 
 Evidence: `modules/broker_fusion/broker_fusion_publisher.py`,
 `tests/test_artifact_integrity_v2.py`,
 `docs/SDE_STABILIZATION_COMMIT2_ARTIFACT_INTEGRITY.md`.
 
-Shared V2 publication remains Commit 2 ownership.
-
 ### Commit 3 — Lifecycle consistency
 
 Commit: `3713dae78cbd6b7b4c5dc94cc45d409a9671824f`
 
-Status: IMPLEMENTED / PENDING RE-AUDIT
+Status: CLOSED BY RE-AUDIT
 
 Contract: `SDE_SWING_LIFECYCLE_V1`
 
-Evidence: `modules/analytics/lifecycle_contract.py`, lifecycle facades +
-byte-preserved baseline modules, `tests/test_lifecycle_contract_v1.py`,
+Evidence: `modules/analytics/lifecycle_contract.py`, lifecycle facades,
+`tests/test_lifecycle_contract_v1.py`,
 `tests/test_lifecycle_commit3_verification.py`, and
 `docs/SDE_STABILIZATION_COMMIT3_LIFECYCLE_CONSISTENCY.md`.
 
@@ -103,7 +103,7 @@ byte-preserved baseline modules, `tests/test_lifecycle_contract_v1.py`,
 
 Commit: `1158828fd91a2f40d1814fef3112d360c2ba610e`
 
-Status: IMPLEMENTED / PENDING RE-AUDIT
+Status: CLOSED BY RE-AUDIT
 
 Contract: `SDE_RUNTIME_STATUS_V1`
 
@@ -115,25 +115,20 @@ Evidence:
 - `tests/test_runtime_status_commit4.py`
 - `docs/SDE_STABILIZATION_COMMIT4_RUNTIME_STATUS_LOCKING.md`
 
-Semantics:
+Verified semantics:
 
-- `<job>_latest.json` is engine/job owned;
-- resend/delivery uses `<job>_delivery_latest.json` plus dated delivery records;
+- `<job>_latest.json` remains engine/job owned;
+- resend/delivery uses a separate delivery channel;
 - resend never writes engine latest;
-- engine/process status and delivery status are explicit independent fields;
 - terminal FAILED cannot retain exit code zero;
-- KeyboardInterrupt crossing the job lock writes FAILED/INTERRUPTED, exit 130,
-  finished time, errors and traceback before release;
-- lock ownership is token/run/PID/host based;
-- fresh foreign-host locks are not invalidated by local PID probes;
-- stale candidate content is rechecked immediately before unlink.
+- KeyboardInterrupt crossing the job lock writes terminal interrupt evidence;
+- lock ownership is token/run/PID/host based and stale cleanup rechecks before unlink.
 
 ### Commit 5 — Canonical data path
 
-Commit: this commit; final SHA is the parent of Commit 6 and will be pinned in
-final re-audit.
+Commit: `e1344f43a9248fc72b3673edf7dfa91463df6051`
 
-Status: IMPLEMENTED / PENDING RE-AUDIT
+Status: CLOSED BY RE-AUDIT
 
 Contract: `SDE_CANONICAL_DAILY_HISTORY_V1`
 
@@ -146,96 +141,129 @@ Evidence:
 - `tests/test_canonical_data_path_commit5.py`
 - `docs/SDE_STABILIZATION_COMMIT5_CANONICAL_DATA_PATH.md`
 
-Semantics:
+Verified semantics:
 
-- Yahoo/historical remains acquisition-only;
-- the configured technical wrapper is the production boundary used by
-  `master_pipeline.py` and the integrated runner;
-- current symbols are selected from the Yahoo refresh manifest;
-- each historical row is mapped to canonical `DailyBar` and passed through
-  `DataSourceManager.route`;
-- the frozen Technical Feature Engine receives only run-scoped canonical CSVs;
-- source/canonical file hashes and run lineage are persisted;
-- rows after the expected closed date are blocked from engine input;
-- a symbol missing the expected canonical date is excluded, never substituted;
+- Yahoo/historical is acquisition-only;
+- production technical wrapper is the engine boundary;
+- rows are mapped to canonical DailyBar through `DataSourceManager.route`;
+- frozen Technical Feature Engine receives run-scoped canonical CSVs;
+- source/canonical hashes and run lineage are persisted;
+- rows after expected closed date are blocked;
+- missing expected canonical date is excluded rather than substituted;
 - market-date conflict returns no winner and fails closed.
+
+### Commit 6 — CI / release cleanup + final re-audit
+
+Commit: the commit containing this register, with
+`e1344f43a9248fc72b3673edf7dfa91463df6051` as its direct parent.
+The exact SHA is authoritative in Git and intentionally not self-embedded.
+
+Status: **CLOSED BY RE-AUDIT**, contingent on the identical squashed tree passing
+its final GitHub Actions run; that final run is the authoritative release check
+attached to the Commit 6 SHA.
+
+Candidate evidence before squash:
+
+- GitHub Actions run `31666812332`
+- job `94343092346`
+- candidate tree head `5ddfcd09c221ae73d0e5ca72d3d0599a9f81372a`
+- compile PASS
+- quant freeze PASS
+- full pytest: **565 passed, 3 subtests passed, 0 failed**
+- `git diff --check` PASS
+- runtime config gate PASS (`VALID_WITH_WARNINGS`)
+- canonical + multi-day contract PASS
+- source integrity PASS
+- credential scan PASS
+
+Detailed evidence:
+`docs/SDE_STABILIZATION_COMMIT6_RELEASE_EVIDENCE.md`.
 
 ## New findings discovered during stabilization
 
-| ID | Found during | Observation | Disposition | Status |
+| ID | Found during | Observation | Disposition | Final status |
 |---|---|---|---|---|
-| NF-C1-001 | Commit 1 | Historical test evidence 28/492 differs from current audited-base Actions evidence 27/510/3 subtests | Commit 6 evidence | EVIDENCE UPDATE |
-| NF-C1-002 | Commit 1 | `audit/**` excluded from CI push trigger; PR trigger remains | Commit 6 | DEFERRED |
+| NF-C1-001 | Commit 1 | Historical test evidence 28/492 differs from audited-base Actions evidence 27/510/3 subtests | Commit 6 evidence | EVIDENCE UPDATE |
+| NF-C1-002 | Commit 1 | `audit/**` excluded from CI push trigger | Commit 6 added `audit/**` push coverage | **RESOLVED IN COMMIT 6** |
 | NF-C2-001 | Commit 2 | Generic `swing_utils.atomic_csv()` uses deterministic destination tmp | Post-stabilization | DEFERRED |
-| NF-C2-002 | Commit 2 | Generic JSON writers outside V2 are not uniformly atomic | Post-stabilization unless release-blocking | DEFERRED |
-| NF-C3-001 | Commit 3 | DB/backtest used D7/reference shortcut rather than ordered actual-entry lifecycle | Commit 3 | IMPLEMENTED / PENDING RE-AUDIT |
-| NF-C3-002 | Commit 3 | Shadow inferred TP hit rates from final-outcome text | Commit 3 | IMPLEMENTED / PENDING RE-AUDIT |
+| NF-C2-002 | Commit 2 | Generic JSON writers outside V2 are not uniformly atomic | Post-stabilization | DEFERRED |
+| NF-C3-001 | Commit 3 | DB/backtest used D7/reference shortcut rather than ordered actual-entry lifecycle | Commit 3 | CLOSED BY RE-AUDIT |
+| NF-C3-002 | Commit 3 | Shadow inferred TP hit rates from final-outcome text | Commit 3 | CLOSED BY RE-AUDIT |
 | NF-C3-003 | Commit 3 | Runtime broker/decision/EMA exits cannot be perfectly replayed without historical context | Post-stabilization | DEFERRED |
-| NF-C3-004 | Commit 3 | Exit state lacked explicit TP1/trailing persistence | Commit 3 | IMPLEMENTED / PENDING RE-AUDIT |
-| NF-C3-005 | Commit 3 | Tracker post-entry evaluation could be truncated by trigger-expiry window | Commit 3 | IMPLEMENTED / PENDING RE-AUDIT |
-| NF-C3-006 | Commit 3 | Existing regression encodes TP1-as-full-close | Commit 6 test cleanup | STALE TEST CONTRACT |
-| NF-C3-007 | Commit 3 verification | Same-session Exit Engine rerun could advance holding age twice | Commit 3 | IMPLEMENTED / PENDING RE-AUDIT |
-| NF-C3-008 | Commit 3 verification | Initial backtest compatibility facade could recurse | Commit 3 | IMPLEMENTED / PENDING RE-AUDIT |
-| NF-C4-001 | Commit 4 | Delivery-only resend reused engine status writer and could replace engine latest | Commit 4 | IMPLEMENTED / PENDING RE-AUDIT |
-| NF-C4-002 | Commit 4 | `KeyboardInterrupt` bypassed `except Exception` and could release job lock without terminal status | Commit 4 | IMPLEMENTED / PENDING RE-AUDIT |
-| NF-C4-003 | Commit 4 | Status writer accepted terminal FAILED with exit code 0 | Commit 4 | IMPLEMENTED / PENDING RE-AUDIT |
-| NF-C4-004 | Commit 4 | Lock release unlinked by path without verifying owner identity | Commit 4 | IMPLEMENTED / PENDING RE-AUDIT |
-| NF-C4-005 | Commit 4 | Stale-lock PID liveness was checked without host ownership | Commit 4 | IMPLEMENTED / PENDING RE-AUDIT |
-| NF-C4-006 | Commit 4 | Some legacy explicit exception branches use repository-default traceback path instead of `ctx.status_root` | Post-stabilization path normalization unless Commit 6 proves release-blocking | DEFERRED |
-| NF-C5-001 | Commit 5 | Production technical wrapper filtered the current universe but still hardlinked/copied raw provider CSVs into the Technical Feature Engine input | Commit 5 | IMPLEMENTED / PENDING RE-AUDIT |
-| NF-C5-002 | Commit 5 | Market-date mismatch selected a source-priority winner with `fail_closed=false` | Commit 5 | IMPLEMENTED / PENDING RE-AUDIT |
-| NF-C5-003 | Commit 5 | `HISTORICAL_PROVIDER` config note says “Fallback only” although DailyBar ownership declares it primary | Post-stabilization documentation/config wording review | DEFERRED |
-| NF-C5-004 | Commit 5 | DataSourceManager constructs its quality engine without injecting the configured BEI holiday calendar; Yahoo acquisition already constrains actual sessions, but generic canonical holiday validation is not fully calendar-bound | Post-stabilization canonical quality hardening unless Commit 6 proves release-blocking | DEFERRED |
+| NF-C3-004 | Commit 3 | Exit state lacked explicit TP1/trailing persistence | Commit 3 | CLOSED BY RE-AUDIT |
+| NF-C3-005 | Commit 3 | Tracker post-entry evaluation could be truncated by trigger-expiry window | Commit 3 | CLOSED BY RE-AUDIT |
+| NF-C3-006 | Commit 3 | Existing regression encoded TP1-as-full-close | Commit 6 stale-test cleanup | **RESOLVED IN COMMIT 6** |
+| NF-C3-007 | Commit 3 verification | Same-session Exit Engine rerun could advance holding age twice | Commit 3 | CLOSED BY RE-AUDIT |
+| NF-C3-008 | Commit 3 verification | Initial backtest compatibility facade could recurse | Commit 3 | CLOSED BY RE-AUDIT |
+| NF-C4-001 | Commit 4 | Delivery-only resend reused engine status writer | Commit 4 | CLOSED BY RE-AUDIT |
+| NF-C4-002 | Commit 4 | `KeyboardInterrupt` bypassed `except Exception` terminalization | Commit 4 | CLOSED BY RE-AUDIT |
+| NF-C4-003 | Commit 4 | Status writer accepted terminal FAILED with exit code 0 | Commit 4 | CLOSED BY RE-AUDIT |
+| NF-C4-004 | Commit 4 | Lock release unlinked by path without owner verification | Commit 4 | CLOSED BY RE-AUDIT |
+| NF-C4-005 | Commit 4 | Stale-lock PID liveness was checked without host ownership | Commit 4 | CLOSED BY RE-AUDIT |
+| NF-C4-006 | Commit 4 | Some legacy exception branches use repository-default traceback path rather than `ctx.status_root` | Post-stabilization | DEFERRED |
+| NF-C5-001 | Commit 5 | Production wrapper still hardlinked/copied raw provider CSVs into TFE input | Commit 5 canonicalization | CLOSED BY RE-AUDIT |
+| NF-C5-002 | Commit 5 | Market-date mismatch selected source-priority winner with `fail_closed=false` | Commit 5 | CLOSED BY RE-AUDIT |
+| NF-C5-003 | Commit 5 | `HISTORICAL_PROVIDER` note says “Fallback only” although DailyBar ownership says primary | Post-stabilization | DEFERRED |
+| NF-C5-004 | Commit 5 | Generic canonical quality engine lacks configured BEI holiday injection | Post-stabilization | DEFERRED |
+| NF-C6-001 | Commit 6 | Stabilization compatibility facades could recurse/bypass baseline delegates | Commit 6 facade repair | **RESOLVED IN COMMIT 6** |
+| NF-C6-002 | Commit 6 | Multiple legacy regressions encoded superseded lifecycle/canonical/presentation contracts | Commit 6 test-contract cleanup | **RESOLVED IN COMMIT 6** |
+| NF-C6-003 | Commit 6 | Post Market has diagnostic and market-first contracts that must remain distinct | Explicit payload/version contract | **RESOLVED IN COMMIT 6** |
+| NF-C6-004 | Commit 6 | Generic REPORT ownership was ambiguous between router and scheduler | Router isolation + scheduler fallback + definitive validation | **RESOLVED IN COMMIT 6** |
+| NF-C6-005 | Commit 6 | Same-session Yahoo regression contradicted post-close revalidation safety contract | Regression aligned to existing revalidation behavior | **RESOLVED IN COMMIT 6** |
 
 Detailed non-blocking observations remain in
 `docs/SDE_STABILIZATION_DEFERRED_FINDINGS.md`.
 
 ## Guardrail traceability
 
-| Guardrail | Current state |
+| Guardrail | Final re-audit state |
 |---|---|
-| `auto_entry_enabled=false` | FROZEN by Commit 1 |
-| `MODERATE_BASELINE` | FROZEN by Commit 1 |
-| Scoring/weights/thresholds | FROZEN by Commit 1 |
-| Hard blockers | FROZEN by Commit 1 |
-| Entry-zone calculation | FROZEN by Commit 1 |
-| Initial SL calculation | FROZEN by Commit 1 |
-| TP1/TP2 price calculation | FROZEN by Commit 1 |
-| Closed-candle policy | FROZEN by Commit 1 |
-| Protected Technical Feature Engine | MUST REMAIN byte-identical |
-| Shared V2 publication | Commit 2 ownership; MUST REMAIN |
-| Broker date/coverage validation | MUST REMAIN |
-| Data-quality propagation | MUST REMAIN |
-| Config hash/run manifest | MUST REMAIN |
-| SQLite integrity/WAL/FK checks | MUST REMAIN |
-| Lifecycle event idempotency | MUST REMAIN |
-| Shadow-only profile comparison | MUST REMAIN |
+| `auto_entry_enabled=false` | FROZEN / PASS |
+| `MODERATE_BASELINE` | FROZEN / PASS |
+| Scoring/weights/thresholds | FROZEN / PASS |
+| Hard blockers | FROZEN / PASS |
+| Entry-zone calculation | FROZEN / PASS |
+| Initial SL calculation | FROZEN / PASS |
+| TP1/TP2 price calculation | FROZEN / PASS |
+| Closed-candle policy | FROZEN / PASS |
+| Protected Technical Feature Engine | Quant/source freeze validator PASS |
+| Shared V2 publication | Serialized/atomic/hash-consistent regressions PASS |
+| Broker date/coverage validation | PASS |
+| Data-quality propagation | PASS |
+| Config hash/run manifest | PASS |
+| SQLite integrity/WAL/FK checks | Regression suite PASS |
+| Lifecycle event idempotency | PASS |
+| Shadow-only profile comparison | PASS |
 
-## Release-gate tracking
+## Release-gate result
 
-Commit 6/re-audit must prove:
+Commit 6 evidence demonstrates:
 
-- no unwaived required-test failures;
+- no required-test failures;
 - quant freeze passes;
-- protected Technical Feature Engine remains byte-identical;
-- final run lineage reconstructs raw acquisition -> canonical DailyBar ->
-  technical -> V2 -> V3 -> exit -> DB -> delivery;
-- canonical historical source/canonical hashes match recorded lineage;
-- Technical Feature Engine input is canonical, not the raw provider directory;
-- conflicting market dates fail closed with no winner;
-- V2 publication remains serialized/atomic/hash-consistent;
-- resend leaves engine latest byte/content-hash unchanged;
-- delivery channel remains independent from engine channel;
-- interrupt evidence has terminal status + nonzero code + traceback before lock release;
-- lock ownership/stale cleanup regression passes;
-- canonical lifecycle semantics remain identical;
-- auto-entry remains false.
+- canonical/data-path contracts pass;
+- conflict dates fail closed with no winner;
+- V2 publication integrity regressions pass;
+- resend/engine status separation regressions pass;
+- interrupt and lock-owner regressions pass;
+- lifecycle semantics pass across owned evaluation paths;
+- auto-entry remains false;
+- audit branch now receives direct-push CI coverage;
+- source-integrity and credential scans pass.
+
+CI deliberately runs without live provider or Telegram credentials. Therefore
+this re-audit is deterministic code/config/contract evidence, not proof that a
+real provider or Telegram endpoint was reachable during CI.
 
 ## Final re-audit closure
 
-Do not mark an `AF-*` finding `CLOSED BY RE-AUDIT` until Commit 6.
+**P0/P1 stabilization: GREEN / PASS.**
 
-For each item, record final owning SHA, full tests/results, runtime run ID,
-hashes/lineage, residual risk and release impact.
+All original P0/P1 findings are closed by re-audit evidence. Original P2
+findings and explicitly deferred new findings remain open for consolidated
+post-stabilization discussion.
 
-The historical AMBER/RED and 64/100 verdict remain provisional until re-audit.
+The historical `64/100 — AMBER/RED` audit verdict remains an immutable baseline
+record. It is not overwritten by this register. The new conclusion is that the
+agreed P0/P1 stabilization gate has passed while `auto_entry_enabled=false`
+continues to prohibit autonomous order entry.

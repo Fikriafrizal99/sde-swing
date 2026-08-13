@@ -6,17 +6,8 @@ import math
 import re
 from typing import Any, Mapping
 
-
-_MISSING = {
-    "",
-    "nan",
-    "none",
-    "null",
-    "engine_data_not_available",
-    "data_not_available",
-    "n/a",
-}
 _SEPARATOR = "━━━━━━━━━━━━━━━━━━━━"
+_MISSING = {"", "nan", "none", "null", "n/a", "engine_data_not_available", "data_not_available"}
 
 
 def _raw(value: Any) -> str:
@@ -46,14 +37,14 @@ def _num(value: Any) -> float | None:
 
 
 def _idx_tick_size(price: float) -> float:
-    value = abs(float(price))
-    if value < 200:
+    price = abs(float(price))
+    if price < 200:
         return 1.0
-    if value < 500:
+    if price < 500:
         return 2.0
-    if value < 2_000:
+    if price < 2_000:
         return 5.0
-    if value < 5_000:
+    if price < 5_000:
         return 10.0
     return 25.0
 
@@ -67,13 +58,7 @@ def _price(value: Any, fallback: str = "N/A") -> str:
     return f"{rounded:,.0f}".replace(",", ".")
 
 
-def _enum(
-    value: Any,
-    fallback: str = "N/A",
-    *,
-    upper: bool = False,
-    lower: bool = False,
-) -> str:
+def _enum(value: Any, fallback: str = "N/A", *, upper: bool = False, lower: bool = False) -> str:
     text = _raw(value)
     if not text:
         return fallback
@@ -95,7 +80,7 @@ def _confidence(value: Any) -> str:
     if number is None:
         return "N/A"
     if 0 <= number <= 1:
-        number *= 100.0
+        number *= 100
     return f"{number:.0f}%"
 
 
@@ -104,8 +89,9 @@ def _pct(value: Any, *, concentration: bool = False) -> str:
     if number is None:
         return "N/A"
     if concentration and abs(number) <= 1:
-        number *= 100.0
-    return f"{number:.2f}%" if concentration else f"{number:+.2f}%"
+        number *= 100
+    rendered = f"{number:.2f}%" if concentration else f"{number:+.2f}%"
+    return rendered
 
 
 def _money(value: Any, *, signed: bool = True) -> str:
@@ -122,7 +108,7 @@ def _money(value: Any, *, signed: bool = True) -> str:
         scaled, unit = amount / 1_000, "K"
     else:
         return f"{sign}Rp{amount:,.0f}".replace(",", ".")
-    rendered = f"{scaled:.2f}".rstrip("0").rstrip(".")
+    rendered = f"{scaled:.2f}".replace(".", ",")
     return f"{sign}Rp{rendered}{unit}"
 
 
@@ -131,140 +117,88 @@ def _rr(value: Any) -> str:
     return f"{number:.2f}".replace(".", ",") if number is not None else "N/A"
 
 
-def _day_count(value: Any) -> str:
+def _days(value: Any) -> str:
     number = _num(value)
     return str(int(round(number))) if number is not None else "N/A"
 
 
-def _period_session_text(value: Any) -> str:
-    raw = value
-    if isinstance(raw, str):
-        text = raw.strip()
+def _list(value: Any) -> list[Any]:
+    if isinstance(value, str):
+        text = value.strip()
         if text.startswith("["):
             try:
-                raw = json.loads(text)
+                value = json.loads(text)
             except Exception:
-                raw = [item.strip() for item in text.split(",") if item.strip()]
+                return []
         else:
-            raw = [item.strip() for item in text.split(",") if item.strip()]
-    if isinstance(raw, (list, tuple)):
-        return ", ".join(str(item)[:10] for item in raw if str(item).strip())
-    return _raw(raw)
+            return []
+    return list(value or []) if isinstance(value, (list, tuple)) else []
 
 
-def _period_coverage(row: Mapping[str, Any]) -> str:
-    text = _raw(_pick(row, "broker_coverage_text", "Broker_Coverage_Text"))
-    if text:
-        return text
-    ratio = _num(_pick(row, "broker_session_coverage", "broker_coverage"))
-    expected = _num(_pick(row, "broker_trading_days", "Broker_Trading_Days"))
-    if ratio is not None and expected is not None:
-        if 0 <= ratio <= 1:
-            return f"{int(round(ratio * expected))}/{int(round(expected))}"
-        return f"{int(round(ratio))}/{int(round(expected))}"
-    return "N/A"
-
-
-def _period_is_multi(period_type: str) -> bool:
-    return bool(period_type) and period_type not in {"1D", "1DAY", "DAY"}
-
-
-def _period_range_text(start: Any, end: Any) -> str:
-    months = {
-        1: "Jan",
-        2: "Feb",
-        3: "Mar",
-        4: "Apr",
-        5: "Mei",
-        6: "Jun",
-        7: "Jul",
-        8: "Aug",
-        9: "Sep",
-        10: "Okt",
-        11: "Nov",
-        12: "Des",
-    }
-
-    def parts(value: Any) -> tuple[int, int, int] | None:
-        text = _raw(value)[:10]
-        try:
-            year, month, day = (int(item) for item in text.split("-"))
-            return year, month, day
-        except Exception:
-            return None
-
-    left, right = parts(start), parts(end)
-    if left is None or right is None:
-        start_text = _raw(start) or "N/A"
-        end_text = _raw(end) or "N/A"
-        return start_text if start_text == end_text else f"{start_text}–{end_text}"
-
-    sy, sm, sd = left
-    ey, em, ed = right
-    if left == right:
-        return f"{sd} {months.get(sm, str(sm))}"
-    if sy == ey and sm == em:
-        return f"{sd}–{ed} {months.get(sm, str(sm))}"
-    return f"{sd} {months.get(sm, str(sm))}–{ed} {months.get(em, str(em))}"
-
-
-def _participant_codes(value: Any) -> list[str]:
-    if isinstance(value, str):
-        raw = value.strip()
-        if raw.startswith("["):
-            try:
-                value = json.loads(raw)
-            except Exception:
-                value = []
-        else:
-            value = []
-    items = list(value or []) if isinstance(value, (list, tuple)) else []
-    codes: list[str] = []
-    for item in items[:3]:
+def _actor_lines(value: Any) -> list[str]:
+    lines: list[str] = []
+    for index, item in enumerate(_list(value)[:3], start=1):
         if not isinstance(item, Mapping):
             continue
-        broker = _enum(
-            item.get("broker") or item.get("code") or item.get("name"),
-            "",
-            upper=True,
-        )
-        if broker:
-            codes.append(broker)
-    return codes
+        broker = _enum(item.get("broker") or item.get("code") or item.get("name"), "", upper=True)
+        if not broker:
+            continue
+        parts = [f"{index}. {html.escape(broker, quote=False)} —"]
+        money = _money(item.get("value") if item.get("value") is not None else item.get("net_value"), signed=False)
+        avg = _price(item.get("avg_price") if item.get("avg_price") is not None else item.get("average_price"))
+        if money != "N/A":
+            parts.append(money)
+        if avg != "N/A":
+            if money != "N/A":
+                parts.append(f"| Avg Rp{avg}")
+            else:
+                parts.append(f"Avg Rp{avg}")
+        lines.append(" ".join(parts))
+    return lines
 
 
-def _inside(value: float | None, low: float | None, high: float | None) -> bool:
-    return value is not None and low is not None and high is not None and low <= value <= high
+def _period_is_multi(period: str) -> bool:
+    return bool(period) and period.upper() not in {"1D", "1DAY", "DAY"}
+
+
+def _period_lines(row: Mapping[str, Any]) -> list[str]:
+    period = _enum(_pick(row, "broker_period_type", "Broker_Period_Type", "primary_window"), "", upper=True)
+    if not period:
+        return []
+    coverage = _raw(_pick(row, "broker_coverage_text", "Broker_Coverage_Text"))
+    line = f"🏦 Primary {period}"
+    if coverage:
+        line += f" | Coverage {html.escape(coverage, quote=False)}"
+    lines = [line]
+    if _period_is_multi(period):
+        pulse = _enum(_pick(row, "today_pulse_status"), "NOT AVAILABLE", upper=True)
+        source = _enum(_pick(row, "today_pulse_source"), "STOCKBIT 1D", upper=True)
+        alignment = _enum(_pick(row, "broker_alignment", "Broker_Period_Alignment"), "INSUFFICIENT", upper=True)
+        lines.append(f"📍 TODAY PULSE {pulse} | {source} | {alignment}")
+    return lines
+
+
+def _technical_status(row: Mapping[str, Any]) -> str:
+    direct = _pick(row, "technical_status", "technical_state", "Plan_Status")
+    if _raw(direct):
+        return _enum(direct, lower=True)
+    decision = _pick(row, "decision")
+    if _raw(decision):
+        return _enum(decision, upper=True)
+    return _enum(_pick(row, "trend"), lower=True)
 
 
 def _interpretive_reason(row: Mapping[str, Any]) -> str:
-    """Explain existing engine facts without changing any trading decision."""
     symbol = _enum(_pick(row, "symbol", "Symbol"), "Saham", upper=True)
-    trend = _enum(
-        _pick(row, "trend", "Technical_Regime", "technical_status", "technical_state"),
-        "",
-        lower=True,
-    )
-    phase = _enum(
-        _pick(row, "phase", "execution_state", "Execution_Status"),
-        "",
-        upper=True,
-    )
-
-    current_raw = _pick(row, "last_price", "current_price", "Reference_Close")
-    low_raw = _pick(row, "entry_low", "Entry_Zone_Low")
-    high_raw = _pick(row, "entry_high", "Entry_Zone_High")
-    current, low, high = _num(current_raw), _num(low_raw), _num(high_raw)
-    current_text = _price(current_raw)
-    low_text, high_text = _price(low_raw), _price(high_raw)
-    entry_text = (
-        f"{low_text}–{high_text}"
-        if low_text != "N/A" and high_text != "N/A"
-        else "area entry"
-    )
-
-    opening = f"{symbol} {trend}" if trend else f"{symbol} punya setup teknikal aktif"
-    if _inside(current, low, high):
+    trend = _enum(_pick(row, "trend", "Technical_Regime", "technical_status", "technical_state"), "", lower=True)
+    phase = _enum(_pick(row, "phase", "execution_state", "Execution_Status"), "", upper=True)
+    current = _num(_pick(row, "last_price", "current_price", "Reference_Close"))
+    low = _num(_pick(row, "entry_low", "Entry_Zone_Low"))
+    high = _num(_pick(row, "entry_high", "Entry_Zone_High"))
+    current_text = _price(current)
+    entry_text = f"{_price(low)}–{_price(high)}"
+    opening = f"{symbol} {trend}" if trend else symbol
+    if current is not None and low is not None and high is not None and low <= current <= high:
         opening += f"; harga {current_text} masih di entry {entry_text}."
     elif current is not None and high is not None and current > high:
         opening += f"; harga {current_text} sudah di atas entry {entry_text}."
@@ -273,199 +207,61 @@ def _interpretive_reason(row: Mapping[str, Any]) -> str:
     else:
         opening += "."
 
-    broker_state = _enum(
-        _pick(row, "broker_status", "broker_signal", "Broker_Confirmation", "broker_direction"),
-        "INSUFFICIENT",
-        upper=True,
-    )
-    net_raw = _pick(row, "broker_net_flow", "net_flow", "cumulative_net_value")
-    net = _num(net_raw)
-    buy_days_raw, sell_days_raw = _pick(row, "buy_days"), _pick(row, "sell_days")
-    buy_days, sell_days = _num(buy_days_raw), _num(sell_days_raw)
-    buy_sell = (
-        f"Buy/Sell {_day_count(buy_days_raw)}/{_day_count(sell_days_raw)}"
-        if buy_days is not None and sell_days is not None
-        else ""
-    )
-
-    insufficient = any(
-        token in broker_state
-        for token in ("INSUFFICIENT", "NO DATA", "MISSING", "UNKNOWN")
-    )
-    accumulating = "ACCUM" in broker_state or broker_state in {"BUY", "BROKER CONFIRM"}
-    distributing = "DISTR" in broker_state or broker_state == "SELL"
-
-    evidence = []
-    if net is not None:
-        evidence.append(f"net {_money(net_raw)}")
-    if buy_sell:
-        evidence.append(buy_sell)
+    broker = _enum(_pick(row, "broker_status", "broker_signal", "Broker_Confirmation", "broker_direction"), "INSUFFICIENT", upper=True)
+    net = _pick(row, "broker_net_flow", "net_flow", "cumulative_net_value")
+    buy = _num(_pick(row, "buy_days"))
+    sell = _num(_pick(row, "sell_days"))
+    evidence: list[str] = []
+    if _num(net) is not None:
+        evidence.append(f"net {_money(net)}")
+    if buy is not None and sell is not None:
+        evidence.append(f"Buy/Sell {_days(buy)}/{_days(sell)}")
     evidence_text = " dan ".join(evidence)
 
-    if insufficient:
+    if any(token in broker for token in ("INSUFFICIENT", "NO DATA", "UNKNOWN", "MISSING")):
         broker_text = "Broker INSUFFICIENT: Score 0 = data belum cukup, bukan distribusi."
         if evidence_text:
             broker_text += f" {evidence_text} baru indikasi awal."
-    elif accumulating:
-        broker_text = f"Broker mendukung ({broker_state})"
+    elif "ACCUM" in broker or broker in {"BUY", "BROKER CONFIRM"}:
+        broker_text = f"Broker mendukung ({broker})"
         if evidence_text:
             broker_text += f": {evidence_text}"
-        if buy_days is not None and sell_days is not None and buy_days > sell_days:
+        if buy is not None and sell is not None and buy > sell:
             broker_text += ", buying konsisten."
         else:
             broker_text += "."
-    elif distributing:
-        broker_text = f"Broker belum mendukung ({broker_state})"
-        if net is not None:
-            broker_text += f": net {_money(net_raw)}"
-        broker_text += "."
-    else:
-        broker_text = f"Broker masih {broker_state}"
+    elif "DISTR" in broker or broker == "SELL":
+        broker_text = f"Broker belum mendukung ({broker})"
         if evidence_text:
             broker_text += f": {evidence_text}"
-        broker_text += ", jadi konfirmasi belum kuat."
+        broker_text += "."
+    else:
+        broker_text = f"Broker masih {broker}"
+        if evidence_text:
+            broker_text += f": {evidence_text}"
+        broker_text += "."
 
-    top_buy = _participant_codes(_pick(row, "top_buyers", default=[]))
-    top_sell = _participant_codes(_pick(row, "top_sellers", default=[]))
-    participant_parts: list[str] = []
-    if top_buy:
-        participant_parts.append(f"buyer utama {', '.join(top_buy)}")
-    if top_sell:
-        participant_parts.append(f"seller utama {', '.join(top_sell)}")
-    participant_text = (
-        f"Bukti broker: {'; '.join(participant_parts)}."
-        if participant_parts
-        else ""
-    )
-
-    buy_cost_raw = _pick(
-        row,
-        "bandar_buy_cost",
-        "avg_buyer_price",
-        "weighted_broker_buy_cost",
-    )
-    buy_cost = _price(buy_cost_raw)
-    vs_cost = _pct(
-        _pick(
-            row,
-            "distance_to_buy_cost",
-            "distance_to_buyer_avg_pct",
-            "distance_to_buy_cost_pct",
-        )
-    )
-    cost_text = ""
-    if buy_cost != "N/A" and vs_cost != "N/A":
-        cost_text = (
-            f"Rata-rata biaya buyer berada di {buy_cost}; harga saat ini {vs_cost} "
-            "dari buy cost."
-        )
-    elif buy_cost != "N/A":
-        cost_text = f"Rata-rata biaya buyer berada di {buy_cost}."
-
-    resistance_raw = _pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance")
-    resistance = _num(resistance_raw)
-    resistance_text = _price(resistance_raw)
-    waiting = any(
-        token in phase for token in ("WAIT", "NOT READY", "CONDITIONAL", "MONITOR")
-    )
-
+    resistance = _num(_pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance"))
+    resistance_text = _price(resistance)
+    waiting = any(token in phase for token in ("WAIT", "NOT READY", "CONDITIONAL", "MONITOR"))
     if current is not None and high is not None and current > high:
         action = f"Jangan kejar; tunggu pullback ke {entry_text} atau trigger baru."
+    elif waiting and resistance is not None and (current is None or current < resistance):
+        action = f"{phase}; resistance {resistance_text} belum lewat. Tunggu break dan bertahan >{resistance_text} sebelum entry."
     elif waiting and resistance is not None:
-        if current is not None and current >= resistance:
-            action = (
-                f"Status {phase}; tunggu harga bertahan di atas resistance "
-                f"{resistance_text} sebagai konfirmasi."
-            )
-        else:
-            action = (
-                f"{phase}; resistance {resistance_text} belum lewat. "
-                f"Tunggu break dan bertahan >{resistance_text} sebelum entry."
-            )
+        action = f"{phase}; tunggu harga bertahan di atas resistance {resistance_text} sebagai konfirmasi."
     elif waiting:
-        action = f"Status {phase}; tunggu trigger harga valid sebelum entry."
+        action = f"{phase}; tunggu trigger harga valid sebelum entry."
     else:
-        stop = _price(_pick(row, "active_stop_loss", "stop_loss", "Initial_Stop"))
-        action = "Setup lebih siap; eksekusi tetap hanya di area entry."
-        if stop != "N/A":
-            action += f" SL {stop} adalah batas invalidasi."
+        action = "Eksekusi tetap hanya di area entry sesuai plan."
 
-    period_type = _enum(
-        _pick(row, "broker_period_type", "Broker_Period_Type", "primary_window"),
-        "",
-        upper=True,
-    )
-    primary_text = ""
-    pulse_text = ""
-    if period_type:
-        period_complete = _pick(row, "broker_period_complete", "Broker_Period_Complete", default=True)
-        missing_sessions = _period_session_text(
-            _pick(row, "broker_missing_sessions", "Broker_Missing_Sessions", default=[])
-        )
-        if str(period_complete).strip().lower() in {"false", "0", "no"}:
-            primary_text = (
-                f"Broker PRIMARY {period_type} belum lengkap"
-                + (f"; missing {missing_sessions}." if missing_sessions else ".")
-            )
-        else:
-            primary_text = f"Broker PRIMARY {period_type} {broker_state} menjadi konteks utama."
-
-        if _period_is_multi(period_type):
-            pulse_status = _enum(
-                _pick(row, "today_pulse_status"),
-                "NOT_AVAILABLE",
-                upper=True,
-            )
-            pulse_date = _raw(_pick(row, "today_pulse_date")) or _raw(
-                _pick(row, "broker_period_end", "Broker_Period_End")
-            )
-            pulse_net = _money(_pick(row, "today_pulse_net_flow"))
-            pulse_buy = _day_count(_pick(row, "today_pulse_buy_days"))
-            pulse_sell = _day_count(_pick(row, "today_pulse_sell_days"))
-            alignment = _enum(
-                _pick(row, "broker_alignment", "Broker_Period_Alignment"),
-                "INSUFFICIENT",
-                upper=True,
-            )
-            pulse_text = (
-                f"Today Pulse {pulse_status} {pulse_date}: net {pulse_net}, "
-                f"Buy/Sell {pulse_buy}/{pulse_sell}; alignment {alignment}."
-            )
-
-    blocks = [
-        opening,
-        " ".join(part for part in (primary_text, broker_text) if part),
-        participant_text,
-        cost_text,
-        pulse_text,
-        f"➡️ {action}" if action else "",
-    ]
-    blocks = [re.sub(r"\s+", " ", block).strip() for block in blocks if block]
-    return "\n\n".join(html.escape(block, quote=False) for block in blocks)
-
-
-def _technical_status(row: Mapping[str, Any]) -> str:
-    direct = _pick(row, "technical_status", "technical_state", "Plan_Status")
-    if _raw(direct):
-        return _enum(direct, "N/A", lower=True)
-    decision = _pick(row, "decision")
-    if _raw(decision):
-        return _enum(decision, "N/A", upper=True)
-    return _enum(_pick(row, "trend"), "N/A", lower=True)
+    return html.escape("\n".join([opening, broker_text, action]), quote=False)
 
 
 def format_watchlist_detail(row: Mapping[str, Any]) -> str:
-    """Compact Final Watchlist card with a deterministic interpretive Reason."""
-    symbol = html.escape(
-        _enum(_pick(row, "symbol", "Symbol"), "N/A", upper=True), quote=False
-    )
-    setup = html.escape(
-        _enum(_pick(row, "setup", "Setup_Type"), "N/A", upper=True), quote=False
-    )
-    analysis_date = html.escape(
-        _enum(_pick(row, "analysis_date", "trade_date", "Trade_Date"), "N/A"),
-        quote=False,
-    )
+    symbol = html.escape(_enum(_pick(row, "symbol", "Symbol"), "N/A", upper=True), quote=False)
+    setup = html.escape(_enum(_pick(row, "setup", "Setup_Type"), "N/A", upper=True), quote=False)
+    analysis_date = html.escape(_enum(_pick(row, "analysis_date", "trade_date", "Trade_Date"), "N/A"), quote=False)
     current = _price(_pick(row, "last_price", "current_price", "Reference_Close"))
     entry_low = _price(_pick(row, "entry_low", "Entry_Zone_Low"))
     entry_high = _price(_pick(row, "entry_high", "Entry_Zone_High"))
@@ -473,88 +269,21 @@ def format_watchlist_detail(row: Mapping[str, Any]) -> str:
     tp1 = _price(_pick(row, "target_1", "Target_1"))
     tp2 = _price(_pick(row, "target_2", "Target_2"))
     rr = _rr(_pick(row, "risk_reward", "Target_2_RR", "Target_1_RR"))
-    technical_status = html.escape(_technical_status(row), quote=False)
+    technical = html.escape(_technical_status(row), quote=False)
     confidence = _confidence(_pick(row, "confidence", "Final_Score", "Final_Score_V3"))
-
-    broker_signal = html.escape(
-        _enum(
-            _pick(
-                row,
-                "broker_status",
-                "broker_signal",
-                "Broker_Confirmation",
-                "broker_direction",
-            ),
-            "INSUFFICIENT",
-            upper=True,
-        ),
-        quote=False,
-    )
+    broker = html.escape(_enum(_pick(row, "broker_status", "broker_signal", "Broker_Confirmation", "broker_direction"), "INSUFFICIENT", upper=True), quote=False)
     broker_score = _score(_pick(row, "broker_score", "Broker_Score"))
-    net_flow = _money(_pick(row, "broker_net_flow", "net_flow", "cumulative_net_value"))
-    buy_days = _day_count(_pick(row, "buy_days"))
-    sell_days = _day_count(_pick(row, "sell_days"))
-    buyer_concentration = _pct(_pick(row, "buyer_concentration"), concentration=True)
-    seller_concentration = _pct(_pick(row, "seller_concentration"), concentration=True)
-
-    trend = html.escape(
-        _enum(_pick(row, "trend", "Technical_Regime"), "N/A", lower=True),
-        quote=False,
-    )
-    phase = html.escape(
-        _enum(
-            _pick(row, "phase", "execution_state", "Execution_Status"),
-            "N/A",
-            upper=True,
-        ),
-        quote=False,
-    )
+    net = _money(_pick(row, "broker_net_flow", "net_flow", "cumulative_net_value"))
+    buy = _days(_pick(row, "buy_days"))
+    sell = _days(_pick(row, "sell_days"))
+    bconc = _pct(_pick(row, "buyer_concentration"), concentration=True)
+    sconc = _pct(_pick(row, "seller_concentration"), concentration=True)
+    buy_cost = _price(_pick(row, "bandar_buy_cost", "avg_buyer_price", "weighted_broker_buy_cost"))
+    buy_avg = _pct(_pick(row, "distance_to_buy_cost", "distance_to_buyer_avg_pct", "distance_to_buy_cost_pct"))
+    trend = html.escape(_enum(_pick(row, "trend", "Technical_Regime"), "N/A", lower=True), quote=False)
+    phase = html.escape(_enum(_pick(row, "phase", "execution_state", "Execution_Status"), "N/A", upper=True), quote=False)
     support = _price(_pick(row, "support", "Support_Level"))
-    resistance = _price(
-        _pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance")
-    )
-    fib_status = html.escape(
-        _enum(
-            _pick(row, "fib_status", "Fibonacci_Status", "Fib_Status"),
-            "ENGINE NOT AVAILABLE V1 7",
-            upper=True,
-        ),
-        quote=False,
-    )
-
-    period_type = _enum(
-        _pick(row, "broker_period_type", "Broker_Period_Type", "primary_window"),
-        "",
-        upper=True,
-    )
-    period_lines: list[str] = []
-    if period_type:
-        start = _pick(row, "broker_period_start", "Broker_Period_Start")
-        end = _pick(row, "broker_period_end", "Broker_Period_End")
-        period_range = html.escape(_period_range_text(start, end), quote=False)
-        period_lines.extend([
-            "",
-            "<b>🏦 BROKER PRIMARY</b>",
-            f"{period_type} | {period_range} | Coverage {_period_coverage(row)}",
-        ])
-        if _period_is_multi(period_type):
-            pulse_status = html.escape(
-                _enum(
-                    _pick(row, "today_pulse_status"),
-                    "NOT_AVAILABLE",
-                    upper=True,
-                ),
-                quote=False,
-            )
-            alignment = html.escape(
-                _enum(
-                    _pick(row, "broker_alignment", "Broker_Period_Alignment"),
-                    "INSUFFICIENT",
-                    upper=True,
-                ),
-                quote=False,
-            )
-            period_lines.append(f"Today Pulse: {pulse_status} | {alignment}")
+    resistance = _price(_pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance"))
 
     lines = [
         "<b>📈 SDE SWING — FINAL WATCHLIST</b>",
@@ -562,29 +291,33 @@ def format_watchlist_detail(row: Mapping[str, Any]) -> str:
         f"📌 <b>{symbol} | {setup}</b>",
         f"🕒 {analysis_date}",
         _SEPARATOR,
-        "",
+        *_period_lines(row),
         "<b>🎯 TRADE SETUP</b>",
         f"💰 {current} | Entry {entry_low}–{entry_high}",
-        f"🛑 SL {stop} | 🎯 TP1 {tp1} | TP2 {tp2}",
-        f"⚖️ RR 1:{rr}",
-        f"📊 {technical_status} | 🧠 Confidence {confidence}",
-        "",
+        f"🛑 SL {stop} | 🎯 TP1/TP2 {tp1} | {tp2}",
+        f"⚖️ RR 1:{rr} | 📊 {technical} | 🧠 {confidence}",
         "<b>🏦 BROKER SUMMARY</b>",
-        f"📌 {broker_signal} | Score {broker_score}/100",
-        f"💵 Net Flow {net_flow} | Buy/Sell {buy_days}/{sell_days}",
-        f"🎯 Concentration B {buyer_concentration} | S {seller_concentration}",
-        "",
+        f"📌 {broker} | Score {broker_score}/100",
+        f"💵 Net Flow {net} | 📅 Buy/Sell {buy}/{sell}",
+        f"🎯 Concentration B {bconc} | S {sconc}",
+    ]
+    top_buy = _actor_lines(_pick(row, "top_buyers", default=[]))
+    top_sell = _actor_lines(_pick(row, "top_sellers", default=[]))
+    if top_buy:
+        lines.extend(["<b>🟢 Top Buy</b>", *top_buy])
+    if top_sell:
+        lines.extend(["<b>🔴 Top Sell</b>", *top_sell])
+    if buy_cost != "N/A" or buy_avg != "N/A":
+        lines.append(f"💰 Buy Cost {buy_cost} | Buy Avg {buy_avg}")
+    lines.extend([
         "<b>📌 SETUP CONTEXT</b>",
         f"📈 {trend} | {phase}",
         f"🟢 Support {support} | 🔴 Resistance {resistance}",
-        f"📐 Fibonacci {fib_status}",
-        "",
-        "<b>🧠 REASON</b>",
+        "<b>Reason:</b>",
         _interpretive_reason(row),
-    ]
-    if period_lines:
-        lines[5:5] = period_lines
-    return "\n".join(lines).strip()
+    ])
+    text = "\n".join(line for line in lines if line != "").strip()
+    return text
 
 
 __all__ = ["format_watchlist_detail"]

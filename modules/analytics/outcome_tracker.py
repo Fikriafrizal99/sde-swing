@@ -25,6 +25,12 @@ from modules.analytics.lifecycle_contract import (
     prepare_lifecycle_bars,
 )
 
+# Save immutable delegates before the facade installs runtime hooks back into
+# the baseline module. Calling _baseline.connect after that hook would recurse.
+_baseline_connect = _baseline.connect
+_baseline_lifecycle_telegram = _baseline.lifecycle_telegram
+_baseline_active_telegram = _baseline.active_telegram
+
 for _name in dir(_baseline):
     if not _name.startswith("__"):
         globals()[_name] = getattr(_baseline, _name)
@@ -40,7 +46,7 @@ _LIFECYCLE_COLUMNS = {
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
-    conn = _baseline.connect(db_path)
+    conn = _baseline_connect(db_path)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(signal_outcome_ledger)")}
     for name, ddl in _LIFECYCLE_COLUMNS.items():
         if name not in existing:
@@ -318,11 +324,31 @@ def _status_changes_telegram(events, *, max_events: int = 20) -> str:
     )
 
 
+def _call_telegram_delegate(delegate, args):
+    """Honor monkeypatches on the public facade without duplicating baseline I/O."""
+    previous = _baseline.send_telegram
+    try:
+        _baseline.send_telegram = globals()["send_telegram"]
+        return delegate(args)
+    finally:
+        _baseline.send_telegram = previous
+
+
+def lifecycle_telegram(args):
+    return _call_telegram_delegate(_baseline_lifecycle_telegram, args)
+
+
+def active_telegram(args):
+    return _call_telegram_delegate(_baseline_active_telegram, args)
+
+
 _baseline.connect = connect
 _baseline.load_prices = load_prices
 _baseline.evaluate_record = evaluate_record
 _baseline.update_outcomes = update_outcomes
 _baseline._status_changes_telegram = _status_changes_telegram
+_baseline.lifecycle_telegram = lifecycle_telegram
+_baseline.active_telegram = active_telegram
 
 if __name__ == "__main__":
     raise SystemExit(_baseline.main())
