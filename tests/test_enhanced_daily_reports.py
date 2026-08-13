@@ -249,6 +249,8 @@ def test_post_market_matches_final_agreed_sections_and_counts(tmp_path: Path) ->
         "market_regime": "STRONG_BULLISH",
         "ihsg_change": 1.69,
         "ihsg_status": "CURRENT_SESSION",
+        "ihsg_data_date": "2026-08-04",
+        "technical_data_date": "2026-08-04",
         "technical_bullish_count": 350,
         "technical_neutral_count": 50,
         "technical_bearish_count": 37,
@@ -279,14 +281,13 @@ def test_post_market_matches_final_agreed_sections_and_counts(tmp_path: Path) ->
     positions = [text.index(section) for section in ordered_sections]
     assert positions == sorted(positions)
     assert "🕒 18:37 WIB" in text
-    assert "🟢 BULLISH <b>90%</b>  vs  🔴 BEARISH <b>10%</b>" in text
-    assert "IHSG        : <b>+1,69%</b>" in text
-    assert "Market      : <b>RISK-ON</b>" in text
-    assert "Breadth     : <b>BULLISH DOMINANT</b>" in text
-    assert "Neutral: <b>50 saham</b>" in text
-    assert "Data issue   : <b>4 saham</b>" in text
-    assert "Impact       : <b>TIDAK MATERIAL</b>" in text
-    assert "<code>POST-20260804-183700</code>" in text
+    assert "Buy 80% · Neutral 11% · Sell 9%" in text
+    assert "🟢 IHSG    : +1,69%" in text
+    assert "🧭 Market  : RISK-ON" in text
+    assert "📊 Breadth : BULLISH DOMINANT" in text
+    assert "🟡 Neutral : 50" in text
+    assert "🟢 Coverage  : 99,1%" in text
+    assert "POST-20260804-183700" in text
     assert "PROCESS STATUS" not in text
     assert "SOURCE STATUS" not in text
     assert "ZAPI" not in text.upper()
@@ -308,10 +309,9 @@ def test_post_market_does_not_invent_missing_screening_counts(tmp_path: Path) ->
     })
     text = artifact.text
     assert "📊 MARKET PULSE" in text
-    assert "Arah teknikal: <b>DATA BELUM CUKUP</b>" in text
-    assert "✅ Valid       : <b>10 saham</b>" in text
-    assert "Coverage     : <b>100,0%</b>" in text
-    assert "🟢 BULLISH" not in text
+    assert "Data technical sesi berjalan tidak tersedia." in text
+    assert "Coverage  : 100,0%" in text
+    assert "🟢 Bullish" not in text
     assert "BUY READY" not in text
     assert "BUY CANDIDATE" not in text
     assert "ZAPI" not in text.upper()

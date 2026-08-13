@@ -71,6 +71,20 @@ def _read_csv_optional(path: Path) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _artifact_trade_date(frame: pd.DataFrame, *aliases: str) -> str:
+    """Return one unambiguous artifact date, or empty when the rows disagree."""
+    if frame.empty:
+        return ""
+    column = _column(frame, *aliases)
+    if column is None:
+        return ""
+    parsed = pd.to_datetime(frame[column], errors="coerce").dropna()
+    if parsed.empty:
+        return ""
+    dates = {timestamp.date().isoformat() for timestamp in parsed}
+    return next(iter(dates)) if len(dates) == 1 else ""
+
+
 def _trend_bucket(value: Any) -> str:
     text = str(value or "").strip().upper().replace("_", " ")
     if not text or text in {"NAN", "NONE", "NULL"}:
@@ -344,24 +358,37 @@ def _rotation_context(ctx: RunnerContext) -> dict[str, Any]:
     regime_path = ctx.previews_root.parent / "market_regime" / ctx.trade_date.isoformat() / "market_outlook_regime.json"
     existing = read_json(regime_path)
     rotation: dict[str, Any] = {}
-    if isinstance(existing.get("sector_rotation"), dict):
-        rotation = dict(existing["sector_rotation"])
     raw_path = str(existing.get("sector_rotation_path") or "").strip()
-    if not rotation and raw_path:
+    candidates: list[Path] = []
+    if raw_path:
         candidate = Path(raw_path)
-        if not candidate.is_absolute():
-            candidate = resolve(candidate)
+        candidates.append(candidate if candidate.is_absolute() else resolve(candidate))
+    configured = str(ctx.path("sector_rotation_output", "data/output/market/SECTOR_ROTATION.json"))
+    if configured:
+        candidates.append(Path(configured))
+    for candidate in candidates:
         payload = read_json(candidate)
         if isinstance(payload.get("sector_rotation"), dict):
             rotation = dict(payload["sector_rotation"])
         elif payload:
-            rotation = payload
+            rotation = dict(payload)
+        if rotation:
+            break
+    if not rotation and isinstance(existing.get("sector_rotation"), dict):
+        rotation = dict(existing["sector_rotation"])
+
+    rotation_date = str(rotation.get("trade_date") or existing.get("sector_rotation_trade_date") or "")[:10]
+    rotation_status = str(rotation.get("status") or existing.get("sector_rotation_status") or "UNAVAILABLE").upper()
+    current = rotation_date == ctx.trade_date.isoformat() and rotation_status in {"VALID", "CURRENT", "READY"}
     return {
-        "leading": rotation.get("leading", []),
-        "rotating_in": rotation.get("improving", rotation.get("rotating_in", [])),
-        "weakening": rotation.get("weakening", rotation.get("rotating_out", [])),
-        "rotating_out": rotation.get("rotating_out", rotation.get("weakening", [])),
-        "lagging": rotation.get("lagging", []),
+        "leading": rotation.get("leading", []) if current else [],
+        "rotating_in": rotation.get("improving", rotation.get("rotating_in", [])) if current else [],
+        "weakening": rotation.get("weakening", rotation.get("rotating_out", [])) if current else [],
+        "rotating_out": rotation.get("rotating_out", rotation.get("weakening", [])) if current else [],
+        "lagging": rotation.get("lagging", []) if current else [],
+        "sector_rotation_trade_date": rotation_date,
+        "sector_rotation_status": rotation_status if current else "NOT_CURRENT",
+        "sector_rotation_current": current,
     }
 
 
@@ -439,10 +466,32 @@ def prepare_post_market_pulse(
         "breadth_classified_count": 0,
     }
     # Setup_Type is produced by Candidate Selector, not Technical Feature Engine.
-    # Prefer the full candidate ranking so distribution reflects the same
-    # post-market universe without inventing setup labels from raw indicators.
-    setups = _setup_distribution(candidates) or _setup_distribution(technical)
-    candidate_health = _candidate_health(candidates)
+    # It is presentation-eligible only when the ranking artifact itself carries
+    # the current session date.  Never infer a setup distribution from stale or
+    # raw technical rows.
+    candidate_data_date = _artifact_trade_date(
+        candidates,
+        "Technical_Data_Date",
+        "Candidate_Data_Date",
+        "Candidate_Trade_Date",
+        "Trade_Date",
+        "Date",
+    )
+    candidate_current = candidate_data_date == ctx.trade_date.isoformat()
+    setups = _setup_distribution(candidates) if technical_current and candidate_current else {}
+    candidate_health = _candidate_health(candidates) if technical_current and candidate_current else {
+        "candidate_funnel": {
+            "technical_rows": 0,
+            "candidate_rows": 0,
+            "pass_rows": 0,
+            "avoid_rows": 0,
+            "ready_rows": 0,
+            "developing_rows": 0,
+        },
+        "dominant_filter_reason": "NOT_CURRENT",
+        "screening_result": "NOT_CURRENT",
+        "top_screening_watchlist": [],
+    }
 
     data_date = str(regime.get("data_date") or "")[:10]
     current_session = data_date == ctx.trade_date.isoformat()
@@ -473,6 +522,8 @@ def prepare_post_market_pulse(
         "setup_distribution": setups,
         **candidate_health,
         "technical_data_date": technical_data_date,
+        "candidate_data_date": candidate_data_date,
+        "candidate_ranking_current": candidate_current,
         **_rotation_context(ctx),
         "warnings": warnings,
         "source": "POST_MARKET_CLOSING_PULSE",
@@ -517,6 +568,14 @@ def _render_data(ctx: RunnerContext, manifest: dict[str, Any], payload: Any, pul
         or 0
     )
     broker_ready = bool(manifest.get("Broker_Navigator_Path") or manifest.get("broker_navigator_path"))
+    technical_current = str(pulse.get("technical_data_date") or "") == ctx.trade_date.isoformat()
+    candidate_current = bool(pulse.get("candidate_ranking_current")) and str(
+        pulse.get("candidate_data_date") or ""
+    ) == ctx.trade_date.isoformat()
+    if candidate_current:
+        screening_result = str(pulse.get("screening_result") or "NOT_AVAILABLE")
+    else:
+        screening_result = "NOT_CURRENT"
 
     return {
         **pulse,
@@ -533,8 +592,8 @@ def _render_data(ctx: RunnerContext, manifest: dict[str, Any], payload: Any, pul
         "symbols_skipped": skipped,
         "coverage": coverage,
         "data_impact": "TIDAK MATERIAL" if coverage >= 90 else "MATERIAL",
-        "technical_status": "READY" if valid > 0 else "NOT READY",
-        "candidate_status": "READY" if candidate_count > 0 else "EMPTY",
+        "technical_status": "READY" if valid > 0 and technical_current else "NOT CURRENT",
+        "candidate_status": screening_result if candidate_current else "NOT CURRENT",
         "broker_status": "READY" if broker_ready else "WAITING",
         "historical_status": "VALID" if valid > 0 else "FAILED",
         "pipeline_status": "READY_FOR_FINAL_WATCHLIST" if valid > 0 else "BLOCKED_DATA",
