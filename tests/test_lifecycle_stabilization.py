@@ -9,6 +9,8 @@ import pandas as pd
 import pytest
 
 from modules.analytics.outcome_tracker import (
+    _record_recommendation_occurrence,
+    active_recommendations_df,
     canonical_performance_df,
     connect,
     performance_row,
@@ -378,3 +380,141 @@ def test_current_recommendations_counts_only_active_and_preserves_episode_count(
     assert summary["Current_Recommendations"] == 2
     assert summary["Historical_Signal_Episodes"] == 3
     assert summary["Closed"] == 1
+
+
+def test_rec_writer_rejects_pre_signal_and_post_terminal_occurrences(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "history.db")
+    decisions, plans = _write_signal(tmp_path, symbol="INDF", signal_date="2026-08-11")
+    register_decision_file(conn, decisions, plans, "RUN-11", "2026-08-11")
+    signal_id = conn.execute("SELECT signal_id FROM signal_outcome_ledger").fetchone()[0]
+
+    assert _record_recommendation_occurrence(
+        conn,
+        signal_id=signal_id,
+        symbol="INDF",
+        recommendation_date="2026-08-05",
+        run_id="BACKFILL-05",
+        raw_decision="BUY CANDIDATE",
+    ) is False
+    assert conn.execute(
+        "SELECT COUNT(*) FROM signal_recommendation_history WHERE signal_id=?",
+        (signal_id,),
+    ).fetchone()[0] == 1
+
+    conn.execute(
+        """
+        UPDATE signal_outcome_ledger
+        SET current_status='CLOSED', exit_date='2026-08-12',
+            exit_reason='STOP_LOSS_HIT', final_outcome='LOSS'
+        WHERE signal_id=?
+        """,
+        (signal_id,),
+    )
+    assert _record_recommendation_occurrence(
+        conn,
+        signal_id=signal_id,
+        symbol="INDF",
+        recommendation_date="2026-08-13",
+        run_id="RUN-13",
+        raw_decision="BUY CANDIDATE",
+    ) is False
+    reasons = {
+        row[0]
+        for row in conn.execute(
+            "SELECT reason FROM lifecycle_ingest_quarantine WHERE signal_id=?",
+            (signal_id,),
+        )
+    }
+    assert "RECOMMENDATION_BEFORE_SIGNAL_DATE" in reasons
+    assert "TERMINAL_RECOMMENDATION_REJECTED" in reasons
+    conn.close()
+
+
+def test_bbri_old_and_new_lifecycle_keep_separate_rec_ownership(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "history.db")
+    old_file, old_plans = _write_signal(tmp_path, symbol="BBRI", signal_date="2026-08-07")
+    register_decision_file(conn, old_file, old_plans, "RUN-07", "2026-08-07")
+    old = conn.execute("SELECT * FROM signal_outcome_ledger").fetchone()
+    conn.execute(
+        """
+        UPDATE signal_outcome_ledger
+        SET current_status='CLOSED', entry_date='2026-08-08', exit_date='2026-08-10',
+            exit_reason='STOP_LOSS_HIT', final_outcome='LOSS'
+        WHERE signal_id=?
+        """,
+        (old["signal_id"],),
+    )
+
+    new_file, new_plans = _write_signal(tmp_path, symbol="BBRI", signal_date="2026-08-11")
+    register_decision_file(conn, new_file, new_plans, "RUN-11", "2026-08-11")
+    child = conn.execute(
+        "SELECT * FROM signal_outcome_ledger WHERE current_status='WAITING_TRIGGER'"
+    ).fetchone()
+    assert child["parent_signal_id"] == old["signal_id"]
+
+    replay_file, replay_plans = _write_signal(
+        tmp_path, symbol="BBRI", signal_date="2026-08-07"
+    )
+    register_decision_file(conn, replay_file, replay_plans, "BACKFILL-07", "2026-08-07")
+    counts = {
+        row["signal_id"]: row["count"]
+        for row in conn.execute(
+            """
+            SELECT signal_id,COUNT(*) AS count
+            FROM signal_recommendation_history GROUP BY signal_id
+            """
+        )
+    }
+    assert counts[old["signal_id"]] == 1
+    assert counts[child["signal_id"]] == 1
+    conn.close()
+
+
+def test_market_session_age_advances_when_latest_scan_is_stale(tmp_path: Path) -> None:
+    historical = tmp_path / "prices"
+    historical.mkdir()
+    pd.DataFrame({
+        "Date": ["2026-08-11", "2026-08-12", "2026-08-13"],
+        "Open": [7250, 7250, 7250],
+        "High": [7300, 7300, 7300],
+        "Low": [7200, 7200, 7200],
+        "Close": [7250, 7250, 7250],
+        "Volume": [1000, 1000, 1000],
+    }).to_csv(historical / "INDF.csv", index=False)
+    conn = connect(tmp_path / "history.db")
+    decisions, plans = _write_signal(tmp_path, symbol="INDF", signal_date="2026-08-11")
+    register_decision_file(conn, decisions, plans, "RUN-11", "2026-08-11")
+    conn.execute(
+        "UPDATE signal_outcome_ledger SET last_evaluated_date='2026-08-12'"
+    )
+
+    active = active_recommendations_df(conn, historical)
+    assert len(active) == 1
+    row = active.iloc[0]
+    assert row["market_session_as_of"] == "2026-08-13"
+    assert row["market_session_age"] == 2
+    assert row["latest_scan_age"] == 0
+    assert row["scan_staleness_sessions"] == 2
+    assert row["last_evaluated_session"] == "2026-08-12"
+    assert row["age_sessions"] == 2
+    conn.close()
+
+
+def test_active_export_has_no_terminal_leak_or_duplicate_symbol(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "history.db")
+    active_file, active_plans = _write_signal(
+        tmp_path, symbol="BBRI", signal_date="2026-08-11"
+    )
+    register_decision_file(conn, active_file, active_plans, "RUN-11", "2026-08-11")
+    conn.execute(
+        """
+        INSERT INTO signal_outcome_ledger (
+            signal_id, symbol, signal_date, current_status, final_outcome
+        ) VALUES ('OLD-BBRI', 'BBRI', '2026-08-01', 'CLOSED', 'LOSS')
+        """
+    )
+    active = active_recommendations_df(conn, tmp_path / "prices")
+    assert set(active["current_status"]) <= {"WAITING_TRIGGER", "OPEN"}
+    assert active["symbol"].is_unique
+    assert len(active) == 1
+    conn.close()

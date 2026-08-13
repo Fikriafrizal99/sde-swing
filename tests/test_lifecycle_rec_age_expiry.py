@@ -15,6 +15,7 @@ from modules.analytics.outcome_tracker import (
     update_outcomes,
 )
 from modules.analytics.outcome_tracker import _status_changes_telegram
+from tools.send_active_recommendations import build_active_message
 
 
 def _write_signal_files(
@@ -237,4 +238,8 @@ def test_expiry_day_suppresses_reentry_until_next_session(tmp_path: Path) -> Non
     assert active.iloc[0]["signal_id"] == new["signal_id"]
     assert active.iloc[0]["recommendation_count"] == 1
     assert active.iloc[0]["age_sessions"] == 0
+    message = build_active_message(active)
+    assert message.count("BBCA") == 1
+    assert "WAITING ENTRY — 1" in message
+    assert "1x" in message
     conn.close()

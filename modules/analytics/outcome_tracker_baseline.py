@@ -569,7 +569,7 @@ def _record_recommendation_occurrence(
     run_id: str,
     raw_decision: str,
 ) -> bool:
-    """Append one idempotent recommendation occurrence for a lifecycle."""
+    """Append one chronology-safe recommendation occurrence to its owner."""
     recommendation_date = parse_date(recommendation_date)
     if not signal_id or not recommendation_date or norm_text(raw_decision).upper() not in CURRENT_RECOMMENDATION_DECISIONS:
         return False
@@ -577,6 +577,85 @@ def _record_recommendation_occurrence(
         if trading_sessions_between(recommendation_date, recommendation_date) != [recommendation_date]:
             return False
     except (TypeError, ValueError, OSError):
+        return False
+    owner = conn.execute(
+        """
+        SELECT signal_id, symbol, signal_date, latest_scan_date,
+               current_status, exit_date
+        FROM signal_outcome_ledger WHERE signal_id=?
+        """,
+        (signal_id,),
+    ).fetchone()
+    if not owner:
+        _quarantine_lifecycle_occurrence(
+            conn,
+            signal_id=signal_id,
+            symbol=symbol,
+            effective_date=recommendation_date,
+            occurrence_type="RECOMMENDATION",
+            reason="RECOMMENDATION_OWNER_NOT_FOUND",
+            run_id=run_id,
+            raw_decision=raw_decision,
+        )
+        return False
+    owner_symbol = normalize_symbol(owner["symbol"])
+    if owner_symbol != normalize_symbol(symbol):
+        _quarantine_lifecycle_occurrence(
+            conn,
+            signal_id=signal_id,
+            symbol=symbol,
+            effective_date=recommendation_date,
+            occurrence_type="RECOMMENDATION",
+            reason="RECOMMENDATION_OWNER_SYMBOL_MISMATCH",
+            run_id=run_id,
+            raw_decision=raw_decision,
+            details={"owner_symbol": owner_symbol},
+        )
+        return False
+    signal_date = parse_date(owner["signal_date"])
+    if signal_date and recommendation_date < signal_date:
+        _quarantine_lifecycle_occurrence(
+            conn,
+            signal_id=signal_id,
+            symbol=symbol,
+            effective_date=recommendation_date,
+            occurrence_type="RECOMMENDATION",
+            reason="RECOMMENDATION_BEFORE_SIGNAL_DATE",
+            run_id=run_id,
+            raw_decision=raw_decision,
+            details={"lifecycle_signal_date": signal_date},
+        )
+        return False
+    latest_scan_date = parse_date(owner["latest_scan_date"])
+    if latest_scan_date and recommendation_date < latest_scan_date:
+        _quarantine_lifecycle_occurrence(
+            conn,
+            signal_id=signal_id,
+            symbol=symbol,
+            effective_date=recommendation_date,
+            occurrence_type="RECOMMENDATION",
+            reason="STALE_RECOMMENDATION_REPLAY_SUPPRESSED",
+            run_id=run_id,
+            raw_decision=raw_decision,
+            details={"latest_scan_date": latest_scan_date},
+        )
+        return False
+    owner_status = norm_text(owner["current_status"]).upper()
+    if owner_status in TERMINAL_STATUSES and recommendation_date != signal_date:
+        _quarantine_lifecycle_occurrence(
+            conn,
+            signal_id=signal_id,
+            symbol=symbol,
+            effective_date=recommendation_date,
+            occurrence_type="RECOMMENDATION",
+            reason="TERMINAL_RECOMMENDATION_REJECTED",
+            run_id=run_id,
+            raw_decision=raw_decision,
+            details={
+                "terminal_status": owner_status,
+                "terminal_date": parse_date(owner["exit_date"]) or signal_date,
+            },
+        )
         return False
     cursor = conn.execute(
         """
@@ -1960,17 +2039,55 @@ def active_recommendations_df(conn: sqlite3.Connection, historical_dir: Path) ->
         """
     ).fetchall()
     if not rows:
-        return pd.DataFrame(columns=[*LEDGER_COLUMNS, "recommendation_count", "current_price", "simulated_return_pct", "age_sessions"])
+        return pd.DataFrame(columns=[
+            *LEDGER_COLUMNS,
+            "recommendation_count",
+            "current_price",
+            "simulated_return_pct",
+            "market_session_as_of",
+            "market_session_age",
+            "latest_scan_age",
+            "scan_staleness_sessions",
+            "last_evaluated_session",
+            "age_sessions",
+        ])
     output: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
-        current = _latest_price(historical_dir, item["symbol"])
+        prices = load_prices(historical_dir / f"{item['symbol']}.csv")
+        current = as_float(prices.iloc[-1]["Close"]) if not prices.empty else None
         base_price = as_float(item.get("entry_price")) or as_float(item.get("reference_price"))
         item["current_price"] = current
         item["simulated_return_pct"] = ret_pct(current, base_price)
-        prices = load_prices(historical_dir / f"{item['symbol']}.csv")
-        as_of_date = item.get("latest_scan_date") or item.get("last_seen_date") or item.get("signal_date")
-        item["age_sessions"] = lifecycle_age_sessions(item.get("signal_date"), as_of_date)
+        market_session_as_of = ""
+        if not prices.empty and "Date" in prices.columns:
+            market_session_as_of = parse_date(prices["Date"].max())
+        last_evaluated_session = parse_date(item.get("last_evaluated_date"))
+        latest_scan_date = parse_date(
+            item.get("latest_scan_date") or item.get("last_seen_date")
+        )
+        operational_as_of = (
+            market_session_as_of
+            or last_evaluated_session
+            or latest_scan_date
+            or parse_date(item.get("signal_date"))
+        )
+        market_session_age = lifecycle_age_sessions(
+            item.get("signal_date"), operational_as_of
+        )
+        latest_scan_age = lifecycle_age_sessions(
+            item.get("signal_date"), latest_scan_date or item.get("signal_date")
+        )
+        item["market_session_as_of"] = operational_as_of
+        item["market_session_age"] = market_session_age
+        item["latest_scan_age"] = latest_scan_age
+        item["scan_staleness_sessions"] = lifecycle_age_sessions(
+            latest_scan_date or operational_as_of,
+            operational_as_of,
+        )
+        item["last_evaluated_session"] = last_evaluated_session
+        # Backward-compatible operational AGE now advances with market data.
+        item["age_sessions"] = market_session_age
         item["recommendation_count"] = recommendation_count(conn, str(item.get("signal_id") or ""))
         output.append(item)
     return pd.DataFrame(output)
@@ -2222,47 +2339,115 @@ def telegram_report(overall: dict[str, Any], by_setup: pd.DataFrame, by_signal: 
     return "\n".join(lines)
 
 
+def _report_scalar_present(value: Any) -> bool:
+    if value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip().lower() not in {"", "nan", "none", "null"}
+
+
+def _active_report_age(row: pd.Series) -> int:
+    value = row.get("market_session_age")
+    if not _report_scalar_present(value):
+        value = row.get("age_sessions")
+    return as_int(value, 0)
+
+
+def _active_report_snapshot(active: pd.DataFrame) -> pd.DataFrame:
+    if active.empty:
+        return active.copy()
+    required = {"symbol", "current_status"}
+    missing = sorted(required.difference(active.columns))
+    if missing:
+        raise ValueError(f"ACTIVE_RECOMMENDATIONS_MISSING_COLUMNS:{','.join(missing)}")
+    work = active.copy()
+    work["current_status"] = work["current_status"].astype(str).str.strip().str.upper()
+    work["symbol"] = (
+        work["symbol"].astype(str).str.strip().str.upper().str.replace(".JK", "", regex=False)
+    )
+    work = work[
+        work["current_status"].isin(ACTIVE_STATUSES)
+        & work["symbol"].ne("")
+    ].copy()
+    duplicates = sorted(
+        work.loc[work["symbol"].duplicated(keep=False), "symbol"].unique().tolist()
+    )
+    if duplicates:
+        raise RuntimeError("DUPLICATE_ACTIONABLE_LIFECYCLE:" + ",".join(duplicates))
+    return work
+
+
 def _active_recommendations_telegram(active: pd.DataFrame) -> str:
+    active = _active_report_snapshot(active)
+    statuses = (
+        active["current_status"].astype(str).str.upper()
+        if "current_status" in active.columns
+        else pd.Series(dtype=str)
+    )
+    open_count = int((statuses == "OPEN").sum())
+    waiting_count = int((statuses == "WAITING_TRIGGER").sum())
     lines = [
-        "📌 </b>REKOMENDASI AKTIF</b>",
+        "📊 <b>SDE SWING — ACTIVE RECOMMENDATIONS</b>",
         "━━━━━━━━━━━━━━━━━━━",
-        f"Total aktif: {len(active)} saham",
+        f"Total actionable: {len(active)} saham",
+        "AGE = sesi pasar IDX",
     ]
     if active.empty:
         return "\n".join(lines + ["", "Belum ada rekomendasi aktif."])
-    for status, heading in (("OPEN", "📈 </b>ACTIVE</b>"), ("WAITING_TRIGGER", "⏳ </b>WAITING ENTRY</b>")):
-        subset = active[active["current_status"].astype(str).str.upper() == status]
+    stale_scans: list[tuple[str, int]] = []
+    for status, heading, count in (
+        ("OPEN", "📈 <b>ACTIVE", open_count),
+        ("WAITING_TRIGGER", "⏳ <b>WAITING ENTRY", waiting_count),
+    ):
+        subset = active[statuses == status]
         if subset.empty:
             continue
-        lines.extend(["", heading])
+        lines.extend(["", f"{heading} — {count}</b>"])
         for _, row in subset.iterrows():
-            symbol = html.escape(str(row.get("symbol") or ""))
+            symbol_raw = str(row.get("symbol") or "")
+            symbol = html.escape(symbol_raw)
             signal_date = html.escape(str(row.get("signal_date") or ""))
             current = fmt_price(row.get("current_price"))
+            age = _active_report_age(row)
+            scan_age = as_int(row.get("scan_staleness_sessions"), 0)
+            if scan_age > 0:
+                stale_scans.append((symbol_raw, scan_age))
             if status == "OPEN":
                 entry = fmt_price(row.get("entry_price") or row.get("reference_price"))
                 pnl = fmt(row.get("simulated_return_pct"), 2, "%")
                 lines.extend([
-                    "", f"</b>{symbol}</b>", f"Sinyal       : {signal_date}",
+                    "", f"<b>{symbol}</b>", f"Sinyal       : {signal_date}",
                     f"Entry mesin  : {entry}", f"Harga kini   : {current}",
                     f"P/L simulasi : {pnl}",
                     f"TP1          : {fmt_price(row.get('take_profit_1'))}",
                     f"TP2          : {fmt_price(row.get('take_profit_2'))}",
                     f"SL           : {fmt_price(row.get('stop_loss'))}",
                     f"REC          : {max(as_int(row.get('recommendation_count'), 1), 1)}x",
-                    f"AGE          : {int(row.get('age_sessions') or 0)}D",
+                    f"AGE          : {age} sesi",
                 ])
+                if as_int(row.get("tp1_hit"), 0) > 0:
+                    lines.append("🎯 TP1 HIT · 🟢 TRAILING ACTIVE")
             else:
                 low = fmt_price(row.get("entry_zone_low"), missing="")
                 high = fmt_price(row.get("entry_zone_high"), missing="")
                 entry = f"{low}–{high}" if low and high else (low or high or "belum tersedia")
                 lines.extend([
-                    "", f"</b>{symbol}</b>", f"Sinyal      : {signal_date}", f"Entry       : {entry}",
+                    "", f"<b>{symbol}</b>", f"Sinyal      : {signal_date}", f"Entry       : {entry}",
                     f"Harga kini  : {current}",
                     f"Status scan : {html.escape(str(row.get('latest_scan_status') or 'NOT_IN_LATEST_SCAN'))}",
                     f"REC         : {max(as_int(row.get('recommendation_count'), 1), 1)}x",
-                    f"AGE         : {int(row.get('age_sessions') or 0)}D",
+                    f"AGE         : {age} sesi",
                 ])
+    if stale_scans:
+        freshness = ", ".join(
+            f"{html.escape(symbol)} {sessions} sesi lalu"
+            for symbol, sessions in stale_scans
+        )
+        lines.extend(["", f"🕒 Last Scan: {freshness}"])
     return "\n".join(lines)
 
 
@@ -2271,73 +2456,88 @@ def _status_changes_telegram(events: list[sqlite3.Row], *, max_events: int = 20)
     if not material:
         return ""
     limit = max(int(max_events or 1), 1)
+    rendered = material[:limit]
     lines = [
-        "🔔 <b>LIFECYCLE DIGEST</b>",
+        "🔔 <b>SDE SWING — LIFECYCLE DIGEST</b>",
         "━━━━━━━━━━━━━━━━━━━━",
         f"📊 <b>{len(material)} perubahan material</b>",
         "━━━━━━━━━━━━━━━━━━━━",
     ]
-    for event in material[:limit]:
-        symbol = html.escape(str(event["symbol"] or ""))
-        event_type = str(event["event_type"] or "").upper()
-        previous = html.escape(
-            str(event["previous_status"] or "-").replace("_", " ")
-        )
-        new = html.escape(
-            str(event["new_status"] or "-").replace("_", " ")
-        )
-        reason_raw = str(event["event_reason"] or event_type or "")
-        reason = html.escape(reason_raw.replace("_", " "))
-        price = fmt_price(event["event_price"])
-        raw_date = str(event["event_date"] or "")
-        try:
-            event_date = pd.to_datetime(raw_date).strftime("%d %b %Y")
-        except Exception:
-            event_date = html.escape(raw_date)
-        lines.append("")
-        # SYMBOL
-        lines.append(f"◆ <b>{symbol}</b>")
+    labels = {
+        "ENTRY_TRIGGERED": ("📈", "ENTRY TRIGGERED"),
+        "TP1_HIT": ("🎯", "TP1 HIT"),
+        "STOP_LOSS_HIT": ("🛑", "STOP LOSS"),
+        "TP2_HIT": ("🚀", "TP2 HIT"),
+        "MAX_HOLD_EXIT": ("⏱", "MAX HOLD"),
+        "EXPIRED": ("⌛", "EXPIRED"),
+        "INVALIDATED_BEFORE_ENTRY": ("🚫", "INVALIDATED"),
+    }
+    order = tuple(labels)
+    grouped: dict[str, list[Mapping[str, Any] | sqlite3.Row]] = {}
+    for event in rendered:
+        event_type = norm_text(_event_value(event, "event_type")).upper()
+        grouped.setdefault(event_type, []).append(event)
+    ordered_types = [event_type for event_type in order if grouped.get(event_type)]
+    ordered_types.extend(event_type for event_type in grouped if event_type not in order)
 
-        # EVENT TYPE
-        if event_type == "ENTRY_TRIGGERED":
-            lines.append("📈 <b>ENTRY TRIGGERED</b>")
-            lines.append(f"🎯 Trigger : {reason.title()} ({html.escape(reason_raw)})")
-            lines.append(f"💰 Entry   : {price}")
-        elif event_type == "TP1_HIT":
-            lines.append("🎯 <b>TP1 HIT</b>")
-            lines.append(f"💰 Exit    : {price}")
-        elif event_type == "TP2_HIT":
-            lines.append("🚀 <b>TP2 HIT</b>")
-            lines.append(f"💰 Exit    : {price}")
-        elif event_type == "STOP_LOSS_HIT":
-            lines.append("🛑 <b>STOP LOSS HIT</b>")
-            lines.append(f"💰 Exit    : {price}")
-        elif event_type == "MAX_HOLD_EXIT":
-            lines.append("⏱ <b>MAX HOLD EXIT</b>")
-            lines.append(f"💰 Exit    : {price}")
-        elif event_type == "EXPIRED":
-            lines.append("⌛ <b>SIGNAL EXPIRED</b>")
-            expiry_sessions = waiting_expiry_sessions(_event_value(event, "trigger_expiry_days", 7))
-            lines.append(f"⚠️ Waiting {expiry_sessions} sesi perdagangan tanpa entry trigger.")
-            rec_count = as_int(_event_value(event, "recommendation_count"), 0)
-            lines.append(f"🔁 REC selama lifecycle: {rec_count}x")
-            original = str(_event_value(event, "original_signal_date", raw_date) or raw_date)
+    for event_type in ordered_types:
+        group = grouped[event_type]
+        emoji, label = labels.get(event_type, ("🔄", event_type.replace("_", " ")))
+        lines.extend(["", f"{emoji} <b>{label} — {len(group)}</b>"])
+        for event in group:
+            symbol = html.escape(str(_event_value(event, "symbol") or ""))
+            reason_raw = str(_event_value(event, "event_reason", event_type) or event_type)
+            reason = html.escape(reason_raw.replace("_", " "))
+            price = fmt_price(_event_value(event, "event_price"))
+            raw_date = str(_event_value(event, "event_date") or "")
             try:
-                original = pd.to_datetime(original).strftime("%d %b %Y")
+                event_date = pd.to_datetime(raw_date).strftime("%d %b %Y")
             except Exception:
-                pass
-            lines.append(f"📅 Original signal: {html.escape(original)}")
-        elif event_type == "INVALIDATED_BEFORE_ENTRY":
-            lines.append("🚫 <b>SIGNAL INVALIDATED</b>")
-            lines.append(f"⚠️ Reason  : {reason}")
-            lines.append(f"💰 Price   : {price}")
-        else:
-            lines.append(f"🔄 <b>{previous} → {new}</b>")
-            if reason:
-                lines.append(f"📌 Reason  : {reason}")
-            if price != "belum tersedia":
-                lines.append(f"💰 Price   : {price}")
-        lines.append(f"📅 Date    : {event_date}")
+                event_date = html.escape(raw_date)
+            if event_type == "ENTRY_TRIGGERED":
+                lines.extend([
+                    f"◆ <b>{symbol}</b> @ {price} · {event_date}",
+                    f"  Trigger: {reason} ({html.escape(reason_raw)})",
+                ])
+            elif event_type == "TP1_HIT":
+                lines.extend([
+                    f"◆ <b>{symbol}</b> @ {price} · {event_date}",
+                    "  → Trailing active",
+                ])
+            elif event_type in {"TP2_HIT", "STOP_LOSS_HIT", "MAX_HOLD_EXIT"}:
+                lines.append(f"◆ <b>{symbol}</b> @ {price} · {event_date}")
+            elif event_type == "EXPIRED":
+                expiry_sessions = waiting_expiry_sessions(
+                    _event_value(event, "trigger_expiry_days", 7)
+                )
+                rec_count = as_int(_event_value(event, "recommendation_count"), 0)
+                original = str(
+                    _event_value(event, "original_signal_date", raw_date) or raw_date
+                )
+                try:
+                    original = pd.to_datetime(original).strftime("%d %b %Y")
+                except Exception:
+                    pass
+                lines.extend([
+                    f"◆ <b>{symbol}</b> · {event_date}",
+                    f"  Waiting {expiry_sessions} sesi perdagangan tanpa entry trigger.",
+                    f"  REC selama lifecycle: {rec_count}x",
+                    f"  Original signal: {html.escape(original)}",
+                ])
+            elif event_type == "INVALIDATED_BEFORE_ENTRY":
+                lines.extend([
+                    f"◆ <b>{symbol}</b> · {event_date}",
+                    f"  Reason: {reason}",
+                    f"  Price: {price}",
+                ])
+            else:
+                previous = html.escape(
+                    str(_event_value(event, "previous_status", "-") or "-").replace("_", " ")
+                )
+                new = html.escape(
+                    str(_event_value(event, "new_status", "-") or "-").replace("_", " ")
+                )
+                lines.append(f"◆ <b>{symbol}</b> · {previous} → {new} · {event_date}")
     if len(material) > limit:
         lines.extend([
             "",

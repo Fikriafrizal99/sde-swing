@@ -34,6 +34,61 @@ def _int_or_zero(value: Any) -> int:
         return 0
 
 
+def _has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip().lower() not in {"", "nan", "none", "null"}
+
+
+def _session_age(row: pd.Series) -> int:
+    value = row.get("market_session_age")
+    if not _has_value(value):
+        value = row.get("age_sessions")
+    return _int_or_zero(value)
+
+
+def _is_true(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    try:
+        return float(value) != 0.0
+    except Exception:
+        return str(value).strip().upper() in {"TRUE", "YES", "Y"}
+
+
+def _actionable_snapshot(active: pd.DataFrame) -> pd.DataFrame:
+    """Return only valid actionable rows and reject ambiguous ownership."""
+    if active.empty:
+        return active.copy()
+    required = {"symbol", "current_status"}
+    missing = sorted(required.difference(active.columns))
+    if missing:
+        raise ValueError(f"ACTIVE_RECOMMENDATIONS_MISSING_COLUMNS:{','.join(missing)}")
+
+    work = active.copy()
+    work["current_status"] = work["current_status"].astype(str).str.strip().str.upper()
+    work["symbol"] = (
+        work["symbol"].astype(str).str.strip().str.upper().str.replace(".JK", "", regex=False)
+    )
+    work = work[
+        work["current_status"].isin(tracker.ACTIVE_STATUSES)
+        & work["symbol"].ne("")
+    ].copy()
+    duplicate_symbols = sorted(
+        work.loc[work["symbol"].duplicated(keep=False), "symbol"].unique().tolist()
+    )
+    if duplicate_symbols:
+        raise RuntimeError(
+            "DUPLICATE_ACTIONABLE_LIFECYCLE:" + ",".join(duplicate_symbols)
+        )
+    return work
+
+
 def _first_price(*values: Any) -> float | None:
     for value in values:
         parsed = tracker.as_float(value)
@@ -153,17 +208,26 @@ def _render_table(headers: list[str], rows: list[list[str]], *, left_columns: se
 
 
 def build_active_message(active: pd.DataFrame) -> str:
+    active = _actionable_snapshot(active)
+    statuses = (
+        active["current_status"].astype(str).str.upper()
+        if "current_status" in active.columns
+        else pd.Series(dtype=str)
+    )
+    open_count = int((statuses == "OPEN").sum())
+    waiting_count = int((statuses == "WAITING_TRIGGER").sum())
     lines = [
-        "📌 <b>REKOMENDASI AKTIF</b>",
+        "📊 <b>SDE SWING — ACTIVE RECOMMENDATIONS</b>",
         "━━━━━━━━━━━━━━━━━━━",
-        f"Total aktif: {len(active)} saham",
+        f"Total actionable: {len(active)} saham",
+        "AGE = sesi pasar IDX",
     ]
     if active.empty:
         return "\n".join(lines + ["", "Belum ada rekomendasi aktif."])
 
-    statuses = active["current_status"].astype(str).str.upper()
-
     open_rows: list[list[str]] = []
+    tp1_trailing: list[str] = []
+    stale_scans: list[tuple[str, int]] = []
     for _, row in active[statuses == "OPEN"].iterrows():
         symbol = str(row.get("symbol") or "").strip().upper()
         current_raw = _first_price(row.get("current_price"))
@@ -178,18 +242,27 @@ def build_active_message(active: pd.DataFrame) -> str:
             _compact_price(row.get("take_profit_1"), anchor_price=anchor),
             _compact_price(row.get("take_profit_2"), anchor_price=anchor),
             f"{max(_int_or_zero(row.get('recommendation_count')), 1)}x",
-            f"{_int_or_zero(row.get('age_sessions'))}D",
+            str(_session_age(row)),
         ])
+        if _is_true(row.get("tp1_hit")):
+            tp1_trailing.append(symbol)
+        scan_age = _int_or_zero(row.get("scan_staleness_sessions"))
+        if scan_age > 0:
+            stale_scans.append((symbol, scan_age))
 
     if open_rows:
         lines.extend([
             "",
-            "📈 <b>ACTIVE</b>",
+            f"📈 <b>ACTIVE — {open_count}</b>",
             "<pre>" + html.escape(_render_table(
                 ["EMT", "ENTRY", "NOW", "P/L", "SL", "TP1", "TP2", "REC", "AGE"],
                 open_rows,
             )) + "</pre>",
         ])
+        lines.extend(
+            f"🎯 <b>{html.escape(symbol)}</b> · TP1 HIT · 🟢 TRAILING ACTIVE"
+            for symbol in tp1_trailing
+        )
 
     waiting_rows: list[list[str]] = []
     for _, row in active[statuses == "WAITING_TRIGGER"].iterrows():
@@ -207,19 +280,29 @@ def build_active_message(active: pd.DataFrame) -> str:
             _compact_price(row.get("take_profit_1"), anchor_price=anchor),
             _compact_price(row.get("take_profit_2"), anchor_price=anchor),
             f"{max(_int_or_zero(row.get('recommendation_count')), 1)}x",
-            f"{_int_or_zero(row.get('age_sessions'))}D",
+            str(_session_age(row)),
         ])
+        scan_age = _int_or_zero(row.get("scan_staleness_sessions"))
+        if scan_age > 0:
+            stale_scans.append((symbol, scan_age))
 
     if waiting_rows:
         lines.extend([
             "",
-            "⏳ <b>WAITING ENTRY</b>",
+            f"⏳ <b>WAITING ENTRY — {waiting_count}</b>",
             "<pre>" + html.escape(_render_table(
                 ["EMT", "ENTRY", "NOW", "GAP", "SL", "TP1", "TP2", "REC", "AGE"],
                 waiting_rows,
                 left_columns={0},
             )) + "</pre>",
         ])
+
+    if stale_scans:
+        freshness = ", ".join(
+            f"{html.escape(symbol)} {sessions} sesi lalu"
+            for symbol, sessions in stale_scans
+        )
+        lines.extend(["", f"🕒 Last Scan: {freshness}"])
 
     return "\n".join(lines)
 
@@ -242,7 +325,7 @@ def main() -> int:
     if not active_csv.exists():
         raise FileNotFoundError("ACTIVE_RECOMMENDATIONS.csv belum tersedia. Jalankan Update Outcome terlebih dahulu.")
 
-    active = pd.read_csv(active_csv, low_memory=False)
+    active = _actionable_snapshot(pd.read_csv(active_csv, low_memory=False))
     if active.empty:
         print("Tidak ada rekomendasi aktif. Telegram tidak dikirim.")
         return 0
