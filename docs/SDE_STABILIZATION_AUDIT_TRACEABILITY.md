@@ -39,11 +39,11 @@ Commit ownership:
 |---|---|---|---|---|---|
 | AF-P0-001 | P0 | CI suite red | Commit 6 | OPEN | Historical audit 28 failed / 492 passed. Current audited-base Actions evidence: 27 failed / 510 passed / 3 subtests passed; compile PASS. |
 | AF-P0-002 | P0 | Shared `FINAL_DECISION_V2.csv` writer not fully serialized/locked | Commit 2 | IMPLEMENTED / PENDING RE-AUDIT | Dedicated V2 writer lock, run-scoped artifact, atomic canonical publish, SHA equivalence, stale sidecar rejection. |
-| AF-P1-001 | P1 | Canonical data layer is not production execution boundary | Commit 5 | OPEN | DataSourceManager exists; audited Stage 1/2 still use legacy execution paths. |
+| AF-P1-001 | P1 | Canonical data layer is not production execution boundary | Commit 5 | IMPLEMENTED / PENDING RE-AUDIT | Production technical wrapper now materializes historical rows through `DataSourceManager.route` into run-scoped canonical DailyBar CSVs; raw provider folder is not engine input. Final runtime/re-audit proof required. |
 | AF-P1-002 | P1 | TP1/lifecycle semantics differ across Exit Engine, tracker, DB, shadow and backtest | Commit 3 | IMPLEMENTED / PENDING RE-AUDIT | `SDE_SWING_LIFECYCLE_V1`; TP1 milestone/open, TP2 close, same-candle stop priority, max-hold, actual trigger entry. |
 | AF-P1-003 | P1 | Resend/delivery can overwrite engine `*_latest.json` | Commit 4 | IMPLEMENTED / PENDING RE-AUDIT | `SDE_RUNTIME_STATUS_V1`: engine channel retained; delivery/resend channel added; resend declares `engine_mutation=NONE`. |
 | AF-P1-004 | P1 | Interrupt can leave inconsistent terminal state such as FAILED + exit code 0 | Commit 4 | IMPLEMENTED / PENDING RE-AUDIT | Lock-boundary interrupt terminalization, exit 130 evidence, traceback, FAILED/nonzero invariant, ownership-safe release. |
-| AF-P1-005 | P1 | Conflicting market dates can select a winner with fail-closed false | Commit 5 | OPEN | Canonical date conflict must block and propagate invalid quality. |
+| AF-P1-005 | P1 | Conflicting market dates can select a winner with fail-closed false | Commit 5 | IMPLEMENTED / PENDING RE-AUDIT | `ConflictResolver` now returns no winner, `CONFLICT_FAIL_CLOSED`, `fail_closed=true`, and rejected candidate quality for market-date mismatch. Final re-audit required. |
 | AF-P2-001 | P2 | Telegram idempotency check/write not transaction-locked | Post-stabilization | DEFERRED | Explicitly outside P0/P1 scope. |
 | AF-P2-002 | P2 | Hotfix workflow has `contents: write` and auto-push | Post-stabilization | DEFERRED | Governance/security follow-up. |
 | AF-P2-003 | P2 | DB revision history not fully immutable | Post-stabilization | DEFERRED | Full DB revision redesign excluded. |
@@ -101,8 +101,7 @@ byte-preserved baseline modules, `tests/test_lifecycle_contract_v1.py`,
 
 ### Commit 4 — Runtime / status / locking
 
-Commit: this commit; final SHA is the parent of Commit 5 and will be pinned in
-final re-audit.
+Commit: `1158828fd91a2f40d1814fef3112d360c2ba610e`
 
 Status: IMPLEMENTED / PENDING RE-AUDIT
 
@@ -129,6 +128,38 @@ Semantics:
 - fresh foreign-host locks are not invalidated by local PID probes;
 - stale candidate content is rechecked immediately before unlink.
 
+### Commit 5 — Canonical data path
+
+Commit: this commit; final SHA is the parent of Commit 6 and will be pinned in
+final re-audit.
+
+Status: IMPLEMENTED / PENDING RE-AUDIT
+
+Contract: `SDE_CANONICAL_DAILY_HISTORY_V1`
+
+Evidence:
+
+- `modules/data_sources/legacy_daily_bar_adapter.py`
+- `modules/data_sources/conflict_resolver.py`
+- `modules/technical_feature_engine/post_market_validated_runner.py`
+- `tests/test_multisource_conflict.py`
+- `tests/test_canonical_data_path_commit5.py`
+- `docs/SDE_STABILIZATION_COMMIT5_CANONICAL_DATA_PATH.md`
+
+Semantics:
+
+- Yahoo/historical remains acquisition-only;
+- the configured technical wrapper is the production boundary used by
+  `master_pipeline.py` and the integrated runner;
+- current symbols are selected from the Yahoo refresh manifest;
+- each historical row is mapped to canonical `DailyBar` and passed through
+  `DataSourceManager.route`;
+- the frozen Technical Feature Engine receives only run-scoped canonical CSVs;
+- source/canonical file hashes and run lineage are persisted;
+- rows after the expected closed date are blocked from engine input;
+- a symbol missing the expected canonical date is excluded, never substituted;
+- market-date conflict returns no winner and fails closed.
+
 ## New findings discovered during stabilization
 
 | ID | Found during | Observation | Disposition | Status |
@@ -151,6 +182,10 @@ Semantics:
 | NF-C4-004 | Commit 4 | Lock release unlinked by path without verifying owner identity | Commit 4 | IMPLEMENTED / PENDING RE-AUDIT |
 | NF-C4-005 | Commit 4 | Stale-lock PID liveness was checked without host ownership | Commit 4 | IMPLEMENTED / PENDING RE-AUDIT |
 | NF-C4-006 | Commit 4 | Some legacy explicit exception branches use repository-default traceback path instead of `ctx.status_root` | Post-stabilization path normalization unless Commit 6 proves release-blocking | DEFERRED |
+| NF-C5-001 | Commit 5 | Production technical wrapper filtered the current universe but still hardlinked/copied raw provider CSVs into the Technical Feature Engine input | Commit 5 | IMPLEMENTED / PENDING RE-AUDIT |
+| NF-C5-002 | Commit 5 | Market-date mismatch selected a source-priority winner with `fail_closed=false` | Commit 5 | IMPLEMENTED / PENDING RE-AUDIT |
+| NF-C5-003 | Commit 5 | `HISTORICAL_PROVIDER` config note says “Fallback only” although DailyBar ownership declares it primary | Post-stabilization documentation/config wording review | DEFERRED |
+| NF-C5-004 | Commit 5 | DataSourceManager constructs its quality engine without injecting the configured BEI holiday calendar; Yahoo acquisition already constrains actual sessions, but generic canonical holiday validation is not fully calendar-bound | Post-stabilization canonical quality hardening unless Commit 6 proves release-blocking | DEFERRED |
 
 Detailed non-blocking observations remain in
 `docs/SDE_STABILIZATION_DEFERRED_FINDINGS.md`.
@@ -167,6 +202,7 @@ Detailed non-blocking observations remain in
 | Initial SL calculation | FROZEN by Commit 1 |
 | TP1/TP2 price calculation | FROZEN by Commit 1 |
 | Closed-candle policy | FROZEN by Commit 1 |
+| Protected Technical Feature Engine | MUST REMAIN byte-identical |
 | Shared V2 publication | Commit 2 ownership; MUST REMAIN |
 | Broker date/coverage validation | MUST REMAIN |
 | Data-quality propagation | MUST REMAIN |
@@ -181,15 +217,18 @@ Commit 6/re-audit must prove:
 
 - no unwaived required-test failures;
 - quant freeze passes;
-- final run lineage reconstructs V2 -> V3 -> exit -> DB -> delivery;
+- protected Technical Feature Engine remains byte-identical;
+- final run lineage reconstructs raw acquisition -> canonical DailyBar ->
+  technical -> V2 -> V3 -> exit -> DB -> delivery;
+- canonical historical source/canonical hashes match recorded lineage;
+- Technical Feature Engine input is canonical, not the raw provider directory;
+- conflicting market dates fail closed with no winner;
 - V2 publication remains serialized/atomic/hash-consistent;
 - resend leaves engine latest byte/content-hash unchanged;
 - delivery channel remains independent from engine channel;
 - interrupt evidence has terminal status + nonzero code + traceback before lock release;
 - lock ownership/stale cleanup regression passes;
 - canonical lifecycle semantics remain identical;
-- canonical data path is the actual production boundary;
-- conflicting dates fail closed;
 - auto-entry remains false.
 
 ## Final re-audit closure

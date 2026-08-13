@@ -103,9 +103,40 @@ If the existing test is not rewritten inside Commit 3, it remains an explicit
 Commit 6 release-cleanup item and must not receive a waiver that legitimizes the
 old TP1 semantics.
 
+## Commit 5 observations
+
+### NF-C5-003 / DF-C5-001 — HISTORICAL_PROVIDER wording contradicts ownership map
+
+Status: DEFERRED
+
+`config/data_sources.json` declares `HISTORICAL_PROVIDER` as the primary owner
+for `DailyBar`, while the provider note still says “Fallback only.”
+
+Commit 5 uses the ownership map as the executable contract and does not change
+provider priority or behavior merely to repair wording. The wording/config
+documentation inconsistency should be reviewed in the consolidated
+post-stabilization discussion.
+
+### NF-C5-004 / DF-C5-002 — Generic canonical quality engine lacks configured BEI holiday injection
+
+Status: DEFERRED
+
+`DataSourceManager` constructs `DataQualityEngine()` without injecting the
+repository trading-calendar holiday/special-session configuration.
+
+For Commit 5's production historical path, the Yahoo refresh manifest already
+selects the expected closed session and Yahoo files contain exchange sessions;
+the new adapter additionally requires every admitted symbol to contain that
+exact expected session.
+
+Changing the manager-wide calendar construction would affect all canonical
+record types and is therefore broader than the two audited Commit 5 findings.
+It should be evaluated after the P0/P1 stabilization sequence unless final
+re-audit demonstrates release-blocking impact.
+
 ## Tracking rule for future commits
 
-For Commit 4 onward:
+For Commit 6 and post-stabilization work:
 
 1. every newly observed problem receives `NF-Cx-NNN`;
 2. add it to `SDE_STABILIZATION_AUDIT_TRACEABILITY.md`;
