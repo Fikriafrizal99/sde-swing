@@ -31,6 +31,9 @@ coverage.xml
 data/input/
 data/output/
 data/state/
+data/state/broker_playwright.json
+data/state/playwright/stockbit/
+data/logs/broker_playwright/
 data/database/
 data/runtime/
 data/cache/

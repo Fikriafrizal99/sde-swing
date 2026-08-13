@@ -1,0 +1,2 @@
+# Optional local browser collector. Core/manual SDE does not import this package.
+playwright>=1.49,<2.0

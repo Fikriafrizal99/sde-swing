@@ -192,7 +192,7 @@ def test_windows_menus_expose_simple_daily_flow_and_auto_sync():
     portfolio_menu = (ROOT / "maintenance/RECORD_PORTFOLIO_BUY.bat").read_text(encoding="utf-8-sig")
 
     assert "[1] UPDATE HARIAN" in broker_menu
-    assert "[2] IMPORT HASIL Tampermonkey" in broker_menu
+    assert "[2] IMPORT HASIL ke database" in broker_menu
     assert "[9] ADVANCED" in broker_menu
     assert "portfolio_broker_daily.py" in broker_menu
     assert "call :SYNC_BROKER_TASKS" in portfolio_menu
