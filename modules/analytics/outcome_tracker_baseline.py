@@ -27,6 +27,10 @@ from modules.analytics.execution_integrity import (
     target_is_profitable,
     validate_plan_geometry,
 )
+from modules.analytics.replay_contract import (
+    historical_replay_metadata,
+    replay_report_columns,
+)
 from modules.broker_bridge.broker_period_context import trading_sessions_between
 
 try:
@@ -1871,12 +1875,18 @@ def export_reports(
     overall = performance_row(df, "ALL")
     overall["Start_Date"] = df["signal_date"].min() if not df.empty else "-"
     overall["End_Date"] = df["signal_date"].max() if not df.empty else "-"
+    replay_contract = historical_replay_metadata()
+    replay_columns = replay_report_columns(replay_contract)
+    overall.update(replay_columns)
     overall_df = pd.DataFrame([overall])
     overall_df.to_csv(output_dir / "PERFORMANCE_SUMMARY.csv", index=False, encoding="utf-8-sig")
     by_setup = grouped_performance(df, "setup_type")
     by_signal = grouped_performance(df, "signal_type")
     by_broker = grouped_performance(df, "broker_confidence_bucket")
     by_regime = grouped_performance(df, "market_regime")
+    for frame in (by_setup, by_signal, by_broker, by_regime):
+        for column, value in replay_columns.items():
+            frame[column] = value
     by_setup.to_csv(output_dir / "PERFORMANCE_BY_SETUP.csv", index=False, encoding="utf-8-sig")
     by_signal.to_csv(output_dir / "PERFORMANCE_BY_SIGNAL_TYPE.csv", index=False, encoding="utf-8-sig")
     by_broker.to_csv(output_dir / "PERFORMANCE_BY_BROKER_CONFIDENCE.csv", index=False, encoding="utf-8-sig")
@@ -1886,6 +1896,7 @@ def export_reports(
     payload = {
         "generated_at": now_text(),
         "overall": overall,
+        "replay_contract": replay_contract,
         "files": {
             "ledger": str((output_dir / "SIGNAL_OUTCOME_LEDGER.csv").resolve()),
             "summary": str((output_dir / "PERFORMANCE_SUMMARY.csv").resolve()),

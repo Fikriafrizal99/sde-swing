@@ -9,6 +9,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from swing_utils import write_json
+from modules.analytics.replay_contract import (
+    historical_replay_metadata,
+    replay_report_columns,
+)
 
 
 DECISION_ORDER = ["BUY READY", "BUY ON TRIGGER", "WATCH", "AVOID", "STRONG BUY", "BUY", "BUY CANDIDATE", "WATCH HIGH", "SPECULATIVE"]
@@ -372,6 +376,10 @@ def main():
             details.append(evaluate_signal(row, px, horizons, args.entry_mode, args.max_hold_days))
 
     detail = pd.DataFrame(details)
+    replay_contract = historical_replay_metadata()
+    replay_columns = replay_report_columns(replay_contract)
+    for column, value in replay_columns.items():
+        detail[column] = value
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
     detail.to_csv(output / "BACKTEST_DETAIL.csv", index=False)
@@ -387,6 +395,8 @@ def main():
         summary["Current_Recommendations"] = summary["Decision"].map(decision_counts).fillna(0).astype(int)
         summary.loc[summary["Decision"].eq("ALL"), "Current_Recommendations"] = current_recommendations
         summary.loc[summary["Decision"].eq("ALL"), "Historical_Evaluated_Signals"] = historical_evaluated
+    for column, value in replay_columns.items():
+        summary[column] = value
     summary.to_csv(output / "BACKTEST_SUMMARY.csv", index=False)
     outcome_cols = [
         "Symbol", "Signal_Date", "Decision", "Gated_Decision", "Signal_Score",
@@ -399,6 +409,7 @@ def main():
         "Holding_Period_Days", "False_Positive", "False_Negative", "Setup_Type",
         "Market_Regime", "Repeat_Status", "Status",
     ]
+    outcome_cols.extend(replay_columns)
     existing_outcome_cols = [c for c in outcome_cols if c in detail.columns]
     detail[existing_outcome_cols].to_csv(output / "WATCHLIST_OUTCOMES.csv", index=False)
 
@@ -437,7 +448,8 @@ def main():
         "Triggered_Lifecycle": triggered_lifecycle,
         "Closed_Outcomes": closed_outcomes,
         "suppressed_repeats": len(repeats),
-        "missing_symbols": len(set(missing))
+        "missing_symbols": len(set(missing)),
+        "replay_contract": replay_contract,
     }
     write_json(output / "manifest.json", manifest)
     print("Backtest Stage 2 moderate calibration selesai")

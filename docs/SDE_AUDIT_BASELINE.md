@@ -902,6 +902,7 @@ Release decision: GO / CONDITIONAL / NO-GO
 | Tanggal | Commit | Perubahan | Alasan | Dampak audit |
 |---|---|---|---|---|
 | 2026-08-13 | `ea93be9` | Baseline dibuat dari audit repository/runtime awal | Membentuk referensi audit berulang | Menetapkan architecture, lineage, quant, runtime, dan release checklist |
+| 2026-08-13 | Phase 2 Commit 3 (SHA Git-authoritative) | Menambahkan kontrak replay eksplisit dan final Phase 2 re-audit | Mencegah historical performance mengklaim full live replay tanpa runtime context | Menambahkan `SDE_SWING_REPLAY_V1`; hasil historis default tetap price-lifecycle-only dan autonomous trading tetap NO-GO |
 
 ---
 
@@ -914,4 +915,3 @@ sebagai autonomous trading engine.
 Audit berikutnya harus memulai dari dokumen ini, lalu membuktikan perubahan
 dengan source, config, manifest, log, database, dan test — bukan hanya dari
 pesan Telegram atau `*_latest.json`.
-

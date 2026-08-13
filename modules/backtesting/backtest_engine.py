@@ -24,6 +24,7 @@ from modules.analytics.lifecycle_contract import (
     prepare_lifecycle_bars,
     trigger_spec_from_plan,
 )
+from modules.analytics.replay_contract import replay_report_columns
 
 _baseline_evaluate_signal = _baseline.evaluate_signal
 
@@ -82,7 +83,7 @@ def _return_pct(price: float | None, entry: float | None) -> float | None:
 
 def evaluate_signal(signal, px, horizons, entry_mode, max_hold_days):
     px = prepare_lifecycle_bars(px)
-    base = signal.to_dict()
+    base = {**signal.to_dict(), **replay_report_columns()}
     if px.empty:
         return {**base, "Status": "NO_FUTURE_PRICE"}
 
@@ -246,6 +247,7 @@ def evaluate_signal(signal, px, horizons, entry_mode, max_hold_days):
 
     legacy = _baseline_evaluate_signal(signal, px, horizons, entry_mode, max_hold_days)
     legacy["Lifecycle_Contract_Version"] = "LEGACY_NO_EXECUTABLE_PLAN"
+    legacy.update(replay_report_columns())
     return legacy
 
 

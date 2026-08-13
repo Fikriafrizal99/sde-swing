@@ -30,6 +30,11 @@ Commit ownership:
 - `OPEN`
 - `IMPLEMENTED / PENDING RE-AUDIT`
 - `IMPLEMENTED / PENDING PHASE 2 RE-AUDIT`
+- `CLOSED BY PHASE 2 RE-AUDIT`
+- `PARTIALLY CLOSED`
+- `ACCEPTED RISK`
+- `NOT REPRODUCED`
+- `REGRESSION`
 - `CLOSED BY RE-AUDIT`
 - `DEFERRED`
 - `EVIDENCE UPDATE`
@@ -47,9 +52,9 @@ Commit ownership:
 | AF-P1-003 | P1 | Resend/delivery can overwrite engine `*_latest.json` | Commit 4 | **CLOSED BY RE-AUDIT** | `SDE_RUNTIME_STATUS_V1`: engine and delivery channels separated; resend declares no engine mutation; full suite PASS. |
 | AF-P1-004 | P1 | Interrupt can leave inconsistent terminal state such as FAILED + exit code 0 | Commit 4 | **CLOSED BY RE-AUDIT** | Interrupt terminalization, exit 130, traceback, FAILED/nonzero invariant and ownership-safe lock release all covered by passing regression tests. |
 | AF-P1-005 | P1 | Conflicting market dates can select a winner with fail-closed false | Commit 5 | **CLOSED BY RE-AUDIT** | `ConflictResolver` returns no winner, `CONFLICT_FAIL_CLOSED`, `fail_closed=true`; conflict regressions PASS. |
-| AF-P2-001 | P2 | Telegram idempotency check/write not transaction-locked | Phase 2 Process 2 | **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** | SQLite `BEGIN IMMEDIATE` reservation state machine covers concurrency, retries, failures, stale leases, explicit force resend, legacy JSON migration, and attempt history. Guarantee is explicitly at-least-once with crash ambiguity. |
-| AF-P2-002 | P2 | Hotfix workflow has `contents: write` and auto-push | Phase 2 Commit 1 | **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** | Workflow converted to read-only validation with `contents: read`, non-persisted checkout credentials, no source/test rewrite, and no commit/push path. See `docs/SDE_PHASE2_COMMIT1_RELEASE_GOVERNANCE.md`. |
-| AF-P2-003 | P2 | DB revision history not fully immutable | Phase 2 Process 2 | **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** | Append-only `market_prices_daily_revisions`, update/delete rejection triggers, migration of current legacy rows, and backward-compatible current/latest projection with integrity regression. |
+| AF-P2-001 | P2 | Telegram idempotency check/write not transaction-locked | Phase 2 Process 2 | **CLOSED BY PHASE 2 RE-AUDIT** | SQLite `BEGIN IMMEDIATE` reservation state machine covers concurrency, retries, failures, stale leases, explicit force resend, legacy JSON migration, and attempt history. Re-audit retains the explicit at-least-once-with-crash-ambiguity guarantee rather than claiming exactly-once. |
+| AF-P2-002 | P2 | Hotfix workflow has `contents: write` and auto-push | Phase 2 Commit 1 | **CLOSED BY PHASE 2 RE-AUDIT** | Workflow is read-only validation with `contents: read`, non-persisted checkout credentials, no source/test rewrite, and no commit/push path; governance regression and full suite pass. |
+| AF-P2-003 | P2 | DB revision history not fully immutable | Phase 2 Process 2 | **CLOSED BY PHASE 2 RE-AUDIT** | Append-only revisions, update/delete rejection triggers, legacy migration, and current/latest projection pass. A temporary copy of the repository DB migrated 398708 rows with `PRAGMA integrity_check=ok`; the original runtime artifact was untouched. |
 
 ## Historical audit evidence retained
 
@@ -186,11 +191,11 @@ Detailed evidence:
 |---|---|---|---|---|
 | NF-C1-001 | Commit 1 | Historical test evidence 28/492 differs from audited-base Actions evidence 27/510/3 subtests | Commit 6 evidence | EVIDENCE UPDATE |
 | NF-C1-002 | Commit 1 | `audit/**` excluded from CI push trigger | Commit 6 added `audit/**` push coverage | **RESOLVED IN COMMIT 6** |
-| NF-C2-001 | Commit 2 | Generic `swing_utils.atomic_csv()` uses deterministic destination tmp | Phase 2 Process 2 | **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** |
-| NF-C2-002 | Commit 2 | Generic JSON writers outside V2 are not uniformly atomic | Phase 2 Process 2 | **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** |
+| NF-C2-001 | Commit 2 | Generic `swing_utils.atomic_csv()` uses deterministic destination tmp | Phase 2 Process 2 | **CLOSED BY PHASE 2 RE-AUDIT** |
+| NF-C2-002 | Commit 2 | Generic JSON writers outside V2 are not uniformly atomic | Phase 2 Process 2 | **CLOSED BY PHASE 2 RE-AUDIT** |
 | NF-C3-001 | Commit 3 | DB/backtest used D7/reference shortcut rather than ordered actual-entry lifecycle | Commit 3 | CLOSED BY RE-AUDIT |
 | NF-C3-002 | Commit 3 | Shadow inferred TP hit rates from final-outcome text | Commit 3 | CLOSED BY RE-AUDIT |
-| NF-C3-003 | Commit 3 | Runtime broker/decision/EMA exits cannot be perfectly replayed without historical context | Post-stabilization | DEFERRED |
+| NF-C3-003 | Commit 3 | Runtime broker/decision/EMA exits cannot be perfectly replayed without historical context | Phase 2 Commit 3 replay contract | **CLOSED BY PHASE 2 RE-AUDIT** |
 | NF-C3-004 | Commit 3 | Exit state lacked explicit TP1/trailing persistence | Commit 3 | CLOSED BY RE-AUDIT |
 | NF-C3-005 | Commit 3 | Tracker post-entry evaluation could be truncated by trigger-expiry window | Commit 3 | CLOSED BY RE-AUDIT |
 | NF-C3-006 | Commit 3 | Existing regression encoded TP1-as-full-close | Commit 6 stale-test cleanup | **RESOLVED IN COMMIT 6** |
@@ -201,17 +206,19 @@ Detailed evidence:
 | NF-C4-003 | Commit 4 | Status writer accepted terminal FAILED with exit code 0 | Commit 4 | CLOSED BY RE-AUDIT |
 | NF-C4-004 | Commit 4 | Lock release unlinked by path without owner verification | Commit 4 | CLOSED BY RE-AUDIT |
 | NF-C4-005 | Commit 4 | Stale-lock PID liveness was checked without host ownership | Commit 4 | CLOSED BY RE-AUDIT |
-| NF-C4-006 | Commit 4 | Some legacy exception branches use repository-default traceback path rather than `ctx.status_root` | Phase 2 Process 2 | **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** |
+| NF-C4-006 | Commit 4 | Some legacy exception branches use repository-default traceback path rather than `ctx.status_root` | Phase 2 Process 2 | **CLOSED BY PHASE 2 RE-AUDIT** |
 | NF-C5-001 | Commit 5 | Production wrapper still hardlinked/copied raw provider CSVs into TFE input | Commit 5 canonicalization | CLOSED BY RE-AUDIT |
 | NF-C5-002 | Commit 5 | Market-date mismatch selected source-priority winner with `fail_closed=false` | Commit 5 | CLOSED BY RE-AUDIT |
-| NF-C5-003 | Commit 5 | `HISTORICAL_PROVIDER` note says “Fallback only” although DailyBar ownership says primary | Post-stabilization | DEFERRED |
-| NF-C5-004 | Commit 5 | Generic canonical quality engine lacks configured BEI holiday injection | Phase 2 Process 2 | **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** |
+| NF-C5-003 | Commit 5 | `HISTORICAL_PROVIDER` note says “Fallback only” although DailyBar ownership says primary | Phase 2 Commit 3 ownership clarification | **CLOSED BY PHASE 2 RE-AUDIT** |
+| NF-C5-004 | Commit 5 | Generic canonical quality engine lacks configured BEI holiday injection | Phase 2 Process 2 | **CLOSED BY PHASE 2 RE-AUDIT** |
 | NF-C6-001 | Commit 6 | Stabilization compatibility facades could recurse/bypass baseline delegates | Commit 6 facade repair | **RESOLVED IN COMMIT 6** |
 | NF-C6-002 | Commit 6 | Multiple legacy regressions encoded superseded lifecycle/canonical/presentation contracts | Commit 6 test-contract cleanup | **RESOLVED IN COMMIT 6** |
 | NF-C6-003 | Commit 6 | Post Market has diagnostic and market-first contracts that must remain distinct | Explicit payload/version contract | **RESOLVED IN COMMIT 6** |
 | NF-C6-004 | Commit 6 | Generic REPORT ownership was ambiguous between router and scheduler | Router isolation + scheduler fallback + definitive validation | **RESOLVED IN COMMIT 6** |
 | NF-C6-005 | Commit 6 | Same-session Yahoo regression contradicted post-close revalidation safety contract | Regression aligned to existing revalidation behavior | **RESOLVED IN COMMIT 6** |
-| P2P2-NF-001 | Phase 2 Process 2 | Concurrent Windows `os.replace` can transiently fail with a destination sharing conflict | Process 2 bounded replace retry + concurrency regression | **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** |
+| P2P2-NF-001 | Phase 2 Process 2 | Concurrent Windows `os.replace` can transiently fail with a destination sharing conflict | Process 2 bounded replace retry + concurrency regression | **CLOSED BY PHASE 2 RE-AUDIT** |
+| PA2-NF-001 | Phase 2 pre-audit | Raw working-tree blob hashing false-fails on Windows CRLF | Phase 2 Commit 3 canonical Git-clean blob hashing | **CLOSED BY PHASE 2 RE-AUDIT** |
+| PA2-NF-002 | Phase 2 pre-audit | Resend regression assumes `/` path separators | Phase 2 Commit 3 resolved-`Path` comparison | **CLOSED BY PHASE 2 RE-AUDIT** |
 
 Detailed non-blocking observations remain in
 `docs/SDE_STABILIZATION_DEFERRED_FINDINGS.md`.
@@ -224,7 +231,7 @@ Finding: `AF-P2-002`
 
 Direct parent: `662c5ef160c7978237abc58e73e897190daf0632`
 
-Status: **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT**
+Status: **CLOSED BY PHASE 2 RE-AUDIT**
 
 The exact commit SHA is authoritative in Git and is intentionally not embedded
 in its own documentation. The implementation removes automated source/test
@@ -248,7 +255,7 @@ Findings: `AF-P2-001`, `AF-P2-003`, `NF-C2-001`, `NF-C2-002`,
 
 Direct parent: `de8bafe7485c4926bbc85b8575e8ac245934bf89`
 
-Status: **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT**
+Status: **CLOSED BY PHASE 2 RE-AUDIT**
 
 The exact final commit SHA is authoritative in Git and is intentionally not
 embedded in its own documentation. Process 2 adds transactional Telegram
@@ -275,6 +282,35 @@ Quant, scoring, blocker, candidate-selection, entry, SL, TP, RR, and lifecycle
 semantics are not owned by this process. `auto_entry_enabled=false` remains
 frozen.
 
+### Phase 2 Commit 3 - Contracts, portability, and final re-audit
+
+Findings: `NF-C3-003`, `NF-C5-003`, `PA2-NF-001`, and `PA2-NF-002`.
+
+Direct parent / `PHASE2_COMMIT3_BASELINE`:
+`7e4ebf5458311230ab1777cf2efcac464c28f026`.
+
+Status: **CLOSED BY PHASE 2 RE-AUDIT**
+
+Commit 3 defines the explicit `SDE_SWING_REPLAY_V1` fidelity boundary,
+clarifies DailyBar provider ownership without changing routing, hashes
+protected quant content through canonical Git clean normalization, and removes
+literal path-separator assumptions from resend regression coverage. It then
+re-audits all eleven Phase 2 findings plus `P2P2-NF-001`.
+
+Evidence:
+
+- `modules/analytics/replay_contract.py`
+- `tests/test_replay_contract_phase2.py`
+- `tests/test_audit_quant_freeze.py`
+- `tests/test_resend_daily_reports.py`
+- `docs/SDE_PHASE2_COMMIT3_FINAL_REAUDIT.md`
+- `docs/SDE_PHASE2_TRACEABILITY.md`
+
+Final local candidate evidence: compile PASS; targeted aggregate **94 passed**;
+full suite **595 passed, 3 subtests passed, 0 failed**; quant freeze PASS;
+stabilization release gate PASS; repository database integrity `ok`; migration
+on a temporary copy preserved all `398708` current rows as immutable revisions.
+
 ## Guardrail traceability
 
 | Guardrail | Final re-audit state |
@@ -286,6 +322,7 @@ frozen.
 | Entry-zone calculation | FROZEN / PASS |
 | Initial SL calculation | FROZEN / PASS |
 | TP1/TP2 price calculation | FROZEN / PASS |
+| Replay contract | `SDE_SWING_REPLAY_V1` / price-only reports explicitly not full-live |
 | Closed-candle policy | FROZEN / PASS |
 | Protected Technical Feature Engine | Quant/source freeze validator PASS |
 | Shared V2 publication | Serialized/atomic/hash-consistent regressions PASS |
@@ -320,11 +357,24 @@ real provider or Telegram endpoint was reachable during CI.
 
 **P0/P1 stabilization: GREEN / PASS.**
 
-All original P0/P1 findings are closed by re-audit evidence. Original P2
-findings and explicitly deferred new findings remain open for consolidated
-post-stabilization discussion.
+At the Commit 6 evidence point, all original P0/P1 findings were closed while
+the original P2 findings and explicitly deferred new findings remained open for
+post-stabilization discussion. That historical state is retained here.
 
 The historical `64/100 — AMBER/RED` audit verdict remains an immutable baseline
 record. It is not overwritten by this register. The new conclusion is that the
 agreed P0/P1 stabilization gate has passed while `auto_entry_enabled=false`
 continues to prohibit autonomous order entry.
+
+### Phase 2 final re-audit closure
+
+Phase 2 Commit 3 re-audited all eleven requested Phase 2 findings. Every one is
+**CLOSED BY PHASE 2 RE-AUDIT** based on executable behavior and passing
+regressions; `P2P2-NF-001` is also closed. No `P2C3-NF-*` finding was opened.
+
+Final local candidate evidence is **595 passed, 3 subtests passed, 0 failed**,
+with compile, quant freeze, and stabilization release gates passing. Software
+and reliability readiness is **GO WITH HARDENING** for supervised/shadow use.
+The combined operating posture remains **SUPERVISED ONLY**, and autonomous
+trading remains **NO-GO** because `auto_entry_enabled=false` and no autonomous
+execution audit was performed.

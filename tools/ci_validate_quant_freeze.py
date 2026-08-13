@@ -6,9 +6,9 @@ This guard is intentionally read-only. It detects drift from the audited
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import math
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -64,10 +64,55 @@ def _compare_subset(
         errors.append(f"{path}: expected {expected!r}, got {actual!r}")
 
 
-def _git_blob_sha(path: Path) -> str:
-    content = path.read_bytes()
-    header = f"blob {len(content)}\0".encode("ascii")
-    return hashlib.sha1(header + content).hexdigest()
+def _git_blob_sha(
+    path: Path,
+    *,
+    repository_path: str | Path | None = None,
+) -> str:
+    """Hash working-tree content after canonical Git clean normalization.
+
+    ``core.autocrlf=input`` makes text normalization deterministic on Windows
+    and Linux. ``--path`` still applies repository attributes/clean filters,
+    while omitting ``-w`` keeps this validation read-only.
+    """
+
+    source = Path(path).resolve()
+    if repository_path is None:
+        try:
+            relative = source.relative_to(ROOT.resolve()).as_posix()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"repository_path is required for a source outside {ROOT}"
+            ) from exc
+    else:
+        relative = Path(repository_path).as_posix()
+        while relative.startswith("./"):
+            relative = relative[2:]
+    if not relative or Path(relative).is_absolute() or ".." in Path(relative).parts:
+        raise RuntimeError(f"invalid canonical repository path: {relative!r}")
+
+    result = subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.autocrlf=input",
+            "hash-object",
+            f"--path={relative}",
+            "--",
+            str(source),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    digest = result.stdout.strip().lower()
+    if result.returncode != 0 or len(digest) != 40 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
+        detail = (result.stderr or result.stdout).strip() or "unknown git hash-object error"
+        raise RuntimeError(detail)
+    return digest
 
 
 def validate_quant_freeze(
@@ -77,6 +122,7 @@ def validate_quant_freeze(
     code_profile: Mapping[str, Any] | None = None,
     code_setup_profiles: Mapping[str, Any] | None = None,
     check_source_blobs: bool = True,
+    source_root: Path | None = None,
 ) -> list[str]:
     errors: list[str] = []
 
@@ -127,12 +173,20 @@ def validate_quant_freeze(
     )
 
     if check_source_blobs:
+        protected_root = Path(source_root).resolve() if source_root else ROOT
         for relative_path, expected_sha in freeze.get("protected_source_blobs", {}).items():
-            source_path = ROOT / relative_path
+            source_path = protected_root / relative_path
             if not source_path.exists():
                 errors.append(f"source.{relative_path}: missing")
                 continue
-            actual_sha = _git_blob_sha(source_path)
+            try:
+                actual_sha = _git_blob_sha(
+                    source_path,
+                    repository_path=relative_path,
+                )
+            except (OSError, RuntimeError) as exc:
+                errors.append(f"source.{relative_path}: unable to hash canonical content: {exc}")
+                continue
             if actual_sha != expected_sha:
                 errors.append(
                     f"source.{relative_path}: expected git blob {expected_sha}, got {actual_sha}"

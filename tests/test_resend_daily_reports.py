@@ -33,8 +33,8 @@ def test_market_outlook_resend_reads_dated_existing_artifacts(tmp_path: Path, mo
     payloads, sources = resend._market_outlook_payloads(ctx)
 
     assert payloads == [("GLOBAL-0807", "BULLISH")]
-    assert sources["source_global_market"].endswith("2026-08-07/global_market_snapshot.json")
-    assert sources["source_market_regime"].endswith("2026-08-07/market_outlook_regime.json")
+    assert Path(sources["source_global_market"]).resolve() == global_path.resolve()
+    assert Path(sources["source_market_regime"]).resolve() == regime_path.resolve()
 
 
 def test_post_market_resend_selects_successful_manifest_for_requested_date(tmp_path: Path, monkeypatch) -> None:

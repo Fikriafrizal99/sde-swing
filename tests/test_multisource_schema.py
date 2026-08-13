@@ -86,6 +86,11 @@ def test_data_source_config_loads_and_validates():
     # Yahoo/historical remains canonical; ZAPI is a separate latest-candle
     # validation path and must not silently replace the technical series.
     assert cfg.resolution_chain("DailyBar") == ["HISTORICAL_PROVIDER"]
+    historical = cfg.source("HISTORICAL_PROVIDER")
+    assert historical is not None
+    assert "primary dailybar owner" in historical.note.lower()
+    assert "compatibility/acquisition boundary" in historical.note.lower()
+    assert "fallback only" not in historical.note.lower()
     assert cfg.resolution_chain("BrokerFlow") == ["STOCKBIT"]
     assert cfg.resolution_chain("ForeignFlow") == ["STOCKBIT"]
     # Technical indicators are internal only.

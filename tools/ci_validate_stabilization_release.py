@@ -12,8 +12,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from modules.analytics.lifecycle_contract import LIFECYCLE_CONTRACT_VERSION
+from modules.analytics.replay_contract import (
+    PRICE_LIFECYCLE_ONLY,
+    PRICE_REPRODUCIBLE_LIFECYCLE,
+    REPLAY_CONTRACT_VERSION,
+    historical_replay_metadata,
+)
 from modules.data_sources import constants as C
 from modules.data_sources.canonical import DailyBar
+from modules.data_sources.config import load_data_source_config
 from modules.data_sources.conflict_resolver import ConflictResolver
 from modules.data_sources.legacy_daily_bar_adapter import CANONICAL_DAILY_HISTORY_CONTRACT
 from modules.runtime.status import RUNTIME_STATUS_CONTRACT_VERSION
@@ -60,6 +67,37 @@ def validate_contract_versions() -> None:
     require(LIFECYCLE_CONTRACT_VERSION == "SDE_SWING_LIFECYCLE_V1", "lifecycle contract drift")
     require(RUNTIME_STATUS_CONTRACT_VERSION == "SDE_RUNTIME_STATUS_V1", "runtime status contract drift")
     require(CANONICAL_DAILY_HISTORY_CONTRACT == "SDE_CANONICAL_DAILY_HISTORY_V1", "canonical data contract drift")
+    require(REPLAY_CONTRACT_VERSION == "SDE_SWING_REPLAY_V1", "replay contract drift")
+    replay = historical_replay_metadata()
+    require(
+        replay["replay_scope"] == PRICE_REPRODUCIBLE_LIFECYCLE,
+        "historical replay scope is not price-lifecycle only",
+    )
+    require(
+        replay["replay_fidelity"] == PRICE_LIFECYCLE_ONLY,
+        "historical replay fidelity overclaims contextual coverage",
+    )
+    require(replay["runtime_context_available"] is False, "historical runtime context invented")
+    require(replay["full_live_replay"] is False, "historical report claims full live replay")
+
+
+def validate_dailybar_ownership() -> None:
+    cfg = load_data_source_config(ROOT / "config/data_sources.json")
+    require(
+        cfg.resolution_chain("DailyBar") == ["HISTORICAL_PROVIDER"],
+        "DailyBar primary ownership/routing drift",
+    )
+    historical = cfg.source("HISTORICAL_PROVIDER")
+    require(historical is not None, "HISTORICAL_PROVIDER missing")
+    note = historical.note.lower()
+    require("primary dailybar owner" in note, "HISTORICAL_PROVIDER ownership note is ambiguous")
+    require("fallback only" not in note, "HISTORICAL_PROVIDER note contradicts primary ownership")
+    zapi = cfg.source("ZAPI_IDX")
+    require(zapi is not None, "ZAPI_IDX source missing")
+    require(
+        zapi.capabilities.get("DailyBar", {}).get("status") == "DISABLED_IN_PRODUCTION",
+        "ZAPI DailyBar compatibility capability became production routing",
+    )
 
 
 def validate_date_conflict_fail_closed() -> None:
@@ -96,9 +134,12 @@ def validate_structure() -> None:
         "docs/SDE_AUDIT_BASELINE.md",
         "docs/SDE_STABILIZATION_AUDIT_TRACEABILITY.md",
         "docs/SDE_STABILIZATION_DEFERRED_FINDINGS.md",
+        "docs/SDE_PHASE2_COMMIT3_FINAL_REAUDIT.md",
+        "docs/SDE_PHASE2_TRACEABILITY.md",
         "modules/broker_fusion/broker_fusion_publisher.py",
         "modules/technical_feature_engine/post_market_validated_runner.py",
         "modules/data_sources/legacy_daily_bar_adapter.py",
+        "modules/analytics/replay_contract.py",
     ]
     for rel in required:
         require((ROOT / rel).exists(), f"required release artifact missing: {rel}")
@@ -116,9 +157,10 @@ if __name__ == "__main__":
     validate_quant()
     validate_config()
     validate_contract_versions()
+    validate_dailybar_ownership()
     validate_date_conflict_fail_closed()
     validate_sqlite()
     validate_structure()
     print(f"STABILIZATION RELEASE GATE VALID — audited baseline {AUDITED_BASELINE}")
-    print("Contracts: quant + lifecycle + runtime status + canonical data")
+    print("Contracts: quant + lifecycle + replay + runtime status + canonical data")
     print("Auto-entry: false | profile: MODERATE_BASELINE | calibration: SHADOW_ONLY")

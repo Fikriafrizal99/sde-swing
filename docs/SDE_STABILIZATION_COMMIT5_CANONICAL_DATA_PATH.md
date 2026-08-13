@@ -49,6 +49,11 @@ Legacy adapter:
 
 `LegacyHistoricalProviderAdapter`
 
+Phase 2 ownership clarification: `HISTORICAL_PROVIDER` is the primary
+`DailyBar` owner. "Legacy" describes the compatibility/acquisition adapter at
+the canonical boundary; it does not mean that the provider is secondary and it
+does not alter the executable resolution chain.
+
 ### Acquisition remains legacy-compatible
 
 The Yahoo/historical downloader remains responsible for acquisition and cache
