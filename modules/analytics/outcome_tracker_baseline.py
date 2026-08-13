@@ -180,6 +180,23 @@ CREATE TABLE IF NOT EXISTS signal_recommendation_history (
 CREATE INDEX IF NOT EXISTS idx_signal_recommendation_history_symbol_date
     ON signal_recommendation_history(symbol, recommendation_date);
 
+CREATE TABLE IF NOT EXISTS lifecycle_ingest_quarantine (
+    quarantine_id TEXT PRIMARY KEY,
+    signal_id TEXT,
+    symbol TEXT NOT NULL,
+    effective_date TEXT,
+    occurrence_type TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    run_id TEXT,
+    raw_decision TEXT,
+    details_json TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_ingest_quarantine_signal
+    ON lifecycle_ingest_quarantine(signal_id, effective_date);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_ingest_quarantine_symbol
+    ON lifecycle_ingest_quarantine(symbol, effective_date);
+
 CREATE TABLE IF NOT EXISTS portfolio_positions (
     position_id TEXT PRIMARY KEY,
     signal_id TEXT,
@@ -232,6 +249,89 @@ def event_id(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
+def _quarantine_lifecycle_occurrence(
+    conn: sqlite3.Connection,
+    *,
+    signal_id: str = "",
+    symbol: str,
+    effective_date: Any,
+    occurrence_type: str,
+    reason: str,
+    run_id: str = "",
+    raw_decision: str = "",
+    details: Mapping[str, Any] | None = None,
+) -> str:
+    """Retain a rejected lifecycle write without mutating canonical history."""
+    normalized_date = parse_date(effective_date) or norm_text(effective_date)
+    normalized_symbol = normalize_symbol(symbol)
+    normalized_type = norm_text(occurrence_type).upper()
+    normalized_reason = norm_text(reason).upper()
+    detail_text = json.dumps(dict(details or {}), ensure_ascii=False, sort_keys=True, default=str)
+    raw = "|".join([
+        norm_text(signal_id),
+        normalized_symbol,
+        normalized_date,
+        normalized_type,
+        normalized_reason,
+        norm_text(run_id),
+        norm_text(raw_decision).upper(),
+        detail_text,
+    ])
+    identifier = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO lifecycle_ingest_quarantine (
+            quarantine_id, signal_id, symbol, effective_date, occurrence_type,
+            reason, run_id, raw_decision, details_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            identifier,
+            norm_text(signal_id),
+            normalized_symbol,
+            normalized_date,
+            normalized_type,
+            normalized_reason,
+            norm_text(run_id),
+            norm_text(raw_decision).upper(),
+            detail_text,
+            now_text(),
+        ),
+    )
+    return identifier
+
+
+def _valid_lifecycle_transition(event_type: str, previous_status: str, new_status: str) -> bool:
+    """Validate state-bearing writes while allowing neutral audit metadata."""
+    event_type = norm_text(event_type).upper()
+    previous_status = norm_text(previous_status).upper()
+    new_status = norm_text(new_status).upper()
+    allowed: dict[str, set[tuple[str, str]]] = {
+        "SIGNAL_RECONFIRMED": {
+            ("WAITING_TRIGGER", "WAITING_TRIGGER"),
+            ("OPEN", "OPEN"),
+        },
+        "ENTRY_TRIGGERED": {("WAITING_TRIGGER", "OPEN")},
+        "TP1_HIT": {("OPEN", "OPEN")},
+        "STOP_LOSS_HIT": {("OPEN", "CLOSED")},
+        "TP2_HIT": {("OPEN", "CLOSED")},
+        "MAX_HOLD_EXIT": {("OPEN", "CLOSED")},
+        "EXPIRED": {("WAITING_TRIGGER", "EXPIRED")},
+        "INVALIDATED_BEFORE_ENTRY": {
+            ("", "INVALIDATED_BEFORE_ENTRY"),
+            ("WAITING_TRIGGER", "INVALIDATED_BEFORE_ENTRY"),
+        },
+        "CLOSED": {("OPEN", "CLOSED")},
+    }
+    if event_type == "SIGNAL_CREATED":
+        return not previous_status and new_status in {
+            "WAITING_TRIGGER", "OPEN", "INVALID_DATA",
+        }
+    if event_type in allowed:
+        return (previous_status, new_status) in allowed[event_type]
+    return previous_status == new_status
+
+
 def record_lifecycle_event(
     conn: sqlite3.Connection,
     *,
@@ -244,9 +344,62 @@ def record_lifecycle_event(
     event_price: Any = None,
     event_reason: str = "",
 ) -> str:
-    """Persist one lifecycle transition/milestone without duplicating it."""
+    """Persist one valid lifecycle transition/milestone without duplication."""
     event_type = norm_text(event_type).upper()
+    previous_status = norm_text(previous_status).upper()
+    new_status = norm_text(new_status).upper()
     event_date = parse_date(event_date) or norm_text(event_date)
+    ledger = conn.execute(
+        """
+        SELECT current_status, signal_date, exit_date
+        FROM signal_outcome_ledger WHERE signal_id=?
+        """,
+        (signal_id,),
+    ).fetchone()
+    if ledger:
+        ledger_status = norm_text(ledger["current_status"]).upper()
+        terminal_date = parse_date(ledger["exit_date"])
+        if not terminal_date and ledger_status in TERMINAL_STATUSES:
+            terminal_date = parse_date(ledger["signal_date"])
+        terminal_reconfirmation = (
+            ledger_status in TERMINAL_STATUSES and event_type == "SIGNAL_RECONFIRMED"
+        )
+        post_terminal = bool(terminal_date and event_date and event_date > terminal_date)
+        if terminal_reconfirmation or post_terminal:
+            _quarantine_lifecycle_occurrence(
+                conn,
+                signal_id=signal_id,
+                symbol=symbol,
+                effective_date=event_date,
+                occurrence_type="LIFECYCLE_EVENT",
+                reason=(
+                    "TERMINAL_RECONFIRMATION_REJECTED"
+                    if terminal_reconfirmation
+                    else "POST_TERMINAL_EVENT_REJECTED"
+                ),
+                details={
+                    "event_type": event_type,
+                    "previous_status": previous_status,
+                    "new_status": new_status,
+                    "terminal_date": terminal_date,
+                },
+            )
+            return ""
+    if not _valid_lifecycle_transition(event_type, previous_status, new_status):
+        _quarantine_lifecycle_occurrence(
+            conn,
+            signal_id=signal_id,
+            symbol=symbol,
+            effective_date=event_date,
+            occurrence_type="LIFECYCLE_EVENT",
+            reason="INVALID_LIFECYCLE_TRANSITION",
+            details={
+                "event_type": event_type,
+                "previous_status": previous_status,
+                "new_status": new_status,
+            },
+        )
+        return ""
     identifier = event_id(signal_id, event_type, event_date, event_price, event_reason)
     conn.execute(
         """
@@ -260,8 +413,8 @@ def record_lifecycle_event(
             signal_id,
             normalize_symbol(symbol),
             event_type,
-            norm_text(previous_status),
-            norm_text(new_status),
+            previous_status,
+            new_status,
             event_date,
             as_float(event_price),
             norm_text(event_reason),
@@ -669,15 +822,47 @@ def _update_scan_metadata(
     status: str,
     scan_date: str,
     run_id: str,
-) -> None:
+) -> bool:
+    ledger = conn.execute(
+        """
+        SELECT symbol, signal_date, latest_scan_date
+        FROM signal_outcome_ledger WHERE signal_id=?
+        """,
+        (signal_id,),
+    ).fetchone()
+    effective_date = parse_date(scan_date)
+    if not ledger or not effective_date:
+        return False
+    signal_date = parse_date(ledger["signal_date"])
+    latest_scan_date = parse_date(ledger["latest_scan_date"])
+    if (
+        (signal_date and effective_date < signal_date)
+        or (latest_scan_date and effective_date < latest_scan_date)
+    ):
+        _quarantine_lifecycle_occurrence(
+            conn,
+            signal_id=signal_id,
+            symbol=ledger["symbol"],
+            effective_date=effective_date,
+            occurrence_type="SCAN_METADATA",
+            reason="STALE_SCAN_METADATA_REJECTED",
+            run_id=run_id,
+            raw_decision=status,
+            details={
+                "signal_date": signal_date,
+                "latest_scan_date": latest_scan_date,
+            },
+        )
+        return False
     conn.execute(
         """
         UPDATE signal_outcome_ledger
         SET latest_scan_status=?, latest_scan_date=?, latest_scan_run_id=?, updated_at=?
         WHERE signal_id=?
         """,
-        (norm_text(status, "NOT_IN_LATEST_SCAN").upper(), parse_date(scan_date) or scan_date, run_id, now_text(), signal_id),
+        (norm_text(status, "NOT_IN_LATEST_SCAN").upper(), effective_date, run_id, now_text(), signal_id),
     )
+    return True
 
 
 def _expire_waiting_lifecycle(
@@ -767,16 +952,45 @@ def upsert_signal(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
     matched to it.  This prevents an expiry-day recommendation from reviving
     the old thesis and resetting its age/expiry window.
     """
+    recommendation_date = parse_date(
+        record.get("_recommendation_date") or record.get("signal_date")
+    )
+    if not recommendation_date:
+        _quarantine_lifecycle_occurrence(
+            conn,
+            signal_id=record.get("signal_id", ""),
+            symbol=record.get("symbol", ""),
+            effective_date=record.get("_recommendation_date") or record.get("signal_date"),
+            occurrence_type="RECOMMENDATION",
+            reason="INVALID_RECOMMENDATION_DATE",
+            run_id=record.get("run_id", ""),
+            raw_decision=record.get("raw_decision", ""),
+        )
+        return "QUARANTINED"
     exact = conn.execute(
         "SELECT * FROM signal_outcome_ledger WHERE signal_id=?",
         (record["signal_id"],),
     ).fetchone()
+    if exact and recommendation_date < parse_date(exact["signal_date"]):
+        _quarantine_lifecycle_occurrence(
+            conn,
+            signal_id=exact["signal_id"],
+            symbol=record["symbol"],
+            effective_date=recommendation_date,
+            occurrence_type="RECOMMENDATION",
+            reason="RECOMMENDATION_BEFORE_SIGNAL_DATE",
+            run_id=record.get("run_id", ""),
+            raw_decision=record.get("raw_decision", ""),
+            details={"lifecycle_signal_date": exact["signal_date"]},
+        )
+        return "QUARANTINED"
     if exact and norm_text(exact["current_status"]).upper() in TERMINAL_STATUSES:
-        recommendation_date = parse_date(record.get("_recommendation_date") or record.get("signal_date"))
+        terminal_date = parse_date(exact["exit_date"]) or parse_date(exact["signal_date"])
         if (
             norm_text(exact["current_status"]).upper() == "EXPIRED"
             and recommendation_date
-            and recommendation_date > norm_text(exact["signal_date"])
+            and terminal_date
+            and recommendation_date > terminal_date
         ):
             # A stale scan can reproduce the old deterministic signal_id.  A
             # later valid recommendation after EXPIRED is still a new thesis
@@ -784,7 +998,21 @@ def upsert_signal(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
             record = _rebase_new_lifecycle(record, recommendation_date)
             exact = None
         else:
-            return "SKIPPED"
+            _quarantine_lifecycle_occurrence(
+                conn,
+                signal_id=exact["signal_id"],
+                symbol=record["symbol"],
+                effective_date=recommendation_date,
+                occurrence_type="RECOMMENDATION",
+                reason="TERMINAL_LIFECYCLE_IMMUTABLE",
+                run_id=record.get("run_id", ""),
+                raw_decision=record.get("raw_decision", ""),
+                details={
+                    "terminal_status": exact["current_status"],
+                    "terminal_date": terminal_date,
+                },
+            )
+            return "QUARANTINED"
     explicit_invalidation = norm_text(record.get("current_status")).upper() == "INVALIDATED_BEFORE_ENTRY"
     if exact and not explicit_invalidation and _expire_waiting_lifecycle(conn, exact, record.get("signal_date")):
         exact = None
@@ -796,10 +1024,37 @@ def upsert_signal(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
         """,
         (record["symbol"],),
     ).fetchone()
+    if active and recommendation_date < parse_date(active["signal_date"]):
+        _quarantine_lifecycle_occurrence(
+            conn,
+            signal_id=active["signal_id"],
+            symbol=record["symbol"],
+            effective_date=recommendation_date,
+            occurrence_type="RECOMMENDATION",
+            reason="RECOMMENDATION_BEFORE_SIGNAL_DATE",
+            run_id=record.get("run_id", ""),
+            raw_decision=record.get("raw_decision", ""),
+            details={"lifecycle_signal_date": active["signal_date"]},
+        )
+        return "QUARANTINED"
     if active and not explicit_invalidation and _expire_waiting_lifecycle(conn, active, record.get("signal_date")):
         active = None
     target = exact or active
     if target:
+        target_latest_scan = parse_date(target["latest_scan_date"])
+        if target_latest_scan and recommendation_date < target_latest_scan:
+            _quarantine_lifecycle_occurrence(
+                conn,
+                signal_id=target["signal_id"],
+                symbol=record["symbol"],
+                effective_date=recommendation_date,
+                occurrence_type="RECOMMENDATION",
+                reason="STALE_ACTIVE_REPLAY_SUPPRESSED",
+                run_id=record.get("run_id", ""),
+                raw_decision=record.get("raw_decision", ""),
+                details={"latest_scan_date": target_latest_scan},
+            )
+            return "QUARANTINED"
         signal_id = target["signal_id"]
         previous_status = norm_text(target["current_status"])
         updates: dict[str, Any] = {
@@ -876,7 +1131,6 @@ def upsert_signal(conn: sqlite3.Connection, record: dict[str, Any]) -> str:
             raw_decision=record.get("raw_decision", ""),
         )
         return "UPDATED_ACTIVE" if active or exact else "SKIPPED"
-    recommendation_date = parse_date(record.get("_recommendation_date") or record.get("signal_date"))
     prior_expired = conn.execute(
         """
         SELECT signal_id, signal_date
@@ -2250,4 +2504,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    print(
+        "DIRECT_BASELINE_EXECUTION_DISABLED: USE_CANONICAL_OUTCOME_TRACKER",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)

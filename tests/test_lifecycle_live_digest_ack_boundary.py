@@ -73,8 +73,10 @@ def test_live_digest_does_not_ack_hidden_tp_or_stop_events(tmp_path: Path) -> No
             signal_id=f"SIG-{index:02d}",
             symbol=f"T{index:03d}",
             event_type=event_type,
-            previous_status="OPEN" if index >= 20 else "WAITING_TRIGGER",
-            new_status="CLOSED" if index >= 20 else "OPEN",
+            previous_status=(
+                "WAITING_TRIGGER" if event_type == "ENTRY_TRIGGERED" else "OPEN"
+            ),
+            new_status="CLOSED" if event_type == "STOP_LOSS_HIT" else "OPEN",
             event_date="2026-08-12",
             event_price=1000 + index,
             event_reason=reason,
