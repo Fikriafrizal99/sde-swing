@@ -34,6 +34,8 @@ data/state/
 data/database/
 data/runtime/
 data/cache/
+data/archive/broker_portfolio_backfill/
+output/final_watchlist/*_setup.png
 logs/
 runtime/
 **/*.lock
@@ -68,7 +70,6 @@ Thumbs.db
 .DS_Store
 
 # Generated cache and machine-specific files
-data/cache/
 scheduler/windows/generated/
 data/output/job_status/
 data/output/snapshots/
