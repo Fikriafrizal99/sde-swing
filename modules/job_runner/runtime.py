@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from modules.job_runner import runtime_baseline as _baseline
+from swing_utils import atomic_write_text as _durable_atomic_write_text
 
 for _name in dir(_baseline):
     if not _name.startswith("__"):
@@ -226,14 +227,23 @@ def write_status(
     return target
 
 
-def _traceback_for_lock_exit(ctx: RunnerContext, exc_type, exc, tb) -> str:
+def write_traceback(ctx: RunnerContext, suffix: str = "", rendered: str | None = None) -> str:
+    """Persist a traceback below the runtime context's configured status root."""
+
     trace_dir = ctx.status_root / "tracebacks"
     trace_dir.mkdir(parents=True, exist_ok=True)
-    suffix = "interrupt" if exc_type and issubclass(exc_type, KeyboardInterrupt) else "unhandled"
-    path = trace_dir / f"{ctx.run_id}-{suffix}.txt"
-    rendered = "".join(traceback.format_exception(exc_type, exc, tb)) if exc_type else ""
-    path.write_text(rendered or suffix.upper(), encoding="utf-8")
+    normalized_suffix = str(suffix or "").strip().strip("-")
+    filename = f"{ctx.run_id}-{normalized_suffix}.txt" if normalized_suffix else f"{ctx.run_id}.txt"
+    path = trace_dir / filename
+    body = rendered if rendered is not None else traceback.format_exc()
+    _durable_atomic_write_text(path, body or "TRACEBACK_UNAVAILABLE")
     return str(path)
+
+
+def _traceback_for_lock_exit(ctx: RunnerContext, exc_type, exc, tb) -> str:
+    suffix = "interrupt" if exc_type and issubclass(exc_type, KeyboardInterrupt) else "unhandled"
+    rendered = "".join(traceback.format_exception(exc_type, exc, tb)) if exc_type else ""
+    return write_traceback(ctx, suffix, rendered or suffix.upper())
 
 
 class FileLock:

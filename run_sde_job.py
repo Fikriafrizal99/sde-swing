@@ -55,6 +55,7 @@ from modules.job_runner.runtime import (
     load_context,
     resolve,
     trading_day_status,
+    write_traceback,
     write_status,
     write_json,
     read_json,
@@ -417,14 +418,11 @@ def job_post_market(ctx) -> int:
                 print("[fallback] Refresh gagal; snapshot teknikal existing hari ini dipakai.", flush=True)
                 manifest = _manifest_from_existing_snapshot(ctx, snapshot, warning=warning)
             else:
-                trace_dir = resolve("data/output/job_status/tracebacks")
-                trace_dir.mkdir(parents=True, exist_ok=True)
-                trace_path = trace_dir / f"{ctx.run_id}-post-market.txt"
                 rendered = traceback.format_exc()
-                trace_path.write_text(rendered, encoding="utf-8")
+                trace_path = write_traceback(ctx, "post-market", rendered)
                 append_job_log(ctx, "POST_MARKET_STAGE_EXCEPTION", rendered)
                 return _finish(ctx, "FAILED", "POST_MARKET_EXCEPTION", EXIT_FAILED, {
-                    "error": str(exc), "errors": [str(exc)], "traceback_path": str(trace_path),
+                    "error": str(exc), "errors": [str(exc)], "traceback_path": trace_path,
                 })
     stage_manifest_path = ctx.path("manifest_dir", "data/output/manifests") / f"SWING_RUN_MANIFEST_{ctx.run_id}.json"
     manifest["Run_ID"] = ctx.run_id
@@ -1258,16 +1256,13 @@ def main() -> int:
                 "details": exc.details,
             })
         except Exception as exc:
-            trace_dir = resolve("data/output/job_status/tracebacks")
-            trace_dir.mkdir(parents=True, exist_ok=True)
-            trace_path = trace_dir / f"{ctx.run_id}.txt"
             rendered = traceback.format_exc()
-            trace_path.write_text(rendered, encoding="utf-8")
+            trace_path = write_traceback(ctx, rendered=rendered)
             append_job_log(ctx, "UNHANDLED_JOB_EXCEPTION", rendered)
             if ctx.debug:
                 print(rendered, file=sys.stderr, flush=True)
             return _finish(ctx, "FAILED", "EXCEPTION", EXIT_FAILED, {
-                "error": str(exc), "errors": [str(exc)], "traceback_path": str(trace_path),
+                "error": str(exc), "errors": [str(exc)], "traceback_path": trace_path,
             })
 
     try:
@@ -1286,13 +1281,10 @@ def main() -> int:
     except JobAlreadyRunning as exc:
         return _finish(ctx, exc.status, "LOCK", EXIT_SKIPPED, {"error": str(exc), "lock_status": "BUSY"})
     except Exception as exc:
-        trace_dir = resolve("data/output/job_status/tracebacks")
-        trace_dir.mkdir(parents=True, exist_ok=True)
-        trace_path = trace_dir / f"{ctx.run_id}.txt"
         rendered = traceback.format_exc()
-        trace_path.write_text(rendered, encoding="utf-8")
+        trace_path = write_traceback(ctx, rendered=rendered)
         append_job_log(ctx, "LOCK_BOUNDARY_EXCEPTION", rendered)
-        return _finish(ctx, "FAILED", "EXCEPTION", EXIT_FAILED, {"error": str(exc), "errors": [str(exc)], "traceback_path": str(trace_path)})
+        return _finish(ctx, "FAILED", "EXCEPTION", EXIT_FAILED, {"error": str(exc), "errors": [str(exc)], "traceback_path": trace_path})
 
 
 if __name__ == "__main__":

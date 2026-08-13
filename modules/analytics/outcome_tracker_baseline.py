@@ -20,7 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from swing_utils import find_col, normalize_symbol
+from swing_utils import find_col, normalize_symbol, write_json
 from modules.job_runner.runtime import load_environment_file
 from modules.analytics.execution_integrity import (
     economic_outcome,
@@ -1902,7 +1902,7 @@ def export_reports(
             "status_changes_telegram": str((output_dir / "STATUS_CHANGES_TELEGRAM.txt").resolve()),
         },
     }
-    (output_dir / "PERFORMANCE_SUMMARY.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    write_json(output_dir / "PERFORMANCE_SUMMARY.json", payload)
     return payload
 
 

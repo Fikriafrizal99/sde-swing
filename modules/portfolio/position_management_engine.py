@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from swing_utils import find_col, normalize_symbol
+from swing_utils import atomic_csv, atomic_write_text, find_col, normalize_symbol, write_json
 from modules.job_runner.delivery import deliver
 from modules.job_runner.reports import ReportPayload
 from modules.job_runner.runtime import load_context, read_json, resolve
@@ -787,14 +787,15 @@ def write_outputs(output_root: Path, analysis_date: str, results: list[dict[str,
     csv_path = folder / "ACTIVE_PORTFOLIO_MANAGEMENT.csv"
     json_path = folder / "ACTIVE_PORTFOLIO_MANAGEMENT.json"
     txt_path = folder / "ACTIVE_PORTFOLIO_TELEGRAM.txt"
-    pd.DataFrame(results).to_csv(csv_path, index=False, encoding="utf-8-sig")
-    json_path.write_text(json.dumps(results, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-    txt_path.write_text(text, encoding="utf-8")
+    frame = pd.DataFrame(results)
+    atomic_csv(frame, csv_path, encoding="utf-8-sig")
+    write_json(json_path, results)
+    atomic_write_text(txt_path, text)
     latest = output_root / "latest"
     latest.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(results).to_csv(latest / csv_path.name, index=False, encoding="utf-8-sig")
-    (latest / json_path.name).write_text(json_path.read_text(encoding="utf-8"), encoding="utf-8")
-    (latest / txt_path.name).write_text(text, encoding="utf-8")
+    atomic_csv(frame, latest / csv_path.name, encoding="utf-8-sig")
+    write_json(latest / json_path.name, results)
+    atomic_write_text(latest / txt_path.name, text)
     return {"csv": str(csv_path), "json": str(json_path), "telegram": str(txt_path)}
 
 

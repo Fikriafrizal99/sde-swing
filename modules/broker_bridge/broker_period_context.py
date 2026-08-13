@@ -26,7 +26,7 @@ from typing import Any, Iterable
 
 import pandas as pd
 
-from swing_utils import file_sha256, normalize_symbol
+from swing_utils import file_sha256, normalize_symbol, write_json
 from modules.market_calendar.idx_calendar import is_idx_trading_day, previous_idx_trading_day
 
 
@@ -651,7 +651,7 @@ def persist_snapshot(
         "persistence_adjustment_applied": False,
     }
     manifest_path = root / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    write_json(manifest_path, manifest)
     manifest["manifest_path"] = str(manifest_path.resolve())
     return manifest
 
@@ -773,7 +773,7 @@ def persist_internal_rollup_snapshot(
         "freshness_adjustment_applied": False,
         "persistence_adjustment_applied": False,
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    write_json(manifest_path, manifest)
     manifest["manifest_path"] = str(manifest_path.resolve())
     return manifest
 

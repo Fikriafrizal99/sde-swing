@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from swing_utils import make_run_id
+from swing_utils import make_run_id, write_json as _durable_write_json
 from modules.runtime_config import load_runtime_config
 
 
@@ -90,8 +90,7 @@ def read_json(path: Path, default: Any | None = None) -> Any:
 
 
 def write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    _durable_write_json(path, payload)
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
@@ -182,6 +181,10 @@ class RunnerContext:
                 mode=self.mode,
                 run_id=self.run_id,
                 force_mock=self.dry_run,
+                calendar_config=self.calendar_config,
+                calendar_path=self.scheduler_config.get(
+                    "trading_calendar", "config/trading_calendar.json"
+                ),
                 file_roots={
                     "broker_summary": self.path("broker_summary_latest", "data/input/broker/BROKER_SUMMARY_LATEST.csv"),
                     "broker_raw": self.path("broker_raw_latest", "data/input/broker/BROKER_RAW_LATEST.csv"),

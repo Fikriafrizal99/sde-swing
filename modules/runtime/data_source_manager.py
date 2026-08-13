@@ -30,6 +30,7 @@ from modules.data_sources.health import SourceHealthMonitor
 from modules.data_sources.router import RouterResult, SourceRouter
 from modules.data_sources.stockbit_adapter import StockbitAdapter
 from modules.data_sources.zapi_idx_adapter import ZapiIdxAdapter, ZapiIdxClient
+from swing_utils import read_json
 
 
 @dataclass
@@ -75,6 +76,8 @@ class DataSourceManager:
         run_id: str = "",
         force_mock: bool = False,
         file_roots: Mapping[str, str | Path] | None = None,
+        calendar_config: Mapping[str, Any] | None = None,
+        calendar_path: str | Path | None = None,
     ) -> None:
         self.root = root or Path(__file__).resolve().parents[2]
         resolved = Path(config_path)
@@ -90,6 +93,15 @@ class DataSourceManager:
         self.run_id = run_id
         self.force_mock = force_mock or self.mode == "MOCK"
         self.file_roots = {key: Path(value) for key, value in (file_roots or {}).items()}
+        configured_calendar = Path(calendar_path or "config/trading_calendar.json")
+        if not configured_calendar.is_absolute():
+            configured_calendar = self.root / configured_calendar
+        self.calendar_path = configured_calendar
+        self.calendar_config = (
+            dict(calendar_config)
+            if calendar_config is not None
+            else read_json(self.calendar_path)
+        )
         self.health = SourceHealthMonitor()
         self.metadata: dict[str, ProviderMetadata] = {}
         self._adapters: dict[str, Any] = {}
@@ -97,7 +109,10 @@ class DataSourceManager:
         self._build_provider_registry()
         self.router = SourceRouter(
             self.config,
-            DataQualityEngine(),
+            DataQualityEngine(
+                holidays=self.calendar_config.get("holidays", {}),
+                special_trading_days=self.calendar_config.get("special_trading_days", []),
+            ),
             ConflictResolver(
                 numeric_tolerance_pct=float(self.config.conflict_defaults.get("numeric_tolerance_pct", 0.005)),
             ),

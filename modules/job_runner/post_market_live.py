@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from swing_utils import write_json as _durable_write_json
 
 from modules.market_data.market_outlook_regime import calculate_market_outlook_regime
 from modules.telegram.post_market_ui import format_post_market
@@ -336,10 +337,7 @@ def _candidate_health(frame: pd.DataFrame) -> dict[str, Any]:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
-    temporary.replace(path)
+    _durable_write_json(path, payload)
 
 
 def _rotation_context(ctx: RunnerContext) -> dict[str, Any]:

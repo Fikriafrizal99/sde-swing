@@ -92,10 +92,35 @@ def init_schema(conn: sqlite3.Connection) -> None:
             volume REAL,
             source TEXT NOT NULL,
             source_revision TEXT,
+            revision_id TEXT,
+            revision_sequence INTEGER,
             created_at TEXT,
             updated_at TEXT,
             PRIMARY KEY (symbol, price_date, source)
         );
+
+        CREATE TABLE IF NOT EXISTS market_prices_daily_revisions (
+            revision_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            revision_id TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            price_date TEXT NOT NULL,
+            open REAL,
+            high REAL,
+            low REAL,
+            close REAL,
+            adjusted_close REAL,
+            volume REAL,
+            source TEXT NOT NULL,
+            source_revision TEXT NOT NULL,
+            source_path TEXT NOT NULL DEFAULT '',
+            row_hash TEXT NOT NULL,
+            archived_at TEXT NOT NULL,
+            created_at TEXT,
+            UNIQUE(symbol, price_date, source, source_revision, row_hash)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_market_prices_daily_revision_identity
+            ON market_prices_daily_revisions(symbol, price_date, source, revision_sequence);
 
         CREATE TABLE IF NOT EXISTS run_data_snapshots (
             run_id TEXT,
@@ -300,7 +325,232 @@ def init_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    _ensure_column(conn, "market_prices_daily", "revision_id", "TEXT")
+    _ensure_column(conn, "market_prices_daily", "revision_sequence", "INTEGER")
+    _migrate_market_price_revisions(conn)
+    conn.executescript(
+        """
+        CREATE VIEW IF NOT EXISTS market_prices_daily_latest AS
+        SELECT
+            symbol, price_date, open, high, low, close, adjusted_close,
+            volume, source, source_revision, revision_id, revision_sequence,
+            created_at, updated_at
+        FROM market_prices_daily;
+
+        CREATE TRIGGER IF NOT EXISTS trg_market_prices_daily_revisions_no_update
+        BEFORE UPDATE ON market_prices_daily_revisions
+        BEGIN
+            SELECT RAISE(ABORT, 'MARKET_PRICE_REVISION_APPEND_ONLY');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_market_prices_daily_revisions_no_delete
+        BEFORE DELETE ON market_prices_daily_revisions
+        BEGIN
+            SELECT RAISE(ABORT, 'MARKET_PRICE_REVISION_APPEND_ONLY');
+        END;
+        """
+    )
     conn.commit()
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    declaration: str,
+) -> None:
+    table_name = _sql_identifier(table)
+    column_name = _sql_identifier(column)
+    existing = {
+        str(row[1]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if column_name not in existing:
+        conn.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {declaration}"
+        )
+
+
+_MARKET_PRICE_VALUE_COLUMNS = (
+    "symbol",
+    "price_date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "adjusted_close",
+    "volume",
+    "source",
+)
+
+
+def _market_price_row_hash(row: dict[str, Any]) -> str:
+    payload = {column: row.get(column) for column in _MARKET_PRICE_VALUE_COLUMNS}
+    rendered = json.dumps(
+        payload,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+def _market_price_revision_identity(
+    row: dict[str, Any],
+    source_revision: str,
+    row_hash: str,
+) -> str:
+    material = "|".join(
+        (
+            str(row.get("symbol") or ""),
+            str(row.get("price_date") or ""),
+            str(row.get("source") or ""),
+            source_revision,
+            row_hash,
+        )
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _publish_current_market_price(
+    conn: sqlite3.Connection,
+    row: dict[str, Any],
+    *,
+    revision_id: str,
+    revision_sequence: int,
+    source_revision: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO market_prices_daily (
+            symbol, price_date, open, high, low, close, adjusted_close,
+            volume, source, source_revision, revision_id, revision_sequence,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(symbol, price_date, source) DO UPDATE SET
+            open=excluded.open,
+            high=excluded.high,
+            low=excluded.low,
+            close=excluded.close,
+            adjusted_close=excluded.adjusted_close,
+            volume=excluded.volume,
+            source_revision=excluded.source_revision,
+            revision_id=excluded.revision_id,
+            revision_sequence=excluded.revision_sequence,
+            updated_at=excluded.updated_at
+        """,
+        (
+            row.get("symbol"),
+            row.get("price_date"),
+            row.get("open"),
+            row.get("high"),
+            row.get("low"),
+            row.get("close"),
+            row.get("adjusted_close"),
+            row.get("volume"),
+            row.get("source"),
+            source_revision,
+            revision_id,
+            int(revision_sequence),
+            row.get("created_at"),
+            row.get("updated_at"),
+        ),
+    )
+
+
+def append_market_price_revision(
+    conn: sqlite3.Connection,
+    row: dict[str, Any],
+    *,
+    source_path: str = "",
+    archived_at: str | None = None,
+    publish_current: bool = True,
+) -> tuple[bool, str, int]:
+    row_hash = _market_price_row_hash(row)
+    raw_source_revision = str(row.get("source_revision") or "").strip()
+    source_revision = raw_source_revision or f"LEGACY-{row_hash[:16]}"
+    revision_id = _market_price_revision_identity(row, source_revision, row_hash)
+    archived = archived_at or datetime.now().isoformat(timespec="seconds")
+    cursor = conn.execute(
+        """
+        INSERT OR IGNORE INTO market_prices_daily_revisions (
+            revision_id, symbol, price_date, open, high, low, close,
+            adjusted_close, volume, source, source_revision, source_path,
+            row_hash, archived_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            revision_id,
+            row.get("symbol"),
+            row.get("price_date"),
+            row.get("open"),
+            row.get("high"),
+            row.get("low"),
+            row.get("close"),
+            row.get("adjusted_close"),
+            row.get("volume"),
+            row.get("source"),
+            source_revision,
+            str(source_path or ""),
+            row_hash,
+            archived,
+            row.get("created_at") or archived,
+        ),
+    )
+    inserted = cursor.rowcount == 1
+    found = conn.execute(
+        "SELECT revision_sequence FROM market_prices_daily_revisions WHERE revision_id=?",
+        (revision_id,),
+    ).fetchone()
+    if found is None:
+        raise RuntimeError(f"MARKET_PRICE_REVISION_INSERT_FAILED:{revision_id}")
+    sequence = int(found[0])
+    if inserted and publish_current:
+        _publish_current_market_price(
+            conn,
+            row,
+            revision_id=revision_id,
+            revision_sequence=sequence,
+            source_revision=source_revision,
+        )
+    return inserted, revision_id, sequence
+
+
+def _migrate_market_price_revisions(conn: sqlite3.Connection) -> None:
+    columns = list(_MARKET_PRICE_VALUE_COLUMNS) + [
+        "source_revision",
+        "created_at",
+        "updated_at",
+        "revision_id",
+        "revision_sequence",
+    ]
+    rows = conn.execute(
+        f"SELECT {','.join(columns)} FROM market_prices_daily"
+    ).fetchall()
+    for values in rows:
+        row = dict(zip(columns, values))
+        _, revision_id, sequence = append_market_price_revision(
+            conn,
+            row,
+            source_path="LEGACY_MIGRATION",
+            archived_at=str(row.get("updated_at") or row.get("created_at") or datetime.now().isoformat(timespec="seconds")),
+            publish_current=False,
+        )
+        if not row.get("revision_id") or not row.get("revision_sequence"):
+            conn.execute(
+                """
+                UPDATE market_prices_daily
+                SET revision_id=?, revision_sequence=?
+                WHERE symbol=? AND price_date=? AND source=?
+                """,
+                (
+                    revision_id,
+                    sequence,
+                    row.get("symbol"),
+                    row.get("price_date"),
+                    row.get("source"),
+                ),
+            )
 
 
 def json_text(value: Any) -> str:
@@ -519,7 +769,14 @@ def archive_prices(conn: sqlite3.Connection, historical_dir: Path, source: str =
             "updated_at": now,
         })
         rows = price_df.where(pd.notna(price_df), None).to_dict("records")
-        upsert_many(conn, "market_prices_daily", rows, ["symbol", "price_date", "source"])
+        for row in rows:
+            append_market_price_revision(
+                conn,
+                row,
+                source_path=str(file.resolve()),
+                archived_at=now,
+                publish_current=True,
+            )
         mark_source_file_archived(conn, "market_prices_daily", file, revision, len(rows))
         total += len(rows)
         if index % 50 == 0 or index == file_total:

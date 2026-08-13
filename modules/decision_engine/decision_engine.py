@@ -207,7 +207,7 @@ def main() -> int:
         writer.writeheader()
         writer.writerows(resolved_rows)
     status_path = out / "MARKET_STATUS.json"
-    status_path.write_text(json.dumps(market_status, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json(status_path, market_status)
     manifest = {
         "Run_ID": args.run_id,
         "Pipeline_Version": PIPELINE_VERSION,

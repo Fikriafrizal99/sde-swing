@@ -98,6 +98,7 @@ def test_unexpected_stage_exception_writes_terminal_before_lock_release(tmp_path
     status = json.loads((ctx.status_root / "full_manual_latest.json").read_text(encoding="utf-8"))
     assert status["exit_code"] == 1
     assert status["traceback_path"]
+    assert Path(status["traceback_path"]).parent == ctx.status_root / "tracebacks"
 
 
 def test_exception_before_zapi_request_is_terminal_and_releases_locks(tmp_path: Path, monkeypatch):
@@ -111,6 +112,9 @@ def test_exception_before_zapi_request_is_terminal_and_releases_locks(tmp_path: 
     status = json.loads((ctx.status_root / "full_manual_latest.json").read_text(encoding="utf-8"))
     assert status["exit_code"] == 1
     assert status["traceback_path"]
+    assert Path(status["traceback_path"]) == (
+        ctx.status_root / "tracebacks" / f"{ctx.run_id}-post-market.txt"
+    )
 
 
 def test_missing_zapi_credentials_is_immediate_terminal_and_releases_locks(tmp_path: Path, monkeypatch):

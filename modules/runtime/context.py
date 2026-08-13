@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from modules.runtime_config import load_runtime_config
-from swing_utils import PACKAGE_VERSION, make_run_id
+from swing_utils import PACKAGE_VERSION, make_run_id, read_json
 
 RUNTIME_VERSION = "1.7.0-multisource"
 
@@ -55,6 +55,7 @@ class RuntimeContext:
     root: Path = field(default_factory=lambda: Path(__file__).resolve().parents[2])
     config_hash: str = ""
     config_version: str = RUNTIME_VERSION
+    calendar_config: dict[str, Any] | None = None
     _source_manager: Any = field(default=None, init=False, repr=False)
 
     @classmethod
@@ -66,6 +67,7 @@ class RuntimeContext:
             run_id=str(getattr(ctx, "run_id", "")),
             config=dict(getattr(ctx, "config", {}) or {}),
             scheduler_config=dict(getattr(ctx, "scheduler_config", {}) or {}),
+            calendar_config=dict(getattr(ctx, "calendar_config", {}) or {}),
             config_path=config_path,
             data_sources_path=Path("config/data_sources.json"),
             mode=str(getattr(ctx, "mode", "LIVE")),
@@ -99,15 +101,17 @@ class RuntimeContext:
         if not source_path.is_absolute():
             source_path = project_root / source_path
         config, provenance = load_runtime_config(pipeline_path, strict=True)
-        import json
-
-        scheduler = json.loads(scheduler_path.read_text(encoding="utf-8")) if scheduler_path.exists() else {}
+        scheduler = read_json(scheduler_path)
+        calendar_path = Path(scheduler.get("trading_calendar", "config/trading_calendar.json"))
+        if not calendar_path.is_absolute():
+            calendar_path = project_root / calendar_path
         return cls(
             job_name=job_name,
             trade_date=trade_date,
             run_id=run_id or make_run_id(prefix=f"SDE-{job_name.upper()}"),
             config=config,
             scheduler_config=scheduler,
+            calendar_config=read_json(calendar_path),
             config_path=pipeline_path,
             data_sources_path=source_path,
             mode=mode.upper(),
@@ -130,6 +134,10 @@ class RuntimeContext:
                 root=self.root,
                 mode=self.mode,
                 run_id=self.run_id,
+                calendar_config=self.calendar_config,
+                calendar_path=self.scheduler_config.get(
+                    "trading_calendar", "config/trading_calendar.json"
+                ),
             )
         return self._source_manager
 

@@ -32,6 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from modules.telegram.router import TelegramRouter
+from swing_utils import atomic_write_text, write_json
 
 WIB = ZoneInfo("Asia/Jakarta")
 BRAVE_NEWS_ENDPOINT = "https://api.search.brave.com/res/v1/news/search"
@@ -124,17 +125,11 @@ def load_json(path: Path) -> dict[str, Any]:
 
 
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    temp.replace(path)
+    write_json(path, payload)
 
 
 def write_text_atomic(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(text, encoding="utf-8")
-    temp.replace(path)
+    atomic_write_text(path, text)
 
 
 def _load_dotenv(path: Path = DEFAULT_DOTENV) -> None:

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from swing_utils import write_json
 
 
 DECISION_ORDER = ["BUY READY", "BUY ON TRIGGER", "WATCH", "AVOID", "STRONG BUY", "BUY", "BUY CANDIDATE", "WATCH HIGH", "SPECULATIVE"]
@@ -438,7 +439,7 @@ def main():
         "suppressed_repeats": len(repeats),
         "missing_symbols": len(set(missing))
     }
-    (output / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    write_json(output / "manifest.json", manifest)
     print("Backtest Stage 2 moderate calibration selesai")
     print(f"Current recommendations : {current_recommendations}")
     print(f"Historical evaluated    : {historical_evaluated}")

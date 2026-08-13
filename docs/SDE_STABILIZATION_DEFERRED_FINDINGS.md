@@ -11,7 +11,8 @@ Cumulative status is tracked in:
 
 `docs/SDE_STABILIZATION_AUDIT_TRACEABILITY.md`
 
-New finding IDs use `NF-C<commit>-NNN`.
+Stabilization finding IDs use `NF-C<commit>-NNN`; Phase 2 Process 2 findings
+use `P2P2-NF-NNN`.
 
 ## Commit 1 observations
 
@@ -37,21 +38,24 @@ The release candidate successfully ran the full audit-branch workflow.
 
 ### NF-C2-001 / DF-C2-001 — Generic `atomic_csv` temp path is deterministic
 
-Status: DEFERRED
+Status: **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT**
 
 `swing_utils.atomic_csv()` uses `<destination>.tmp`. Concurrent generic callers
 for the same destination could collide.
 
-The audited P0 V2 path is protected by its dedicated unique-temp publisher and
-exclusive lock. A generic helper redesign remains outside P0/P1 stabilization.
+Phase 2 Process 2 replaces deterministic temp names with unique same-directory
+temps and publishes only after flush/fsync. Concurrency and interruption
+regressions pass. The dedicated P0 V2 publisher remains protected.
 
 ### NF-C2-002 / DF-C2-002 — Generic JSON writers are broader than V2
 
-Status: DEFERRED
+Status: **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT**
 
 JSON writers outside the audited V2/runtime-status slices are not uniformly
 atomic. A global rewrite would span snapshots, manifests and unrelated runtime
-state. Commit 4 hardened only its owned engine/delivery status slice.
+state. Phase 2 Process 2 routes active runtime JSON document writers through the
+durable shared publisher while retaining the stronger dedicated runtime-status
+and V2 guards.
 
 ## Commit 3 observations
 
@@ -81,14 +85,15 @@ Production semantics were not reverted to satisfy the old assertion.
 
 ### NF-C4-006 / DF-C4-001 — Some legacy exception branches use repository-default traceback path
 
-Status: DEFERRED
+Status: **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT**
 
 Some legacy explicit exception branches still resolve traceback output through
 the repository-default path rather than `ctx.status_root`. Commit 4 closed the
 audited interrupt/status/lock lifecycle without broad path normalization.
 
-A future runtime-state cleanup may normalize this, but it is not required for
-the P0/P1 closure proven by Commit 6.
+Phase 2 Process 2 introduces the context-owned `write_traceback()` helper and
+normalizes all active runner exception branches. Default paths remain backward
+compatible; custom status roots are covered by regression tests.
 
 ## Commit 5 observations
 
@@ -104,16 +109,27 @@ should be reconciled separately without changing provider priority casually.
 
 ### NF-C5-004 / DF-C5-002 — Generic canonical quality engine lacks configured BEI holiday injection
 
-Status: DEFERRED
+Status: **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT**
 
 `DataSourceManager` constructs its generic `DataQualityEngine()` without
 injecting the repository BEI holiday/special-session configuration.
 
-The stabilized production historical path remains protected by the Yahoo
-expected-closed-session manifest plus the adapter requirement that every
-admitted symbol contains the exact expected session. Manager-wide calendar
-injection would affect all canonical record types and remains a separate design
-change.
+Phase 2 Process 2 injects the existing calendar through both runtime contexts
+and `DataSourceManager`. `NON_TRADING_DAY` is restricted to explicitly
+market-session-bound canonical types, so metadata and corporate-action records
+are not rejected merely because they arrive on a closed day.
+
+## Phase 2 Process 2 observation
+
+### P2P2-NF-001 - Windows concurrent atomic replace sharing conflict
+
+Status: **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT**
+
+The new concurrency regression reproduced transient `WinError 5` while
+multiple writers replaced one destination. Because this blocked the requested
+generic durability guarantee and remained inside Process 2 scope, the shared
+publisher now retries only transient Windows sharing conflicts with a bounded
+delay. Interruption still propagates and cleans the unique temp file.
 
 ## Commit 6 observations
 
@@ -133,19 +149,27 @@ green. The remaining deferred list is the explicit set below.
 ## Remaining post-stabilization discussion set
 
 1. `AF-P2-001` — Telegram idempotency check/write transaction locking.
+   **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** in Phase 2 Process 2.
 2. `AF-P2-002` — hotfix workflow write permission / auto-push governance.
    **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** in Phase 2 Commit 1; retained
    here until final re-audit closure.
 3. `AF-P2-003` — full DB revision immutability.
+   **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** in Phase 2 Process 2.
 4. `NF-C2-001` — generic `atomic_csv()` deterministic temp path.
+   **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** in Phase 2 Process 2.
 5. `NF-C2-002` — generic non-uniform JSON atomicity outside audited slices.
+   **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** in Phase 2 Process 2.
 6. `NF-C3-003` — reproducibility contract for runtime-only contextual exits.
 7. `NF-C4-006` — legacy traceback path normalization.
+   **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** in Phase 2 Process 2.
 8. `NF-C5-003` — HISTORICAL_PROVIDER wording vs ownership map.
 9. `NF-C5-004` — manager-wide BEI holiday injection for generic canonical quality validation.
+   **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** in Phase 2 Process 2.
+10. `P2P2-NF-001` — Windows concurrent atomic replace sharing conflict.
+    **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** in Phase 2 Process 2.
 
 ## Discussion state
 
-The six-commit P0/P1 stabilization sequence does not authorize these deferred
-items automatically. They should be reviewed as a separate post-stabilization
-backlog after the final Commit 6 SHA and CI evidence are confirmed.
+Implementation does not equal closure. Items marked pending Phase 2 re-audit
+remain in this historical log until independent re-audit. `NF-C3-003` and
+`NF-C5-003` remain deferred and were not changed by Process 2.

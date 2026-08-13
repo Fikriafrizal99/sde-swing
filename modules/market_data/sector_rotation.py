@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from swing_utils import write_json
 
 
 def _norm(value: Any) -> str:
@@ -161,6 +162,5 @@ def produce_sector_rotation(
                     **buckets,
                     "output_path": str(output_path),
                 }
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json(output_path, payload)
     return payload

@@ -16,7 +16,11 @@ from swing_utils import file_sha256
 from modules.telegram.router import TelegramRouter
 
 from .reports import ReportPayload
-from .runtime import RunnerContext, append_jsonl, now_wib, read_json, resolve, write_json
+from .runtime import RunnerContext, append_jsonl, now_wib, read_json, resolve
+from .delivery_idempotency import (
+    DeliveryIdempotencyStore,
+    ReservationOwnershipLost,
+)
 
 
 _PHOTO_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -71,6 +75,22 @@ def _state_paths(ctx: RunnerContext) -> tuple[Path, Path]:
     return index, log
 
 
+def _idempotency_store(
+    ctx: RunnerContext,
+    index_path: Path | None = None,
+) -> DeliveryIdempotencyStore:
+    delivery_cfg = ctx.scheduler_config.get("delivery", {})
+    legacy_index = index_path or _state_paths(ctx)[0]
+    configured_database = str(delivery_cfg.get("idempotency_database", "") or "").strip()
+    database_path = (
+        resolve(configured_database)
+        if configured_database
+        else legacy_index.with_suffix(".sqlite3")
+    )
+    lease_seconds = int(delivery_cfg.get("idempotency_reservation_ttl_seconds", 900))
+    return DeliveryIdempotencyStore(database_path, legacy_index, lease_seconds)
+
+
 def _mark_lifecycle_events_notified(ctx: RunnerContext, event_ids: tuple[str, ...] | list[str]) -> int:
     identifiers = [str(item).strip() for item in event_ids if str(item).strip()]
     if not identifiers:
@@ -123,12 +143,9 @@ def should_send(ctx: RunnerContext, payload: ReportPayload) -> tuple[bool, str]:
         return False, "DRY_RUN"
     if ctx.no_telegram:
         return False, "NO_TELEGRAM"
-    index_path, _ = _state_paths(ctx)
-    index = read_json(index_path)
     key = _idempotency_key(ctx, payload)
-    if key in index and not ctx.force:
-        return False, "DUPLICATE_SUPPRESSED"
-    return True, key
+    index_path, _ = _state_paths(ctx)
+    return _idempotency_store(ctx, index_path).can_send(key, force=ctx.force)
 
 
 def _telegram_config(ctx: RunnerContext) -> dict[str, Any]:
@@ -346,7 +363,7 @@ def _record_successful_lifecycle_ack(
 
 def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str, Any]]:
     index_path, log_path = _state_paths(ctx)
-    index = read_json(index_path)
+    idempotency_store: DeliveryIdempotencyStore | None = None
     results: list[dict[str, Any]] = []
     failed_root = resolve(ctx.scheduler_config.get("delivery", {}).get("failed_root", "data/output/failed_delivery"))
     delivery_total = len(payloads)
@@ -355,8 +372,15 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
     official_runtime = str(provenance.get("config_version", "")) == "1.7.0-multisource"
 
     for delivery_sequence, payload in enumerate(payloads, start=1):
-        allowed, reason = should_send(ctx, payload)
         key = _idempotency_key(ctx, payload)
+        if ctx.dry_run:
+            allowed, reason = False, "DRY_RUN"
+        elif ctx.no_telegram:
+            allowed, reason = False, "NO_TELEGRAM"
+        else:
+            if idempotency_store is None:
+                idempotency_store = _idempotency_store(ctx, index_path)
+            allowed, reason = idempotency_store.can_send(key, force=ctx.force)
         attachment = _attachment_path(payload)
         is_photo = _is_photo_attachment(attachment)
         max_len = int(ctx.scheduler_config.get("telegram", {}).get("maximum_message_length", 4000))
@@ -376,12 +400,17 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
             "delivery_sequence": delivery_sequence,
             "delivery_total": delivery_total,
             "force_resend": bool(ctx.force),
+            "delivery_guarantee": "AT_LEAST_ONCE_WITH_CRASH_AMBIGUITY",
             "attachment_path": str(attachment) if attachment else "",
             **telegram_route(ctx, payload),
             "telegram_message_id": "",
         }
         if not allowed:
             event = {**base, "status": reason}
+            if reason == "DUPLICATE_SUPPRESSED":
+                _record_successful_lifecycle_ack(
+                    ctx, payload, normalized_text, base, log_path
+                )
             append_jsonl(log_path, event)
             results.append(event)
             continue
@@ -391,15 +420,42 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
             results.append(event)
             continue
 
+        if idempotency_store is None:  # Defensive; non-dry sends initialize it above.
+            idempotency_store = _idempotency_store(ctx, index_path)
+        reservation = idempotency_store.reserve(key, ctx.run_id, force=ctx.force)
+        if not reservation.acquired:
+            event = {
+                **base,
+                "status": reservation.reason,
+                "idempotency_attempt_id": reservation.attempt_id,
+                "reservation_expires_at": reservation.lease_expires_at,
+            }
+            if reservation.reason == "DUPLICATE_SUPPRESSED":
+                _record_successful_lifecycle_ack(
+                    ctx, payload, normalized_text, base, log_path
+                )
+            append_jsonl(log_path, event)
+            results.append(event)
+            continue
+        base.update({
+            "idempotency_attempt_id": reservation.attempt_id,
+            "reservation_expires_at": reservation.lease_expires_at,
+        })
+
+        def renew_reservation() -> None:
+            base["reservation_expires_at"] = idempotency_store.renew(reservation)
+
         message_ids: list[Any] = []
         part_events: list[dict[str, Any]] = []
         try:
             if is_photo:
                 try:
+                    renew_reservation()
                     response = _send_photo(ctx, payload, photo_caption)
                 except Exception as photo_exc:
                     fallback_parts = split_telegram_text(normalized_text, max_len=max_len)
                     for idx, part in enumerate(fallback_parts, start=1):
+                        renew_reservation()
                         response = _send_telegram(ctx, payload, text=part, part_index=idx, part_count=len(fallback_parts))
                         message_id = response.get("result", {}).get("message_id", "")
                         message_ids.append(message_id)
@@ -413,9 +469,12 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
                         "telegram_message_ids": message_ids,
                         "parts": part_events,
                     }
-                    if _record_successful_lifecycle_ack(ctx, payload, normalized_text, base, log_path):
-                        index[key] = event
-                        write_json(index_path, index)
+                    projection_error = idempotency_store.complete(reservation, event)
+                    if projection_error:
+                        event["idempotency_projection_warning"] = projection_error
+                    _record_successful_lifecycle_ack(
+                        ctx, payload, normalized_text, base, log_path
+                    )
                     append_jsonl(log_path, event)
                     results.append(event)
                     continue
@@ -426,6 +485,7 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
                 append_jsonl(log_path, photo_event)
                 part_events.append(photo_event)
                 for idx, part in enumerate(photo_followups, start=2):
+                    renew_reservation()
                     response = _send_telegram(ctx, payload, text=part, part_index=idx, part_count=expected_parts)
                     message_id = response.get("result", {}).get("message_id", "")
                     message_ids.append(message_id)
@@ -433,6 +493,7 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
                     append_jsonl(log_path, part_event)
                     part_events.append(part_event)
             elif attachment is not None:
+                renew_reservation()
                 response = _send_document(ctx, payload)
                 message_id = response.get("result", {}).get("message_id", "")
                 message_ids.append(message_id)
@@ -441,6 +502,7 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
                 part_events.append(part_event)
             else:
                 for idx, part in enumerate(parts, start=1):
+                    renew_reservation()
                     response = _send_telegram(ctx, payload, text=part, part_index=idx, part_count=len(parts))
                     message_id = response.get("result", {}).get("message_id", "")
                     message_ids.append(message_id)
@@ -449,9 +511,22 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
                     part_events.append(part_event)
 
             event = {**base, "status": "SENT", "telegram_message_ids": message_ids, "parts": part_events}
-            if _record_successful_lifecycle_ack(ctx, payload, normalized_text, base, log_path):
-                index[key] = event
-                write_json(index_path, index)
+            projection_error = idempotency_store.complete(reservation, event)
+            if projection_error:
+                event["idempotency_projection_warning"] = projection_error
+            _record_successful_lifecycle_ack(
+                ctx, payload, normalized_text, base, log_path
+            )
+            append_jsonl(log_path, event)
+            results.append(event)
+        except ReservationOwnershipLost as exc:
+            event = {
+                **base,
+                "status": "DELIVERY_STATE_UNCERTAIN",
+                "error": str(exc),
+                "telegram_message_ids": message_ids,
+                "sent_parts_before_failure": len(message_ids),
+            }
             append_jsonl(log_path, event)
             results.append(event)
         except Exception as exc:
@@ -472,6 +547,14 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
                 "telegram_message_ids": message_ids,
                 "sent_parts_before_failure": len(message_ids),
             }
+            try:
+                state_recorded = idempotency_store.fail(
+                    reservation, event, str(exc)
+                )
+            except Exception as state_exc:
+                state_recorded = False
+                event["idempotency_state_error"] = str(state_exc)
+            event["idempotency_failure_recorded"] = state_recorded
             append_jsonl(log_path, event)
             results.append(event)
     return results

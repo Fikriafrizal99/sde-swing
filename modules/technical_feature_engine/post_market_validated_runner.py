@@ -25,6 +25,7 @@ from modules.data_sources.legacy_daily_bar_adapter import (  # noqa: E402
 )
 from modules.runtime.data_source_manager import DataSourceManager  # noqa: E402
 from modules.technical_feature_engine import technical_feature_engine as base  # noqa: E402
+from swing_utils import write_json  # noqa: E402
 
 
 ACCEPTED_YAHOO_QUALITY = {"VALID", "PARTIAL_COVERAGE"}
@@ -69,14 +70,7 @@ def _load_manifest(path: Path) -> dict[str, Any]:
 
 
 def _atomic_audit(path: Path, payload: dict[str, Any]) -> None:
-    import os
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    with tmp.open("w", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
-        handle.flush()
-    tmp.replace(path)
+    write_json(path, payload)
 
 
 def build_validated_input(

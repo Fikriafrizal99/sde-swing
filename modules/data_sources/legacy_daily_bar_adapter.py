@@ -18,6 +18,7 @@ from typing import Any
 import pandas as pd
 
 from modules.data_sources.canonical import DailyBar, compute_payload_hash, now_wib
+from swing_utils import write_json
 
 CANONICAL_DAILY_HISTORY_CONTRACT = "SDE_CANONICAL_DAILY_HISTORY_V1"
 LEGACY_PROVIDER_NAME = "HISTORICAL_PROVIDER"
@@ -36,19 +37,7 @@ def _file_sha256(path: Path) -> str:
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os_getpid()}.tmp")
-    text = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
-    with tmp.open("w", encoding="utf-8") as handle:
-        handle.write(text)
-        handle.flush()
-    tmp.replace(path)
-
-
-def os_getpid() -> int:
-    # Kept behind a tiny helper so tests can monkeypatch deterministic temp names.
-    import os
-    return os.getpid()
+    write_json(path, payload)
 
 
 def _source_path(input_dir: Path, symbol: str) -> Path | None:

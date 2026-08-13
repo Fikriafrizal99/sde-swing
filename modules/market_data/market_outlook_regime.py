@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from swing_utils import write_json
 
 
 def _norm(value: Any) -> str:
@@ -323,6 +324,5 @@ def calculate_market_outlook_regime(
 
 
 def save_market_outlook_regime(status: dict[str, Any], output: Path) -> Path:
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json(output, status)
     return output

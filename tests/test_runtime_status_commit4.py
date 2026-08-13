@@ -131,6 +131,9 @@ def test_keyboard_interrupt_terminalizes_before_job_lock_release(tmp_path: Path)
     assert payload["finished_at"]
     assert payload["traceback_path"]
     assert Path(payload["traceback_path"]).exists()
+    assert Path(payload["traceback_path"]) == (
+        ctx.status_root / "tracebacks" / "INTERRUPTED-interrupt.txt"
+    )
     assert not lock_path.exists()
 
     events = [
