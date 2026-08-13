@@ -29,6 +29,7 @@ Commit ownership:
 
 - `OPEN`
 - `IMPLEMENTED / PENDING RE-AUDIT`
+- `IMPLEMENTED / PENDING PHASE 2 RE-AUDIT`
 - `CLOSED BY RE-AUDIT`
 - `DEFERRED`
 - `EVIDENCE UPDATE`
@@ -47,7 +48,7 @@ Commit ownership:
 | AF-P1-004 | P1 | Interrupt can leave inconsistent terminal state such as FAILED + exit code 0 | Commit 4 | **CLOSED BY RE-AUDIT** | Interrupt terminalization, exit 130, traceback, FAILED/nonzero invariant and ownership-safe lock release all covered by passing regression tests. |
 | AF-P1-005 | P1 | Conflicting market dates can select a winner with fail-closed false | Commit 5 | **CLOSED BY RE-AUDIT** | `ConflictResolver` returns no winner, `CONFLICT_FAIL_CLOSED`, `fail_closed=true`; conflict regressions PASS. |
 | AF-P2-001 | P2 | Telegram idempotency check/write not transaction-locked | Post-stabilization | **DEFERRED** | Explicitly outside P0/P1 scope. |
-| AF-P2-002 | P2 | Hotfix workflow has `contents: write` and auto-push | Post-stabilization | **DEFERRED** | Governance/security follow-up. |
+| AF-P2-002 | P2 | Hotfix workflow has `contents: write` and auto-push | Phase 2 Commit 1 | **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** | Workflow converted to read-only validation with `contents: read`, non-persisted checkout credentials, no source/test rewrite, and no commit/push path. See `docs/SDE_PHASE2_COMMIT1_RELEASE_GOVERNANCE.md`. |
 | AF-P2-003 | P2 | DB revision history not fully immutable | Post-stabilization | **DEFERRED** | Full DB revision redesign excluded. |
 
 ## Historical audit evidence retained
@@ -213,6 +214,31 @@ Detailed evidence:
 
 Detailed non-blocking observations remain in
 `docs/SDE_STABILIZATION_DEFERRED_FINDINGS.md`.
+
+## Phase 2 hardening commit register
+
+### Phase 2 Commit 1 - Release governance
+
+Finding: `AF-P2-002`
+
+Direct parent: `662c5ef160c7978237abc58e73e897190daf0632`
+
+Status: **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT**
+
+The exact commit SHA is authoritative in Git and is intentionally not embedded
+in its own documentation. The implementation removes automated source/test
+rewrites, bot commit creation, and direct branch push from the legacy hotfix
+workflow. Validation remains available with read-only repository permission and
+non-persisted checkout credentials.
+
+Evidence:
+
+- `.github/workflows/hotfix-exit-volume.yml`
+- `tests/test_release_governance_workflow.py`
+- `docs/SDE_PHASE2_COMMIT1_RELEASE_GOVERNANCE.md`
+
+No production application, quant, lifecycle, runtime-status, canonical-data, or
+V2 publication behavior is owned by this Phase 2 commit.
 
 ## Guardrail traceability
 

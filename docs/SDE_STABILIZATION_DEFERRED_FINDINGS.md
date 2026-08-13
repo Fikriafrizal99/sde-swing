@@ -134,6 +134,8 @@ green. The remaining deferred list is the explicit set below.
 
 1. `AF-P2-001` — Telegram idempotency check/write transaction locking.
 2. `AF-P2-002` — hotfix workflow write permission / auto-push governance.
+   **IMPLEMENTED / PENDING PHASE 2 RE-AUDIT** in Phase 2 Commit 1; retained
+   here until final re-audit closure.
 3. `AF-P2-003` — full DB revision immutability.
 4. `NF-C2-001` — generic `atomic_csv()` deterministic temp path.
 5. `NF-C2-002` — generic non-uniform JSON atomicity outside audited slices.
