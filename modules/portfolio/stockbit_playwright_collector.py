@@ -89,7 +89,7 @@ DEFAULT_TASKS = PROJECT_ROOT / "data/input/broker/BROKER_PORTFOLIO_BACKFILL_TASK
 DEFAULT_STATE = PROJECT_ROOT / "data/state/broker_playwright.json"
 DEFAULT_PROFILE = PROJECT_ROOT / "data/state/playwright/stockbit"
 DEFAULT_LOG_DIR = PROJECT_ROOT / "data/logs/broker_playwright"
-COLLECTOR_VERSION = "1.1.0"
+COLLECTOR_VERSION = "1.1.1"
 MARKETDETECTOR_PATH = "/marketdetectors/"
 BACKFILL_PREFIX = "BROKER_PORTFOLIO_BACKFILL_SUMMARY_"
 
@@ -826,6 +826,18 @@ def build_replay_request(template: CapturedRequest, task: BrokerTask) -> ReplayR
         raise CollectorError("REQUEST_BODY_UNSUPPORTED", body_kind)
 
     if method in {"GET", "HEAD"}:
+        needs_explicit_period = not context["from_touched"] or not context["to_touched"]
+        if needs_explicit_period:
+            # Stockbit's latest-session request uses
+            # ``period=BROKER_SUMMARY_PERIOD_LATEST``.  The endpoint ignores
+            # explicit from/to values while that mode remains present, so an
+            # exact historical task must replace the mode rather than append
+            # dates beside it.
+            query = [
+                (key, value)
+                for key, value in query
+                if _normalize_key(key) != "period"
+            ]
         if not context["from_touched"]:
             query.append(("from", task.from_date))
             context["from_touched"] = True
@@ -1664,6 +1676,12 @@ class StockbitPlaywrightSession:
             )
         if control is None:
             raise CollectorError("BROKER_FILTER_NOT_FOUND", label)
+        try:
+            current_label = " ".join(str(control.inner_text() or "").split())
+        except Exception:
+            current_label = ""
+        if current_label.casefold() == label.casefold():
+            return
         pressed = str(control.get_attribute("aria-pressed") or "").lower()
         selected = str(control.get_attribute("aria-selected") or "").lower()
         state = str(control.get_attribute("data-state") or "").lower()
@@ -1864,17 +1882,49 @@ class StockbitPlaywrightSession:
 
     def _bootstrap(self, task: BrokerTask) -> None:
         self.open_target(require_auth=True)
-        self._ensure_stock_activity()
-        self._configure_filters()
-        self._clear_native_capture()
-        self._select_symbol(task.symbol)
-        self._select_date(task)
-        self._apply()
+        # The authenticated page emits a valid Broker Summary request during
+        # initial load.  Capture that request directly and replay it per task;
+        # driving Stockbit's presentation controls is both unnecessary and
+        # brittle (the controls are custom buttons, not stable form inputs).
         self._request_template = self._wait_for_request_template()
-        self._verify_visible_state(task)
         self._ready = True
 
-    def _replay(self, request: ReplayRequest) -> tuple[Mapping[str, Any], str, bool]:
+    def _replay_via_context(self, request: ReplayRequest) -> Mapping[str, Any]:
+        if request.body_kind == "formdata":
+            raise CollectorError("CONTEXT_REPLAY_BODY_UNSUPPORTED", "formdata")
+        kwargs: dict[str, Any] = {
+            "method": request.method,
+            "headers": dict(request.headers),
+            "timeout": self._timeout_ms,
+            "fail_on_status_code": False,
+        }
+        if request.method not in {"GET", "HEAD"} and request.body is not None:
+            kwargs["data"] = request.body
+        try:
+            response = self._context.request.fetch(request.url, **kwargs)
+        except Exception as exc:
+            raise CollectorError("CONTEXT_REPLAY_FAILED", type(exc).__name__) from exc
+        try:
+            status = int(response.status)
+            if status in {401, 403}:
+                raise CollectorError("LOGIN_REQUIRED", f"HTTP_{status}")
+            if status == 429:
+                raise CollectorError("BROKER_REQUEST_RATE_LIMITED", "HTTP_429")
+            if not response.ok:
+                raise CollectorError("BROKER_REQUEST_HTTP_FAILED", f"HTTP_{status}")
+            try:
+                payload = response.json()
+            except Exception as exc:
+                raise CollectorError("BROKER_RESPONSE_INVALID", type(exc).__name__) from exc
+            if not isinstance(payload, Mapping):
+                raise CollectorError("BROKER_RESPONSE_INVALID", "NOT_OBJECT")
+            return payload
+        finally:
+            dispose = getattr(response, "dispose", None)
+            if callable(dispose):
+                dispose()
+
+    def _replay_via_page(self, request: ReplayRequest) -> tuple[Mapping[str, Any], str, bool]:
         payload = {
             "url": request.url,
             "method": request.method,
@@ -1903,6 +1953,24 @@ class StockbitPlaywrightSession:
             str(result.get("transport") or ""),
             bool(result.get("fallback_used")),
         )
+
+    def _replay(self, request: ReplayRequest) -> tuple[Mapping[str, Any], str, bool]:
+        context_error: CollectorError | None = None
+        try:
+            return self._replay_via_context(request), "API_REQUEST", False
+        except CollectorError as exc:
+            if exc.code in {"LOGIN_REQUIRED", "BROKER_REQUEST_RATE_LIMITED"}:
+                raise
+            context_error = exc
+
+        try:
+            return self._replay_via_page(request)
+        except CollectorError as exc:
+            if exc.code == "LOGIN_REQUIRED":
+                raise
+            if context_error is not None:
+                raise context_error from exc
+            raise
 
     def collect(self, task: BrokerTask) -> TaskCollection:
         if not self._ready:

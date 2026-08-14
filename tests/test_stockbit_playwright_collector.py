@@ -355,6 +355,193 @@ def test_captured_get_request_is_replayed_per_task_and_sensitive_browser_headers
     assert replay.headers["Authorization"] == "runtime-only-token"
 
 
+def test_latest_period_is_replaced_by_exact_task_dates() -> None:
+    template = collector.CapturedRequest(
+        url=(
+            "https://api.stockbit.com/v2.4/marketdetectors/BBCA"
+            "?transaction_type=TRANSACTION_TYPE_NET"
+            "&period=BROKER_SUMMARY_PERIOD_LATEST&limit=25"
+        ),
+        method="GET",
+        headers={"Authorization": "runtime-only-token"},
+        body_kind="none",
+        body_value=None,
+        transport="XHR",
+        captured_symbol="BBCA",
+        captured_from_date="2026-08-13",
+        captured_to_date="2026-08-13",
+    )
+    task = collector.BrokerTask("BNBR", "2026-08-12", "2026-08-12", "BNBR|2026-08-12")
+
+    replay = collector.build_replay_request(template, task)
+    parsed = urlsplit(replay.url)
+    query = parse_qs(parsed.query)
+
+    assert parsed.path.endswith("/marketdetectors/BNBR")
+    assert query["from"] == ["2026-08-12"]
+    assert query["to"] == ["2026-08-12"]
+    assert "period" not in query
+    assert query["transaction_type"] == ["TRANSACTION_TYPE_NET"]
+    assert query["limit"] == ["25"]
+
+
+def test_selected_filter_value_is_not_reopened() -> None:
+    class SelectedControl:
+        def __init__(self) -> None:
+            self.clicks = 0
+
+        def count(self) -> int:
+            return 1
+
+        def nth(self, index: int) -> "SelectedControl":
+            assert index == 0
+            return self
+
+        def is_visible(self) -> bool:
+            return True
+
+        def inner_text(self) -> str:
+            return "All Investor"
+
+        def get_attribute(self, name: str) -> None:
+            return None
+
+        def click(self) -> None:
+            self.clicks += 1
+
+    control = SelectedControl()
+
+    class FakePage:
+        def get_by_role(self, role: str, **kwargs: Any) -> SelectedControl:
+            assert role == "button"
+            return control
+
+    session = object.__new__(collector.StockbitPlaywrightSession)
+    session._page = FakePage()
+
+    session._choose_filter("All Investor")
+
+    assert control.clicks == 0
+
+
+def test_bootstrap_captures_initial_request_without_driving_ui(monkeypatch) -> None:
+    template = collector.CapturedRequest(
+        url=(
+            "https://api.stockbit.com/v2.4/marketdetectors/BBCA"
+            "?period=BROKER_SUMMARY_PERIOD_LATEST"
+        ),
+        method="GET",
+        headers={},
+        body_kind="none",
+        body_value=None,
+        transport="XHR",
+        captured_symbol="BBCA",
+        captured_from_date="2026-08-13",
+        captured_to_date="2026-08-13",
+    )
+    session = object.__new__(collector.StockbitPlaywrightSession)
+    session._ready = False
+    session._request_template = None
+    calls: list[str] = []
+    monkeypatch.setattr(
+        session,
+        "open_target",
+        lambda *, require_auth: calls.append(f"open:{require_auth}"),
+    )
+    monkeypatch.setattr(
+        session,
+        "_wait_for_request_template",
+        lambda: calls.append("capture") or template,
+    )
+    for method_name in (
+        "_configure_filters",
+        "_select_symbol",
+        "_select_date",
+        "_apply",
+    ):
+        monkeypatch.setattr(
+            session,
+            method_name,
+            lambda *args, _name=method_name, **kwargs: pytest.fail(
+                f"presentation control unexpectedly used: {_name}"
+            ),
+        )
+
+    session._bootstrap(
+        collector.BrokerTask("BNBR", "2026-08-13", "2026-08-13", "BNBR|2026-08-13")
+    )
+
+    assert calls == ["open:True", "capture"]
+    assert session._request_template == template
+    assert session._ready is True
+
+
+def test_replay_prefers_authenticated_context_request() -> None:
+    task = collector.BrokerTask("BNBR", "2026-08-13", "2026-08-13", "BNBR|2026-08-13")
+
+    class FakeResponse:
+        status = 200
+        ok = True
+
+        def __init__(self) -> None:
+            self.disposed = False
+
+        def json(self) -> dict[str, Any]:
+            return _payload(task)
+
+        def dispose(self) -> None:
+            self.disposed = True
+
+    response = FakeResponse()
+
+    class FakeRequestContext:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, Any]]] = []
+
+        def fetch(self, url: str, **kwargs: Any) -> FakeResponse:
+            self.calls.append((url, kwargs))
+            return response
+
+    request_context = FakeRequestContext()
+
+    class FakeContext:
+        request = request_context
+
+    session = object.__new__(collector.StockbitPlaywrightSession)
+    session._context = FakeContext()
+    session._timeout_ms = 30_000
+    replay = collector.ReplayRequest(
+        url=(
+            "https://api.stockbit.com/v2.4/marketdetectors/BNBR"
+            "?from=2026-08-13&to=2026-08-13"
+        ),
+        method="GET",
+        headers={"Authorization": "runtime-only-token"},
+        body=None,
+        body_kind="none",
+        preferred_transport="XHR",
+        date_transport="QUERY / PATH",
+    )
+
+    payload, transport, fallback_used = session._replay(replay)
+
+    assert payload["data"]["broker_summary"]["symbol"] == "BNBR"
+    assert transport == "API_REQUEST"
+    assert fallback_used is False
+    assert request_context.calls == [
+        (
+            replay.url,
+            {
+                "method": "GET",
+                "headers": {"Authorization": "runtime-only-token"},
+                "timeout": 30_000,
+                "fail_on_status_code": False,
+            },
+        )
+    ]
+    assert response.disposed is True
+
+
 def test_captured_json_request_mutates_symbol_and_exact_task_period() -> None:
     template = collector.CapturedRequest(
         url="https://api.stockbit.com/v2.4/marketdetectors/BBRI",
