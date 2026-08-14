@@ -12,7 +12,7 @@ try:
 except ImportError:  # pragma: no cover - handled at runtime for live send
     requests = None
 
-from swing_utils import file_sha256
+from swing_utils import PACKAGE_VERSION, file_sha256
 from modules.telegram.router import TelegramRouter
 
 from .reports import ReportPayload
@@ -369,7 +369,7 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
     delivery_total = len(payloads)
     credentials_ready = telegram_configured(ctx)
     provenance = getattr(ctx, "config_provenance", {}) or {}
-    official_runtime = str(provenance.get("config_version", "")) == "1.7.0-multisource"
+    official_runtime = str(provenance.get("config_version", "")) == PACKAGE_VERSION
 
     for delivery_sequence, payload in enumerate(payloads, start=1):
         key = _idempotency_key(ctx, payload)

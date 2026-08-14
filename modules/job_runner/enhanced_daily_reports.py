@@ -1193,7 +1193,7 @@ def _fw_enrich_watchlist_rows(self, rows):
         _fw_fill(current, sources, "resistance", "Nearest_Resistance", "Minor_Resistance", "Resistance_Level", "Resistance")
         _fw_fill(current, sources, "fib_status", "Fibonacci_Status", "Fib_Status", "FIB_STATUS", "Target_Fib_Status")
         if not _present(current.get("fib_status")):
-            # The inspected v1.7 branch has no Fibonacci target artifact. Keep the
+            # The current branch has no Fibonacci target artifact. Keep the
             # card explicit instead of fabricating a level or silently leaving it blank.
             current["fib_status"] = "ENGINE_NOT_AVAILABLE_V1_7"
         _fw_fill(current, sources, "swing_high", "Swing_High", "Valid_Swing_High")

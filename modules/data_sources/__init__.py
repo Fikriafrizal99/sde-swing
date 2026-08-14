@@ -1,4 +1,4 @@
-"""Canonical multi-source market-data layer for SDE Swing V1.7.0.
+"""Canonical multi-source market-data layer for SDE Swing V1.7.1.
 
 This package isolates external market-data providers behind a canonical
 schema so the Final Decision Engine never learns the original source of any

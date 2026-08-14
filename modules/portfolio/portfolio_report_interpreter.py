@@ -106,7 +106,7 @@ class PortfolioGroqInterpreter(GroqInterpreter):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "SDE-Swing/1.7 Portfolio-Report",
+            "User-Agent": "SDE-Swing/1.7.1 Portfolio-Report",
         }
         try:
             response = requests.post(

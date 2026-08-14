@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from swing_utils import make_run_id, write_json as _durable_write_json
+from swing_utils import PACKAGE_VERSION, make_run_id, write_json as _durable_write_json
 from modules.runtime_config import load_runtime_config
 
 
@@ -27,7 +27,7 @@ EXIT_WAITING_DATA = 20
 EXIT_DUPLICATE = 30
 EXIT_RESOURCE_LOCKED = 40
 EXIT_DELIVERY_FAILED = 50
-RUNTIME_CONFIG_VERSION = "1.7.0-multisource"
+RUNTIME_CONFIG_VERSION = PACKAGE_VERSION
 
 
 class JobAlreadyRunning(RuntimeError):
@@ -333,7 +333,7 @@ def write_status(
         "job_name": ctx.job,
         "job_mode": ctx.mode,
         # Legacy hand-built contexts retain the historical status string for
-        # regression compatibility; official 1.7 contexts expose the unified
+        # regression compatibility; official current contexts expose the unified
         # finite status vocabulary and keep the old value in legacy_status.
         "status": terminal_status if official_runtime else status,
         "status_v1_7": terminal_status,

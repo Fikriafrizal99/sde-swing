@@ -209,7 +209,7 @@ class GroqInterpreter(_LegacyGeminiInterpreter):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "SDE-Swing/1.7 Groq-API-Client",
+            "User-Agent": "SDE-Swing/1.7.1 Groq-API-Client",
         }
         try:
             response = requests.post(

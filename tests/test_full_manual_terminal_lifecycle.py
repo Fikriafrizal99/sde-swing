@@ -43,7 +43,7 @@ def _ctx(tmp_path: Path) -> RunnerContext:
             "locks": {"global_resource_lock_name": "global.lock", "stale_after_minutes": 60},
         },
         calendar_config={"holidays": [], "special_trading_days": []},
-        config_provenance={"config_version": "1.7.0-multisource", "config_hash": "test"},
+        config_provenance={"config_version": "1.7.1", "config_hash": "test"},
     )
 
 

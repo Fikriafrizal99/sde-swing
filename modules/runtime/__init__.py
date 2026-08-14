@@ -1,4 +1,4 @@
-"""Shared SDE Swing V1.7.0 runtime primitives.
+"""Shared SDE Swing V1.7.1 runtime primitives.
 
 The legacy command modules remain import-compatible, while every new job can
 obtain the same context, source manager, status writer and Telegram router

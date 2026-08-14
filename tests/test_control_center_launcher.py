@@ -14,7 +14,7 @@ def test_run_sde_is_the_single_top_level_control_center() -> None:
 
     assert launcher.exists()
     assert not duplicate.exists()
-    assert "V1.7.0 MULTI-SOURCE - CONTROL CENTER" in source
+    assert "SDE SWING V1.7.1 - CONTROL CENTER" in source
     assert "maintenance\\DAILY_OPERATIONS_MENU.bat" in source
     assert "maintenance\\BROKER_MENU.bat" in source
     assert "maintenance\\PORTFOLIO_MENU.bat" in source

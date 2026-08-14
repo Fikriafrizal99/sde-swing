@@ -13,7 +13,7 @@ from typing import Any
 
 import pandas as pd
 
-from swing_utils import atomic_csv, file_sha256, find_col, read_json as read_json_safely, write_json
+from swing_utils import PACKAGE_VERSION, atomic_csv, file_sha256, find_col, read_json as read_json_safely, write_json
 from modules.data_sources.config import load_data_source_config
 from modules.market_data.zapi_enrichment import ZapiEnrichmentService
 
@@ -1795,7 +1795,7 @@ def run_final_from_snapshot(ctx: RunnerContext) -> dict[str, Any]:
     write_json(run_manifest_path, manifest)
     context_bridge: dict[str, Any] = {}
     decision_input = decision_source
-    if str(ctx.config_provenance.get("config_version", "")) == "1.7.0-multisource":
+    if str(ctx.config_provenance.get("config_version", "")) == PACKAGE_VERSION:
         from modules.data_sources.decision_bridge import CONTEXT_COLUMNS
 
         output_dir = resolve(paths.get("broker_multiday_output_dir", "data/output/broker_multiday"))

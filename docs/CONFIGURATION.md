@@ -13,6 +13,7 @@ timeout, malformed response, or quota failure falls back to deterministic SDE
 text and never changes engine-owned decisions, prices, scores, or risk levels.
 
 All active configuration and runtime provenance use version
-`1.7.0-multisource`. `auto_entry_enabled` remains `false` and production stays
+`1.7.1`. Multi-Source remains a capability descriptor, not part of the semantic
+version. `auto_entry_enabled` remains `false` and production stays
 `MODERATE_BASELINE`.
 

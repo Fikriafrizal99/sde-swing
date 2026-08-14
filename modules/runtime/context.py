@@ -10,7 +10,7 @@ from typing import Any
 from modules.runtime_config import load_runtime_config
 from swing_utils import PACKAGE_VERSION, make_run_id, read_json
 
-RUNTIME_VERSION = "1.7.0-multisource"
+RUNTIME_VERSION = PACKAGE_VERSION
 
 
 @dataclass(frozen=True)
@@ -148,7 +148,7 @@ class RuntimeContext:
     def artifact_metadata(self, *, snapshot_id: str = "", source: dict[str, Any] | None = None) -> dict[str, Any]:
         metadata = self.provider_metadata
         return {
-            "schema_version": "1.7.0-multisource",
+            "schema_version": PACKAGE_VERSION,
             "run_id": self.run_id,
             "job_name": self.job_name,
             "trade_date": self.trade_date.isoformat(),

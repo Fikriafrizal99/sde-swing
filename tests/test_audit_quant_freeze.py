@@ -40,6 +40,22 @@ def test_audited_quant_freeze_rejects_weight_drift():
     assert any("total must be 1.0" in error for error in errors)
 
 
+def test_release_version_metadata_does_not_weaken_quant_contract():
+    validator = _load_validator()
+    pipeline = validator._load_json(validator.PIPELINE_PATH)
+    freeze = validator._load_json(validator.FREEZE_PATH)
+    release_only_change = copy.deepcopy(pipeline)
+    release_only_change["config_version"] = "9.9.9-release-metadata-test"
+
+    errors = validator.validate_quant_freeze(
+        release_only_change,
+        freeze,
+        check_source_blobs=False,
+    )
+
+    assert errors == []
+
+
 def test_source_blob_hash_is_identical_for_lf_and_crlf(tmp_path: Path):
     validator = _load_validator()
     freeze = validator._load_json(validator.FREEZE_PATH)

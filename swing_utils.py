@@ -22,9 +22,9 @@ from typing import Any, Iterable
 import pandas as pd
 
 
-PACKAGE_VERSION = "1.7.0-multisource"
-PIPELINE_VERSION = "1.7.0-multisource"
-DISPLAY_VERSION = "SDE Swing V1.7.0 Multi-Source Runtime"
+PACKAGE_VERSION = "1.7.1"
+PIPELINE_VERSION = "1.7.1"
+DISPLAY_VERSION = "SDE Swing V1.7.1"
 STRATEGY_TYPE = "SWING"
 VALID_DATA_QUALITY = {
     "VALID",

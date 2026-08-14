@@ -768,7 +768,7 @@ def format_watchlist_detail(data: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# v1.7 presentation contract
+# Current presentation contract
 # ---------------------------------------------------------------------------
 # The legacy builders above remain import-compatible for older integrations.
 # These definitions are intentionally last so the runtime uses one stable

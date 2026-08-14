@@ -12,7 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from modules.runtime_config import load_runtime_config, RuntimeConfigError  # noqa: E402
-from swing_utils import PACKAGE_VERSION, PIPELINE_VERSION  # noqa: E402
+from swing_utils import DISPLAY_VERSION, PACKAGE_VERSION, PIPELINE_VERSION  # noqa: E402
+
+
+EXPECTED_VERSION = "1.7.1"
 
 
 def main() -> int:
@@ -33,15 +36,24 @@ def main() -> int:
         print("FAIL: auto_entry_enabled is True — must remain False")
         return 1
 
+    version_path = ROOT / "VERSION"
+    version_file = version_path.read_text(encoding="utf-8").strip() if version_path.exists() else ""
+    if version_file != EXPECTED_VERSION:
+        print(f"FAIL: VERSION must be {EXPECTED_VERSION}")
+        return 1
+
     package = payload.get("package", {})
-    if str(package.get("version", "")) != "1.7.0-multisource" or str(package.get("pipeline_version", "")) != "1.7.0-multisource":
-        print("FAIL: package and pipeline version must be 1.7.0-multisource")
+    if str(package.get("version", "")) != EXPECTED_VERSION or str(package.get("pipeline_version", "")) != EXPECTED_VERSION:
+        print(f"FAIL: package and pipeline version must be {EXPECTED_VERSION}")
         return 1
-    if PACKAGE_VERSION != "1.7.0-multisource" or PIPELINE_VERSION != "1.7.0-multisource":
-        print("FAIL: runtime version constants are not 1.7.0-multisource")
+    if PACKAGE_VERSION != EXPECTED_VERSION or PIPELINE_VERSION != EXPECTED_VERSION:
+        print(f"FAIL: runtime version constants are not {EXPECTED_VERSION}")
         return 1
-    if str(payload.get("config_version", PACKAGE_VERSION)) != "1.7.0-multisource":
-        print("FAIL: config_version must be 1.7.0-multisource")
+    if DISPLAY_VERSION != f"SDE Swing V{EXPECTED_VERSION}":
+        print(f"FAIL: display version must be SDE Swing V{EXPECTED_VERSION}")
+        return 1
+    if str(payload.get("config_version", PACKAGE_VERSION)) != EXPECTED_VERSION:
+        print(f"FAIL: config_version must be {EXPECTED_VERSION}")
         return 1
 
     print(f"OK runtime_config: {provenance['validation_status']}")

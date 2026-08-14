@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
 
 PIPELINE_PATH = ROOT / "config" / "pipeline.json"
 FREEZE_PATH = ROOT / "config" / "audit_quant_freeze.json"
+NON_QUANT_PIPELINE_METADATA_KEYS = frozenset({"config_version"})
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -126,8 +127,15 @@ def validate_quant_freeze(
 ) -> list[str]:
     errors: list[str] = []
 
+    # The immutable audit file records the release config_version that existed
+    # at audit time. Release identity is not a quant parameter, so exclude only
+    # that named metadata key while preserving every protected trading field.
+    protected_pipeline = dict(freeze["pipeline_protected"])
+    for metadata_key in NON_QUANT_PIPELINE_METADATA_KEYS:
+        protected_pipeline.pop(metadata_key, None)
+
     _compare_subset(
-        freeze["pipeline_protected"],
+        protected_pipeline,
         pipeline,
         "pipeline",
         errors,

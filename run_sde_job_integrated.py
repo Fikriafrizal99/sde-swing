@@ -63,7 +63,7 @@ SUPPORTED_JOBS = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="SDE Swing V1.7 integrated runner: deterministic engine + source validation + Gemini interpretation + Telegram UI"
+        description="SDE Swing V1.7.1 integrated runner: deterministic engine + source validation + Gemini interpretation + Telegram UI"
     )
     parser.add_argument("--job", required=True, choices=SUPPORTED_JOBS)
     parser.add_argument("--config", default="config/pipeline.json")

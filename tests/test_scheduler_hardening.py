@@ -155,25 +155,25 @@ class SchedulerHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             ctx = make_ctx(
                 Path(td),
-                config_provenance={"config_version": "1.7.0-multisource"},
+                config_provenance={"config_version": "1.7.1"},
             )
             snapshot = {
                 "status": "VALID",
                 "snapshot_id": "SNAP-CURRENT",
                 "trade_date": "2026-07-24",
-                "config_version": "1.7.0-multisource",
+                "config_version": "1.7.1",
                 "data_quality_status": "VALID_WITH_ZAPI_WARNING",
             }
             payloads = {
                 "technical_snapshot": {
                     "status": "SUCCESS",
                     "trade_date": "2026-07-23",
-                    "config_version": "1.7.0-multisource",
+                    "config_version": "1.7.1",
                 },
                 "post_market": {
                     "status": "SKIPPED",
                     "trade_date": "2026-07-24",
-                    "config_version": "1.7.0-multisource",
+                    "config_version": "1.7.1",
                     "snapshot_id": "SNAP-CURRENT",
                     "snapshot_trade_date": "2026-07-24",
                     "details": {
@@ -401,7 +401,7 @@ class SchedulerHardeningTests(unittest.TestCase):
             ctx = make_ctx(
                 tmp,
                 interactive_broker=True,
-                config_provenance={"config_version": "1.7.0-multisource"},
+                config_provenance={"config_version": "1.7.1"},
             )
             dependency = {
                 "required": ["market_outlook", "post_market", "broker_summary", "broker_multi_day"],
@@ -439,7 +439,7 @@ class SchedulerHardeningTests(unittest.TestCase):
             ctx = make_ctx(
                 tmp,
                 interactive_broker=True,
-                config_provenance={"config_version": "1.7.0-multisource"},
+                config_provenance={"config_version": "1.7.1"},
             )
             dependency = {
                 "required": ["market_outlook", "post_market", "broker_summary", "broker_multi_day"],

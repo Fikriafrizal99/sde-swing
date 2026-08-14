@@ -49,7 +49,7 @@ def _ctx(tmp_path: Path, *, run_id: str = "CONTEXT-RUN") -> RunnerContext:
             }
         },
         calendar_config={"holidays": [], "special_trading_days": []},
-        config_provenance={"config_version": "1.7.0-multisource"},
+        config_provenance={"config_version": "1.7.1"},
     )
 
 

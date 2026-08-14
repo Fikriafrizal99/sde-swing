@@ -8,7 +8,7 @@
 
 [![SDE Swing CI](https://github.com/Fikriafrizal99/sde-swing/actions/workflows/ci.yml/badge.svg?branch=audit%2Fsde-stabilization)](https://github.com/Fikriafrizal99/sde-swing/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/badge/release-v1.6.1-2ea44f?style=flat-square)](https://github.com/Fikriafrizal99/sde-swing/releases/tag/v1.6.1)
-![Development](https://img.shields.io/badge/development-1.7.0--multisource-0A84FF?style=flat-square)
+![Development](https://img.shields.io/badge/development-1.7.1-0A84FF?style=flat-square)
 ![Profile](https://img.shields.io/badge/profile-MODERATE__BASELINE-4c78a8?style=flat-square)
 ![Calibration](https://img.shields.io/badge/calibration-SHADOW__ONLY-f0ad4e?style=flat-square)
 ![Auto Entry](https://img.shields.io/badge/auto--entry-DISABLED-d9534f?style=flat-square)
@@ -27,9 +27,10 @@ A modular, supervised analytics and decision-support system for Indonesian equit
 | Item | Current state |
 |---|---|
 | Latest official release | [`v1.6.1`](https://github.com/Fikriafrizal99/sde-swing/releases/tag/v1.6.1) |
-| Development package | `1.7.0-multisource` |
+| Current development | `V1.7.1` |
+| Current version | `1.7.1` |
 | Development branch | `audit/sde-stabilization` |
-| Stage | Stabilization |
+| Stage | Release preparation |
 | Production profile | `MODERATE_BASELINE` |
 | Calibration | `SHADOW_ONLY` |
 | Automatic entry | Disabled |
@@ -37,7 +38,7 @@ A modular, supervised analytics and decision-support system for Indonesian equit
 | Primary interface | Windows Control Center + Telegram |
 | CI runtime | Python 3.12 |
 
-The development package version is not an official GitHub release. Until a newer tag is published, `v1.6.1` remains the latest official release.
+The current development version is not an official GitHub release. Until a newer tag is published, `v1.6.1` remains the latest official release.
 
 ## Overview
 
@@ -216,7 +217,7 @@ Test totals are intentionally not hardcoded here so CI status remains the curren
 | Channel | Version / Ref | Meaning |
 |---|---|---|
 | Official Release | [`v1.6.1`](https://github.com/Fikriafrizal99/sde-swing/releases/tag/v1.6.1) | Latest published GitHub release |
-| Development Package | `1.7.0-multisource` | Current development configuration generation |
+| Development Package | `1.7.1` | Current development configuration generation |
 | Stabilization Branch | `audit/sde-stabilization` | Current hardening branch |
 
 Historical release material remains available under `docs/archive/` instead of being duplicated in this landing page.

@@ -1,5 +1,5 @@
 {
-  "config_version": "1.7.0-multisource",
+  "config_version": "1.7.1",
   "paths": {
     "normalized_watchlist": "data/input/IDX_ALL_NON_FCA.csv",
     "ihsg_csv": "data/input/IHSG.csv",
@@ -143,8 +143,8 @@
   },
   "package": {
     "name": "SDE Swing",
-    "version": "1.7.0-multisource",
-    "pipeline_version": "1.7.0-multisource"
+    "version": "1.7.1",
+    "pipeline_version": "1.7.1"
   },
   "decision": {
     "policy": "MODERATE_SINGLE_DECISION_V1_6_2",
