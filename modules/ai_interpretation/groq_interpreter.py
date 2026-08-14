@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from swing_utils import write_json
 
 from .gemini_interpreter import (
     IMMUTABLE_FIELDS,
@@ -170,9 +171,7 @@ class GroqInterpreter(_LegacyGeminiInterpreter):
                 "main_risk": result.main_risk,
                 "execution_note": result.execution_note,
             }
-            temporary = path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            temporary.replace(path)
+            write_json(path, payload)
         except Exception:
             return
 
@@ -210,7 +209,7 @@ class GroqInterpreter(_LegacyGeminiInterpreter):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "SDE-Swing/1.7 Groq-API-Client",
+            "User-Agent": "SDE-Swing/1.7.1 Groq-API-Client",
         }
         try:
             response = requests.post(

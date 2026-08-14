@@ -19,7 +19,7 @@ import sqlite3
 import sys
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import pandas as pd
 
@@ -29,6 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from modules.database.swing_history_db import archive_broker, connect, init_schema
 from modules.market_calendar.idx_calendar import is_idx_trading_day
+from modules.portfolio.broker_history_context import _snapshot_is_real_daily
 from swing_utils import ensure_dir, file_sha256, normalize_symbol, write_json
 
 DEFAULT_DB = PROJECT_ROOT / "data/database/sde_swing_history.db"
@@ -111,8 +112,14 @@ def trading_dates(
     return output
 
 
-def open_portfolio_rows(conn: sqlite3.Connection, symbol: str = "") -> list[dict[str, str]]:
-    init_schema(conn)
+def open_portfolio_rows(
+    conn: sqlite3.Connection,
+    symbol: str = "",
+    *,
+    initialize_schema: bool = True,
+) -> list[dict[str, str]]:
+    if initialize_schema:
+        init_schema(conn)
     params: list[Any] = []
     where = "WHERE UPPER(current_status)='OPEN'"
     normalized = normalize_symbol(symbol)
@@ -153,18 +160,69 @@ def existing_broker_dates(
     start_date: str,
     end_date: str,
 ) -> set[str]:
-    init_schema(conn)
+    """Return only broker dates usable as real 1D Portfolio Management history.
+
+    ``broker_snapshots`` intentionally contains both real daily snapshots and
+    aggregate 3D/5D/CUSTOM snapshots.  Portfolio backfill must therefore use
+    the exact same provenance contract as Position Management; otherwise an
+    aggregate ending on a date can falsely suppress the missing DAILY task.
+    """
+    normalized = normalize_symbol(symbol)
+    return existing_broker_dates_by_symbol(
+        conn,
+        {normalized: (start_date, end_date)},
+    ).get(normalized, set())
+
+
+def existing_broker_dates_by_symbol(
+    conn: sqlite3.Connection,
+    date_ranges: Mapping[str, tuple[str, str]],
+    *,
+    initialize_schema: bool = True,
+) -> dict[str, set[str]]:
+    """Load real-daily coverage for all requested symbols in one bounded query."""
+    if initialize_schema:
+        init_schema(conn)
+    normalized_ranges: dict[str, tuple[str, str]] = {}
+    for symbol, bounds in date_ranges.items():
+        normalized = normalize_symbol(symbol)
+        if normalized:
+            normalized_ranges[normalized] = (
+                str(bounds[0])[:10],
+                str(bounds[1])[:10],
+            )
+    if not normalized_ranges:
+        return {}
+
+    symbols = sorted(normalized_ranges)
+    global_start = min(bounds[0] for bounds in normalized_ranges.values())
+    global_end = max(bounds[1] for bounds in normalized_ranges.values())
+    placeholders = ",".join("?" for _ in symbols)
     rows = conn.execute(
-        """
-        SELECT DISTINCT s.broker_date
+        f"""
+        SELECT b.symbol, s.broker_date, s.from_date, s.to_date, s.manifest_json
         FROM broker_summary b
         JOIN broker_snapshots s ON s.broker_snapshot_id=b.broker_snapshot_id
-        WHERE UPPER(b.symbol)=UPPER(?)
+        WHERE UPPER(b.symbol) IN ({placeholders})
           AND COALESCE(s.broker_date, '') BETWEEN ? AND ?
+        ORDER BY b.symbol, s.broker_date, s.created_at, s.broker_snapshot_id
         """,
-        (normalize_symbol(symbol), start_date, end_date),
+        [*symbols, global_start, global_end],
     ).fetchall()
-    return {str(row[0]) for row in rows if row and row[0]}
+
+    existing = {symbol: set() for symbol in symbols}
+    for row in rows:
+        symbol = normalize_symbol(row[0])
+        if symbol not in normalized_ranges:
+            continue
+        snapshot = (row[1], row[2], row[3], row[4])
+        if not _snapshot_is_real_daily(snapshot):
+            continue
+        day = str(row[1] or "").strip()[:10]
+        start_date, end_date = normalized_ranges[symbol]
+        if day and start_date <= day <= end_date:
+            existing[symbol].add(day)
+    return existing
 
 
 def build_tasks(
@@ -175,14 +233,22 @@ def build_tasks(
     to_date: str = "",
     calendar_path: Path = DEFAULT_CALENDAR,
     force: bool = False,
+    initialize_schema: bool = True,
+    state_out: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    if initialize_schema:
+        init_schema(conn)
     holidays, special = load_calendar(calendar_path)
     end = parse_date(to_date, "to-date") if to_date else latest_trading_on_or_before(
         date.today(), holidays=holidays, special_trading_days=special
     )
 
     normalized = normalize_symbol(symbol)
-    positions = open_portfolio_rows(conn, normalized if normalized else "")
+    positions = open_portfolio_rows(
+        conn,
+        normalized if normalized else "",
+        initialize_schema=False,
+    )
     requests: list[dict[str, str]] = []
 
     if normalized:
@@ -210,6 +276,10 @@ def build_tasks(
         if from_date:
             raise ValueError("--from-date hanya boleh dipakai bersama --symbol")
         if not positions:
+            if state_out is not None:
+                state_out.update(
+                    {"positions": [], "existing_by_symbol": {}}
+                )
             return [], {
                 "status": "NO_OPEN_POSITION",
                 "requested_symbols": 0,
@@ -226,6 +296,20 @@ def build_tasks(
                 }
             )
 
+    date_ranges = {
+        request["symbol"]: (request["start"], end.isoformat())
+        for request in requests
+    }
+    existing_by_symbol = (
+        {}
+        if force
+        else existing_broker_dates_by_symbol(
+            conn,
+            date_ranges,
+            initialize_schema=False,
+        )
+    )
+
     tasks: list[dict[str, str]] = []
     skipped_existing = 0
     requested_dates = 0
@@ -238,9 +322,7 @@ def build_tasks(
             special_trading_days=special,
         )
         requested_dates += len(days)
-        existing = set() if force else existing_broker_dates(
-            conn, request["symbol"], start.isoformat(), end.isoformat()
-        )
+        existing = existing_by_symbol.get(request["symbol"], set())
         for day in days:
             if day in existing:
                 skipped_existing += 1
@@ -266,6 +348,13 @@ def build_tasks(
         "to_date": end.isoformat(),
         "force": bool(force),
     }
+    if state_out is not None:
+        state_out.update(
+            {
+                "positions": positions,
+                "existing_by_symbol": existing_by_symbol,
+            }
+        )
     return tasks, meta
 
 
@@ -378,13 +467,33 @@ def status_rows(
     *,
     calendar_path: Path,
     to_date: str = "",
+    initialize_schema: bool = True,
+    positions: list[dict[str, str]] | None = None,
+    existing_by_symbol: Mapping[str, set[str]] | None = None,
 ) -> list[dict[str, Any]]:
+    if initialize_schema:
+        init_schema(conn)
     holidays, special = load_calendar(calendar_path)
     end = parse_date(to_date, "to-date") if to_date else latest_trading_on_or_before(
         date.today(), holidays=holidays, special_trading_days=special
     )
+    selected_positions = positions
+    if selected_positions is None:
+        selected_positions = open_portfolio_rows(conn, initialize_schema=False)
+    date_ranges = {
+        position["symbol"]: (position["buy_date"], end.isoformat())
+        for position in selected_positions
+    }
+    selected_existing = existing_by_symbol
+    if selected_existing is None:
+        selected_existing = existing_broker_dates_by_symbol(
+            conn,
+            date_ranges,
+            initialize_schema=False,
+        )
+
     rows: list[dict[str, Any]] = []
-    for position in open_portfolio_rows(conn):
+    for position in selected_positions:
         start = parse_date(position["buy_date"], "buy_date")
         expected = trading_dates(
             start,
@@ -392,7 +501,7 @@ def status_rows(
             holidays=holidays,
             special_trading_days=special,
         )
-        existing = existing_broker_dates(conn, position["symbol"], start.isoformat(), end.isoformat())
+        existing = selected_existing.get(position["symbol"], set())
         missing = [day for day in expected if day not in existing]
         rows.append(
             {

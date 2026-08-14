@@ -10,8 +10,11 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import re
+import time as time_module
 import uuid
+from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -19,9 +22,9 @@ from typing import Any, Iterable
 import pandas as pd
 
 
-PACKAGE_VERSION = "1.7.0-multisource"
-PIPELINE_VERSION = "1.7.0-multisource"
-DISPLAY_VERSION = "SDE Swing V1.7.0 Multi-Source Runtime"
+PACKAGE_VERSION = "1.7.1"
+PIPELINE_VERSION = "1.7.1"
+DISPLAY_VERSION = "SDE Swing V1.7.1"
 STRATEGY_TYPE = "SWING"
 VALID_DATA_QUALITY = {
     "VALID",
@@ -54,9 +57,80 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
-def write_json(path: Path, payload: dict[str, Any]) -> None:
+def _unique_same_directory_temp(path: Path) -> Path:
+    return path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+
+
+def _replace_atomically(temp: Path, destination: Path) -> None:
+    """Publish ``temp`` while tolerating transient Windows sharing conflicts."""
+
+    attempts = 40 if os.name == "nt" else 1
+    for attempt in range(attempts):
+        try:
+            os.replace(temp, destination)
+            return
+        except PermissionError as exc:
+            transient_windows_conflict = getattr(exc, "winerror", None) in {5, 32}
+            if not transient_windows_conflict or attempt == attempts - 1:
+                raise
+            time_module.sleep(min(0.001 * (attempt + 1), 0.025))
+
+
+@contextmanager
+def _atomic_text_writer(
+    path: Path,
+    *,
+    encoding: str = "utf-8",
+    newline: str | None = "\n",
+):
     ensure_dir(path.parent)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    temp = _unique_same_directory_temp(path)
+    try:
+        with temp.open("w", encoding=encoding, newline=newline) as handle:
+            yield handle
+            handle.flush()
+            os.fsync(handle.fileno())
+        _replace_atomically(temp, path)
+    finally:
+        if temp.exists():
+            try:
+                temp.unlink()
+            except OSError:
+                pass
+
+
+def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    with _atomic_text_writer(path, encoding=encoding) as handle:
+        handle.write(text)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    atomic_write_text(path, text)
+
+
+def write_json(path: Path, payload: Any) -> None:
+    ensure_dir(path.parent)
+    body = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+
+    # FINAL_DECISION_V2 is a shared compatibility artifact. Never allow a
+    # delayed writer to publish a sidecar that describes different CSV bytes.
+    if path.name == "FINAL_DECISION_V2.manifest.json":
+        canonical_csv = path.parent / "FINAL_DECISION_V2.csv"
+        expected_hash = str(
+            payload.get("canonical_output_hash")
+            or payload.get("output_hash")
+            or ""
+        ).strip()
+        actual_hash = file_sha256(canonical_csv) if canonical_csv.exists() else ""
+        if expected_hash and actual_hash and expected_hash != actual_hash:
+            raise RuntimeError(
+                "STALE_FINAL_DECISION_V2_MANIFEST_WRITE_BLOCKED: "
+                f"expected {expected_hash}, canonical {actual_hash}"
+            )
+        _atomic_write_text(path, body)
+        return
+
+    _atomic_write_text(path, body)
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -143,17 +217,20 @@ def read_csv_safely(path: Path) -> pd.DataFrame:
 
 
 def atomic_csv(df: pd.DataFrame, destination: Path, **to_csv_kwargs: Any) -> None:
-    ensure_dir(destination.parent)
-    temp = destination.with_suffix(destination.suffix + ".tmp")
-    df.to_csv(temp, index=False, **to_csv_kwargs)
-    temp.replace(destination)
+    options = dict(to_csv_kwargs)
+    encoding = str(options.pop("encoding", "utf-8"))
+    mode = str(options.pop("mode", "w"))
+    if mode != "w":
+        raise ValueError("atomic_csv only supports overwrite mode='w'")
+    with _atomic_text_writer(
+        destination,
+        encoding=encoding,
+        newline="",
+    ) as handle:
+        df.to_csv(handle, index=False, **options)
 
 
 def write_dict_rows_csv(rows: list[dict[str, Any]], destination: Path) -> None:
-    ensure_dir(destination.parent)
-    if not rows:
-        destination.write_text("", encoding="utf-8")
-        return
     fields: list[str] = []
     seen: set[str] = set()
     for row in rows:
@@ -161,7 +238,13 @@ def write_dict_rows_csv(rows: list[dict[str, Any]], destination: Path) -> None:
             if key not in seen:
                 seen.add(key)
                 fields.append(key)
-    with destination.open("w", encoding="utf-8-sig", newline="") as handle:
+    with _atomic_text_writer(
+        destination,
+        encoding="utf-8-sig",
+        newline="",
+    ) as handle:
+        if not rows:
+            return
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
@@ -229,4 +312,3 @@ def csv_latest_date(path: Path, *date_aliases: str) -> str:
     if parsed.dropna().empty:
         return ""
     return parsed.max().date().isoformat()
-

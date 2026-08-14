@@ -645,6 +645,17 @@ def _reason_items(data: dict[str, Any]) -> list[str]:
         data.get("main_reason_entry"),
     ]
     items = [str(item).strip() for item in structured if str(item or "").strip()]
+    # If PRIMARY is multi-day, include today pulse interpretation and alignment
+    primary = str((data.get("broker_period_type") or data.get("primary_window") or "")).upper()
+    if primary and primary not in ("1D", "1DAY", "DAY"):
+        today_pulse = data.get("today_pulse_interpretation") or data.get("today_pulse_reason")
+        alignment = data.get("broker_alignment") or data.get("broker_flow_alignment") or data.get("alignment")
+        if today_pulse and str(today_pulse).strip():
+            items.append(str(today_pulse).strip())
+        if alignment and str(alignment).strip():
+            # Map or normalize known alignment labels to presentation-safe strings
+            label = str(alignment).strip()
+            items.append(str(label))
     if items:
         return items
     return _text_items(data.get("reason_items") or data.get("main_reason"))
@@ -757,7 +768,7 @@ def format_watchlist_detail(data: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# v1.7 presentation contract
+# Current presentation contract
 # ---------------------------------------------------------------------------
 # The legacy builders above remain import-compatible for older integrations.
 # These definitions are intentionally last so the runtime uses one stable
@@ -1081,6 +1092,22 @@ def format_final_watchlist_summary(data: dict[str, Any]) -> str:
         lines.append(f"{index}. {_safe(str(row.get('symbol') or '').upper(), 'emiten')} — {_status(row.get('decision'))} | {escape_html(confidence)}")
     if not top:
         lines.append("• Belum ada saham aktif dalam Final Watchlist.")
+    # Show PRIMARY info when available and not 1D
+    primary = str((data.get("broker_period_type") or data.get("primary_window") or "")).upper()
+    if primary and primary not in ("1D", "1DAY", "DAY"):
+        source = data.get("broker_period_source") or data.get("broker_period_provenance") or "UNKNOWN"
+        lines += ["", f"• Broker PRIMARY : {escape_html(primary)} — {escape_html(str(source))}"]
+        # compact today pulse counts if present
+        tp_dir = data.get("today_pulse_direction") or data.get("today_pulse_state")
+        tp_conf = data.get("today_pulse_confidence") or data.get("today_pulse_broker_confidence")
+        if tp_dir or tp_conf:
+            tp_line = "• TODAY PULSE (1D) : " + (str(tp_dir).upper() if tp_dir else "")
+            if tp_conf not in (None, ""):
+                try:
+                    tp_line += f" | {_pct(float(tp_conf), 1)}"
+                except Exception:
+                    tp_line += f" | {str(tp_conf)}"
+            lines.append(tp_line)
     lines += [
         "",
         SEPARATOR,
@@ -1162,9 +1189,24 @@ def format_watchlist_detail(data: dict[str, Any]) -> str:
             f"Confidence: {escape_html(shared_format_percent(data.get('broker_confidence', data.get('broker_score')), 1))}",
             f"Net Flow: {escape_html(shared_format_money(data.get('broker_net_flow')))}",
             f"Buy / Sell: {escape_html(shared_format_percent(data.get('broker_buy_ratio'), 1, ratio_aware=True))} / {escape_html(shared_format_percent(data.get('broker_sell_ratio'), 1, ratio_aware=True))}",
-            f"Flow: {_human(data.get('broker_alignment'), 'data tidak tersedia')}",
         ),
         "",
+    ]
+    # Only show alignment and Today Pulse when PRIMARY is multi-day
+    primary = str((data.get("broker_period_type") or data.get("primary_window") or "")).upper()
+    if primary and primary not in ("1D", "1DAY", "DAY"):
+        alignment = data.get("broker_alignment") or data.get("broker_flow_alignment") or data.get("alignment")
+        if alignment:
+            lines += ["", *_section("🔗 ALIGNMENT", f"Flow Status: {_human(alignment, 'data tidak tersedia')}")]
+        tp_dir = data.get("today_pulse_direction") or data.get("today_pulse_state")
+        tp_conf = data.get("today_pulse_confidence") or data.get("today_pulse_broker_confidence")
+        if tp_dir or tp_conf:
+            tp_lines = [f"Direction: {_human(tp_dir, '') if tp_dir else 'N/A'}"]
+            if tp_conf not in (None, ""):
+                tp_lines.append(f"Confidence: {escape_html(shared_format_percent(tp_conf, 1))}")
+            lines += ["", *_section("📣 TODAY PULSE (1D)", *tp_lines)]
+
+    lines += [
         *_section("🟢 TOP BUYER", *_participant_lines(top_buyers)),
         "",
         *_section("🔴 TOP SELLER", *_participant_lines(top_sellers)),

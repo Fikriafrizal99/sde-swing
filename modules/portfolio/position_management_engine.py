@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from swing_utils import find_col, normalize_symbol
+from swing_utils import atomic_csv, atomic_write_text, find_col, normalize_symbol, write_json
 from modules.job_runner.delivery import deliver
 from modules.job_runner.reports import ReportPayload
 from modules.job_runner.runtime import load_context, read_json, resolve
@@ -289,10 +289,29 @@ def technical_snapshot(historical_dir: Path, symbol: str, buy_date: str) -> dict
 
     features = features.sort_values("Date").reset_index(drop=True)
     latest = features.iloc[-1]
+    feature_dates = pd.to_datetime(features["Date"], errors="coerce").dt.normalize()
     buy_ts = pd.to_datetime(buy_date, errors="coerce")
-    since = features[pd.to_datetime(features["Date"], errors="coerce") >= buy_ts].copy() if pd.notna(buy_ts) else features.copy()
-    if since.empty:
-        since = features.tail(1).copy()
+    buy_day = buy_ts.normalize() if pd.notna(buy_ts) else pd.NaT
+
+    # Daily candles do not reveal whether the buy happened before or after the
+    # intraday High/Low on the BUY date.  Never use that day's High/Low to
+    # infer TP/SL events.  The BUY-date Close is safe as an end-of-session
+    # observation, while all later sessions may use their full High/Low range.
+    if pd.notna(buy_day):
+        later = features.loc[feature_dates > buy_day].copy()
+        buy_rows = features.loc[feature_dates == buy_day]
+        buy_close = as_float(buy_rows.iloc[-1].get("Close")) if not buy_rows.empty else None
+    else:
+        later = features.copy()
+        buy_close = None
+
+    event_highs = pd.to_numeric(later.get("High", pd.Series(dtype=float)), errors="coerce").dropna().tolist()
+    event_lows = pd.to_numeric(later.get("Low", pd.Series(dtype=float)), errors="coerce").dropna().tolist()
+    if buy_close is not None:
+        event_highs.append(buy_close)
+        event_lows.append(buy_close)
+    max_high_since_buy = max(event_highs) if event_highs else None
+    min_low_since_buy = min(event_lows) if event_lows else None
 
     current = as_float(latest.get("Close"))
     sma20 = as_float(latest.get("SMA_20"))
@@ -335,8 +354,9 @@ def technical_snapshot(historical_dir: Path, symbol: str, buy_date: str) -> dict
         "strong_bullish": strong_bullish,
         "bearish": bearish,
         "overextended": overextended,
-        "max_high_since_buy": as_float(pd.to_numeric(since["High"], errors="coerce").max()),
-        "min_low_since_buy": as_float(pd.to_numeric(since["Low"], errors="coerce").min()),
+        "max_high_since_buy": max_high_since_buy,
+        "min_low_since_buy": min_low_since_buy,
+        "buy_day_range_policy": "CLOSE_ONLY_ON_BUY_DATE",
     }
 
 
@@ -767,14 +787,15 @@ def write_outputs(output_root: Path, analysis_date: str, results: list[dict[str,
     csv_path = folder / "ACTIVE_PORTFOLIO_MANAGEMENT.csv"
     json_path = folder / "ACTIVE_PORTFOLIO_MANAGEMENT.json"
     txt_path = folder / "ACTIVE_PORTFOLIO_TELEGRAM.txt"
-    pd.DataFrame(results).to_csv(csv_path, index=False, encoding="utf-8-sig")
-    json_path.write_text(json.dumps(results, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-    txt_path.write_text(text, encoding="utf-8")
+    frame = pd.DataFrame(results)
+    atomic_csv(frame, csv_path, encoding="utf-8-sig")
+    write_json(json_path, results)
+    atomic_write_text(txt_path, text)
     latest = output_root / "latest"
     latest.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(results).to_csv(latest / csv_path.name, index=False, encoding="utf-8-sig")
-    (latest / json_path.name).write_text(json_path.read_text(encoding="utf-8"), encoding="utf-8")
-    (latest / txt_path.name).write_text(text, encoding="utf-8")
+    atomic_csv(frame, latest / csv_path.name, encoding="utf-8-sig")
+    write_json(latest / json_path.name, results)
+    atomic_write_text(latest / txt_path.name, text)
     return {"csv": str(csv_path), "json": str(json_path), "telegram": str(txt_path)}
 
 

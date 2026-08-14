@@ -10,7 +10,7 @@ echo ================================================================
 echo                SDE SWING - FINAL WATCHLIST
 echo ================================================================
 echo.
-echo [1] Normal - broker break jika data hari ini belum tersedia
+echo [1] Normal - pilih Broker Summary 1D / 3D / 5D / Custom / Reuse
 echo [2] Preview existing - tidak kirim Telegram
 echo [3] Kirim ulang - delivery-only hasil hari trading terakhir
 echo [4] Cek status Final Watchlist
@@ -23,18 +23,23 @@ call tools\set_python_cmd.bat
 if not defined SDE_PYTHON_CMD goto PYTHON_MISSING
 if "%MODE%"=="4" goto STATUS_ONLY
 if "%MODE%"=="3" goto RESEND
+if "%MODE%"=="1" goto BROKER_PERIOD_NORMAL
+if "%MODE%"=="2" goto PREVIEW_EXISTING
+goto MENU
 
-set "ARGS="
-if "%MODE%"=="1" set "ARGS=--job final_watchlist --interactive-broker"
-if "%MODE%"=="2" set "ARGS=--job final_watchlist --preview-existing --no-telegram"
-if not defined ARGS goto MENU
-%SDE_PYTHON_CMD% -u run_sde_job_integrated.py %ARGS%
+:BROKER_PERIOD_NORMAL
+%SDE_PYTHON_CMD% -u tools\run_final_watchlist_broker_period.py
+set "RC=!ERRORLEVEL!"
+goto STATUS
+
+:PREVIEW_EXISTING
+%SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job final_watchlist --preview-existing --no-telegram
 set "RC=!ERRORLEVEL!"
 goto STATUS
 
 :RESEND
 set "RESEND_DATE="
-for /f "delims=" %%D in ('%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py 2^>nul') do set "RESEND_DATE=%%D"
+for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py" 2^>nul`) do set "RESEND_DATE=%%D"
 if not defined RESEND_DATE goto RESEND_DATE_FAILED
 
 echo.

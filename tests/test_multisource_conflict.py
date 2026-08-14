@@ -48,14 +48,20 @@ def test_field_level_resolution_records_candidates():
     assert fr.difference == 170.0
 
 
-def test_market_date_mismatch_not_merged():
+def test_market_date_mismatch_fails_closed_without_winner():
     resolver = ConflictResolver(source_priorities=PRIORITIES)
     a = _bar("ZAPI_IDX", 1030.0)
     b = _bar("HISTORICAL_PROVIDER", 1030.0)
     b.market_date = "2026-01-02"
     result = resolver.resolve([a, b])
-    assert result.conflict_status == C.CONFLICT_UNRESOLVED
-    assert "MARKET_DATE_MISMATCH" in result.reason
+    assert result.conflict_status == C.CONFLICT_FAIL_CLOSED
+    assert result.fail_closed is True
+    assert result.record is None
+    assert "MARKET_DATE_MISMATCH_FAIL_CLOSED" in result.reason
+    assert a.conflict_status == C.CONFLICT_FAIL_CLOSED
+    assert b.conflict_status == C.CONFLICT_FAIL_CLOSED
+    assert a.quality_status == C.QUALITY_REJECTED
+    assert b.quality_status == C.QUALITY_REJECTED
 
 
 def test_suspend_conflict_fails_closed():

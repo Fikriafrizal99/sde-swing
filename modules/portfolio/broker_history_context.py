@@ -13,16 +13,19 @@ exists. A current broker signal with fewer than three observations is therefore
 kept as a warning and cannot by itself drive Position Management.
 """
 
+import hashlib
+import inspect
 import json
 import math
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from modules.broker_fusion.broker_fusion import broker_score_frame
+from modules.broker_bridge.broker_period_context import trading_sessions_between
 from modules.database.swing_history_db import archive_broker, init_schema
 
 BROKER_CONTEXT_SCHEMA = """
@@ -56,6 +59,22 @@ CREATE TABLE IF NOT EXISTS position_broker_context_history (
 );
 CREATE INDEX IF NOT EXISTS idx_position_broker_context_position_date
     ON position_broker_context_history(position_id, analysis_date);
+
+CREATE TABLE IF NOT EXISTS portfolio_broker_scored_daily (
+    broker_snapshot_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    broker_date TEXT NOT NULL,
+    scoring_version TEXT NOT NULL,
+    state TEXT NOT NULL,
+    score REAL,
+    confidence REAL,
+    direction_score REAL,
+    net_flow REAL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (broker_snapshot_id, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_portfolio_broker_scored_daily_date
+    ON portfolio_broker_scored_daily(symbol, broker_date);
 """
 
 _CANONICAL_ALIASES: dict[str, tuple[str, ...]] = {
@@ -74,6 +93,10 @@ _CANONICAL_ALIASES: dict[str, tuple[str, ...]] = {
 
 def _norm(value: object) -> str:
     return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
+
+
+def _flag(value: Any) -> bool:
+    return value is True or str(value).strip().upper() in {"1", "TRUE", "YES", "Y"}
 
 
 def _as_float(value: Any) -> float | None:
@@ -102,18 +125,125 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def sync_latest_broker_summary(conn: sqlite3.Connection, broker_path: Path) -> str:
-    """Archive the current Broker Summary into the shared Swing history DB.
+    """Archive only a real 1D Broker Summary into portfolio history.
 
-    This is idempotent because ``archive_broker`` keys a snapshot by broker date
-    and file hash. A later normal pipeline archive of the same file therefore
-    upserts the same snapshot instead of duplicating it.
+    The canonical Final Watchlist file can intentionally contain a 3D/5D/
+    CUSTOM PRIMARY snapshot.  Its sidecar is authoritative; such a snapshot
+    is context for Final Watchlist only and is rejected here before it reaches
+    the portfolio daily archive.  Legacy callers without a sidecar are still
+    supported when the CSV itself proves ``FROM_DATE == TO_DATE``.
     """
     if not broker_path.exists() or broker_path.stat().st_size == 0:
         return ""
     ensure_schema(conn)
-    snapshot_id = archive_broker(conn, broker_path)
+    sidecar = broker_path.with_suffix(".manifest.json")
+    manifest = _daily_manifest_from_source(broker_path, sidecar if sidecar.exists() else None)
+    if not manifest:
+        return ""
+    snapshot_id = archive_broker(
+        conn,
+        broker_path,
+        sidecar if sidecar.exists() else None,
+        manifest_payload=manifest,
+    )
     conn.commit()
     return snapshot_id
+
+
+def _daily_manifest_from_source(path: Path, sidecar: Path | None) -> dict[str, Any]:
+    """Return a normalized real-1D provenance envelope or ``{}``.
+
+    An explicit sidecar wins.  When it is absent, exact same-day period
+    columns are the minimum evidence required for backward compatibility.
+    Missing/ambiguous dates are fail-closed so an aggregate cannot be guessed
+    into a daily observation.
+    """
+    explicit: dict[str, Any] = {}
+    if sidecar and sidecar.exists():
+        try:
+            payload = json.loads(sidecar.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                explicit = dict(payload)
+        except Exception:
+            return {}
+
+    period_type = str(explicit.get("broker_period_type") or "").strip().upper()
+    source = str(
+        explicit.get("broker_period_source")
+        or explicit.get("source")
+        or ""
+    ).strip().upper()
+    explicit_eligible = explicit.get("daily_history_eligible", period_type == "1D")
+    explicit_eligible_flag = _flag(explicit_eligible)
+    if explicit and (
+        _flag(explicit.get("aggregate_snapshot"))
+        or not explicit_eligible_flag
+        or (period_type and period_type != "1D")
+        or not source
+        or source not in {"STOCKBIT_1D", "STOCKBIT"}
+        or source in {"INTERNAL_DAILY_ROLLUP", "STOCKBIT_AGGREGATE_EXPORT", "CUSTOM_AGGREGATE"}
+    ):
+        return {}
+
+    try:
+        frame = pd.read_csv(path, low_memory=False)
+    except Exception:
+        return {}
+    from_column = next((column for column in frame.columns if _norm(column) in {"FROMDATE", "BROKERFROMDATE"}), None)
+    to_column = next((column for column in frame.columns if _norm(column) in {"TODATE", "BROKERTODATE"}), None)
+    if to_column is None or frame.empty:
+        return {}
+    from_values = pd.to_datetime(frame[from_column], errors="coerce") if from_column is not None else pd.Series(pd.NaT, index=frame.index)
+    to_values = pd.to_datetime(frame[to_column], errors="coerce")
+    valid = from_values.notna() & to_values.notna()
+    # A few pre-period portfolio fixtures only carried TO_DATE.  Keep that
+    # narrow compatibility path, while real validated aggregate exports still
+    # carry both FROM_DATE and TO_DATE and are rejected when they span dates.
+    if from_column is None and not explicit:
+        valid = to_values.notna()
+    if not bool(valid.any()):
+        return {}
+    normalized_from = set(from_values.loc[valid].dt.date.astype(str))
+    normalized_to = set(to_values.loc[valid].dt.date.astype(str))
+    if from_column is None:
+        normalized_from = set(normalized_to)
+    if len(normalized_from) != 1 or len(normalized_to) != 1 or normalized_from != normalized_to:
+        return {}
+    market_date = next(iter(normalized_to))
+    inferred = {
+        "broker_date": market_date,
+        "from_date": market_date,
+        "to_date": market_date,
+        "broker_period_type": "1D",
+        "broker_period_start": market_date,
+        "broker_period_end": market_date,
+        "broker_trading_days": 1,
+        "broker_period_source": "STOCKBIT_1D",
+        "daily_history_eligible": True,
+        "aggregate_snapshot": False,
+        "broker_period_complete": True,
+        "broker_session_dates": [market_date],
+    }
+    inferred.update(explicit)
+    # A sidecar with incomplete 1D metadata must not downgrade the CSV proof
+    # into an aggregate or silently accept a different date.
+    if str(inferred.get("broker_period_type") or "1D").upper() != "1D":
+        return {}
+    inferred_eligible = inferred.get("daily_history_eligible", True)
+    if not _flag(inferred_eligible):
+        return {}
+    inferred["broker_period_source"] = "STOCKBIT_1D"
+    inferred["broker_period_type"] = "1D"
+    inferred["broker_period_start"] = market_date
+    inferred["broker_period_end"] = market_date
+    inferred["broker_date"] = market_date
+    inferred["from_date"] = market_date
+    inferred["to_date"] = market_date
+    inferred["broker_trading_days"] = 1
+    inferred["broker_session_dates"] = [market_date]
+    inferred["daily_history_eligible"] = True
+    inferred["aggregate_snapshot"] = False
+    return inferred
 
 
 def _canonicalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -128,22 +258,152 @@ def _canonicalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _score_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _broker_scoring_version() -> str:
+    """Fingerprint the exact scoring implementation used for a frozen daily row."""
+    try:
+        source = inspect.getsource(broker_score_frame)
+    except (OSError, TypeError):
+        return "broker_score_frame:unknown"
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
+    return f"broker_score_frame:{digest}"
+
+
+def _score_records(
+    conn: sqlite3.Connection,
+    records: list[dict[str, Any]],
+    symbol: str,
+) -> list[dict[str, Any]]:
+    """Use immutable portfolio scoring once a daily snapshot has been seen.
+
+    Existing raw Broker Summary rows remain untouched. On first portfolio use,
+    the current broker formula is applied once and persisted by snapshot+symbol.
+    Future formula revisions therefore cannot retroactively rewrite historical
+    1D direction/score/confidence used by an already captured portfolio day.
+    """
     if not records:
         return []
     payloads = [_canonicalize_payload(dict(record.get("payload") or {})) for record in records]
     scored = broker_score_frame(pd.DataFrame(payloads))
+    scoring_version = _broker_scoring_version()
     output: list[dict[str, Any]] = []
-    for record, (_, row) in zip(records, scored.iterrows()):
+    inserted = False
+
+    for record, payload, (_, row) in zip(records, payloads, scored.iterrows()):
+        snapshot_id = str(record.get("snapshot_id") or "")
+        cached = conn.execute(
+            """
+            SELECT scoring_version, state, score, confidence, direction_score, net_flow
+            FROM portfolio_broker_scored_daily
+            WHERE broker_snapshot_id=? AND symbol=?
+            """,
+            (snapshot_id, symbol),
+        ).fetchone()
+        if cached:
+            state = str(cached[1] or "NEUTRAL").upper()
+            score = _as_float(cached[2])
+            confidence = _as_float(cached[3])
+            direction_score = _as_float(cached[4])
+            net_flow = _as_float(cached[5]) or 0.0
+            frozen_version = str(cached[0] or "UNKNOWN")
+        else:
+            state = str(row.get("Broker_Direction", "NEUTRAL") or "NEUTRAL").upper()
+            score = _as_float(row.get("Broker_Score"))
+            confidence = _as_float(row.get("Broker_Confidence"))
+            direction_score = _as_float(row.get("Broker_Direction_Score"))
+            net_flow = _as_float(_payload_get(payload, "NET_FLOW")) or 0.0
+            frozen_version = scoring_version
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO portfolio_broker_scored_daily (
+                    broker_snapshot_id, symbol, broker_date, scoring_version,
+                    state, score, confidence, direction_score, net_flow, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot_id,
+                    symbol,
+                    str(record.get("broker_date") or "")[:10],
+                    frozen_version,
+                    state,
+                    score,
+                    confidence,
+                    direction_score,
+                    net_flow,
+                    datetime.now().astimezone().isoformat(timespec="seconds"),
+                ),
+            )
+            inserted = True
+
         output.append({
             **record,
-            "state": str(row.get("Broker_Direction", "NEUTRAL") or "NEUTRAL").upper(),
-            "score": _as_float(row.get("Broker_Score")),
-            "confidence": _as_float(row.get("Broker_Confidence")),
-            "direction_score": _as_float(row.get("Broker_Direction_Score")),
-            "net_flow": _as_float(row.get("NET_FLOW")) or 0.0,
+            "state": state,
+            "score": score,
+            "confidence": confidence,
+            "direction_score": direction_score,
+            "net_flow": net_flow,
+            "scoring_version": frozen_version,
         })
+
+    if inserted:
+        conn.commit()
     return output
+
+
+def _snapshot_is_real_daily(row: sqlite3.Row) -> bool:
+    """Check snapshot provenance before exposing it to Portfolio Management."""
+    try:
+        manifest = json.loads(row[3] or "{}")
+    except Exception:
+        manifest = {}
+    if not isinstance(manifest, dict):
+        manifest = {}
+    period_type = str(manifest.get("broker_period_type") or "").strip().upper()
+    source = str(
+        manifest.get("broker_period_source")
+        or manifest.get("source")
+        or ""
+    ).strip().upper()
+    if manifest:
+        eligible = manifest.get("daily_history_eligible")
+        eligible_flag = _flag(eligible)
+        return bool(
+            period_type == "1D"
+            and eligible_flag
+            and not _flag(manifest.get("aggregate_snapshot"))
+            and source in {"STOCKBIT_1D", "STOCKBIT"}
+        )
+
+    # Compatibility for old hand-created/legacy daily snapshots.  An old
+    # aggregate archived without provenance has an empty FROM_DATE and is
+    # therefore rejected instead of being guessed as a one-day observation.
+    broker_date = str(row[0] or "").strip()[:10]
+    from_date = str(row[1] or "").strip()[:10]
+    to_date = str(row[2] or "").strip()[:10]
+    return bool(broker_date and from_date == broker_date and to_date == broker_date)
+
+
+def _expected_sessions(size: int, analysis_date: str) -> list[str]:
+    """Return the exact latest IDX sessions ending at ``analysis_date``."""
+    try:
+        end = date.fromisoformat(str(analysis_date).strip()[:10])
+        # 7D is retained for compatibility with the existing portfolio report;
+        # all windows still use calendar sessions rather than row positions.
+        span = max(45, size * 8)
+        sessions = trading_sessions_between(end - timedelta(days=span), end)
+        return sessions[-size:]
+    except (TypeError, ValueError, OSError):
+        return []
+
+
+def _sessions_since(buy_date: str, analysis_date: str) -> list[str]:
+    try:
+        start = date.fromisoformat(str(buy_date).strip()[:10])
+        end = date.fromisoformat(str(analysis_date).strip()[:10])
+        if start > end:
+            return []
+        return trading_sessions_between(start, end)
+    except (TypeError, ValueError, OSError):
+        return []
 
 
 def load_broker_history(
@@ -156,7 +416,8 @@ def load_broker_history(
     ensure_schema(conn)
     rows = conn.execute(
         """
-        SELECT s.broker_date, s.created_at, b.row_json
+        SELECT s.broker_date, s.from_date, s.to_date, s.manifest_json,
+               s.created_at, s.broker_snapshot_id, s.snapshot_hash, b.row_json
         FROM broker_summary b
         JOIN broker_snapshots s ON s.broker_snapshot_id=b.broker_snapshot_id
         WHERE UPPER(b.symbol)=UPPER(?)
@@ -171,19 +432,33 @@ def load_broker_history(
     # Keep only the most recently archived observation for that market date.
     by_date: dict[str, dict[str, Any]] = {}
     for row in rows:
-        broker_date = str(row[0] or "").strip()
+        if not _snapshot_is_real_daily(row):
+            continue
+        broker_date = str(row[0] or "").strip()[:10]
         if not broker_date:
             continue
         try:
-            payload = json.loads(row[2] or "{}")
+            session_date = date.fromisoformat(broker_date)
+        except ValueError:
+            continue
+        # A daily row on a weekend/holiday is not a valid IDX session.  The
+        # CSV can remain archived for audit, but it must not fill a portfolio
+        # session window.
+        if session_date.weekday() >= 5 or broker_date not in trading_sessions_between(session_date, session_date):
+            continue
+        try:
+            payload = json.loads(row[7] or "{}")
         except Exception:
             payload = {}
         by_date[broker_date] = {
             "broker_date": broker_date,
-            "created_at": str(row[1] or ""),
+            "created_at": str(row[4] or ""),
+            "snapshot_id": str(row[5] or ""),
+            "capture_hash": str(row[6] or ""),
+            "source": "STOCKBIT_1D",
             "payload": payload if isinstance(payload, dict) else {},
         }
-    return _score_records([by_date[key] for key in sorted(by_date)])
+    return _score_records(conn, [by_date[key] for key in sorted(by_date)], symbol)
 
 
 def _context_from_direction_score(value: float | None) -> str:
@@ -266,18 +541,50 @@ def _summary_metrics(subset: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def summarize_window(records: list[dict[str, Any]], size: int | None = None) -> dict[str, Any]:
-    subset = records[-size:] if size else list(records)
+def summarize_window(
+    records: list[dict[str, Any]],
+    size: int | None = None,
+    *,
+    expected_sessions: list[str] | None = None,
+) -> dict[str, Any]:
+    exact_window = expected_sessions is not None
+    if exact_window:
+        expected = [str(value)[:10] for value in expected_sessions or [] if str(value).strip()]
+        expected_set = set(expected)
+        by_date = {
+            str(record.get("broker_date") or "")[:10]: record
+            for record in records
+            if str(record.get("broker_date") or "")[:10] in expected_set
+        }
+        subset = [by_date[value] for value in expected if value in by_date]
+    else:
+        expected = []
+        subset = records[-size:] if size else list(records)
     summary = _summary_metrics(subset)
     if size is not None:
         summary["required_observations"] = size
-        if len(subset) < size:
+        summary["expected_sessions"] = expected or [str(item.get("broker_date") or "") for item in subset]
+        summary["observed_sessions"] = [str(item.get("broker_date") or "") for item in subset]
+        summary["missing_sessions"] = [value for value in expected if value not in {item.get("broker_date") for item in subset}]
+        summary["coverage"] = len(subset) / size if size else 0.0
+        summary["coverage_text"] = f"{len(subset)}/{size}"
+        if len(subset) < size or summary["missing_sessions"]:
             summary["context"] = "INSUFFICIENT_DATA"
             summary["coverage_status"] = "INSUFFICIENT_DATA"
             return summary
         summary["coverage_status"] = "COMPLETE"
     else:
-        summary["coverage_status"] = "PARTIAL_HISTORY" if len(subset) < 3 else "AVAILABLE"
+        summary["actual_session_count"] = len(subset)
+        summary["expected_sessions"] = expected
+        summary["observed_sessions"] = [str(item.get("broker_date") or "") for item in subset]
+        summary["missing_sessions"] = [
+            value for value in expected
+            if value not in {str(item.get("broker_date") or "")[:10] for item in subset}
+        ]
+        summary["expected_session_count"] = len(expected)
+        summary["coverage"] = len(subset) / len(expected) if expected else None
+        summary["coverage_text"] = f"{len(subset)}/{len(expected)}" if expected else ""
+        summary["coverage_status"] = "PARTIAL_HISTORY" if len(subset) < 3 or summary["missing_sessions"] else "AVAILABLE"
     return summary
 
 
@@ -333,23 +640,25 @@ def _effective_state(
     cs = str(since.get("context") or "UNAVAILABLE").upper()
     n3 = int(d3.get("observation_count") or 0)
     ns = int(since.get("observation_count") or 0)
+    d3_complete = str(d3.get("coverage_status") or "").upper() == "COMPLETE"
+    d5_complete = str(d5.get("coverage_status") or "").upper() == "COMPLETE"
 
     if current == "UNAVAILABLE":
         return "UNAVAILABLE", "current broker data unavailable"
-    if n3 < 3:
+    if n3 < 3 or not d3_complete:
         return "NEUTRAL", f"current {current.lower()} is warning-only; 3D history insufficient ({n3}/3)"
 
     if current == "DISTRIBUTION":
         if c3 == "DISTRIBUTION":
             return "DISTRIBUTION", "current distribution confirmed by complete 3D broker history"
-        if ns >= 5 and (c5 == "ACCUMULATION" or cs == "ACCUMULATION"):
+        if d5_complete and ns >= 5 and (c5 == "ACCUMULATION" or cs == "ACCUMULATION"):
             return "NEUTRAL", "current distribution conflicts with accumulated broker history"
         return "NEUTRAL", "current distribution is not confirmed by 3D broker history"
 
     if current == "ACCUMULATION":
         if c3 == "ACCUMULATION":
             return "ACCUMULATION", "current accumulation confirmed by complete 3D broker history"
-        if ns >= 5 and (c5 == "DISTRIBUTION" or cs == "DISTRIBUTION"):
+        if d5_complete and ns >= 5 and (c5 == "DISTRIBUTION" or cs == "DISTRIBUTION"):
             return "NEUTRAL", "current accumulation conflicts with persistent broker history"
         return "NEUTRAL", "current accumulation is not confirmed by 3D broker history"
 
@@ -368,26 +677,50 @@ def build_position_broker_context(
     analysis_date: str,
 ) -> dict[str, Any]:
     records = load_broker_history(conn, symbol, buy_date, analysis_date)
-    d3 = summarize_window(records, 3)
-    d5 = summarize_window(records, 5)
-    d7 = summarize_window(records, 7)
-    since = summarize_window(records, None)
+    sessions_3d = _expected_sessions(3, analysis_date)
+    sessions_5d = _expected_sessions(5, analysis_date)
+    sessions_7d = _expected_sessions(7, analysis_date)
+    since_sessions = _sessions_since(buy_date, analysis_date)
+    d3 = summarize_window(records, 3, expected_sessions=sessions_3d)
+    d5 = summarize_window(records, 5, expected_sessions=sessions_5d)
+    d7 = summarize_window(records, 7, expected_sessions=sessions_7d)
+    since = summarize_window(records, None, expected_sessions=since_sessions)
     current_record = records[-1] if records else {}
-    current_state = str(current_record.get("state") or "UNAVAILABLE").upper()
+    current_date = str(current_record.get("broker_date") or "")[:10]
+    analysis_date_text = str(analysis_date)[:10]
+    today_pulse_available = bool(current_date and current_date == analysis_date_text)
+    historical_latest_state = str(current_record.get("state") or "UNAVAILABLE").upper()
+    # The latest archived daily row is useful historical context, but it must
+    # not masquerade as today's primary 1D pulse when the current session is
+    # missing.  Keep its date/state separately for auditability.
+    current_for_pulse = current_record if today_pulse_available else {}
+    current_state = (
+        historical_latest_state if today_pulse_available else "UNAVAILABLE"
+    )
     effective_state, effective_reason = _effective_state(current_state, d3, d5, since)
     top_accumulation, top_distribution = _actor_totals(records)
-    current_accumulation, current_distribution = _actor_totals(records[-1:])
+    current_accumulation, current_distribution = _actor_totals(
+        records[-1:] if today_pulse_available else []
+    )
 
     return {
         "symbol": symbol,
         "buy_date": buy_date,
         "analysis_date": analysis_date,
         "broker_data_date": str(current_record.get("broker_date") or ""),
+        "today_pulse_available": today_pulse_available,
+        "today_pulse_status": "AVAILABLE" if today_pulse_available else "NOT_AVAILABLE",
+        "today_pulse_source": current_for_pulse.get("source", "STOCKBIT_1D") if current_for_pulse else "NOT_AVAILABLE",
         "observation_count": len(records),
         "current_state": current_state,
-        "current_score": current_record.get("score"),
-        "current_confidence": current_record.get("confidence"),
-        "current_net_flow": current_record.get("net_flow"),
+        "latest_historical_state": historical_latest_state,
+        "latest_historical_date": current_date,
+        "current_score": current_for_pulse.get("score"),
+        "current_confidence": current_for_pulse.get("confidence"),
+        "current_net_flow": current_for_pulse.get("net_flow"),
+        "current_scoring_version": current_for_pulse.get("scoring_version", ""),
+        "current_source": current_for_pulse.get("source", "STOCKBIT_1D") if current_for_pulse else "NOT_AVAILABLE",
+        "current_snapshot_id": current_for_pulse.get("snapshot_id", "") if current_for_pulse else "",
         "effective_state": effective_state,
         "effective_reason": effective_reason,
         "3D": d3,

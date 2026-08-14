@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 import pandas as pd
+from swing_utils import atomic_csv, write_json
 
 from modules.data_sources.base import SourceNotConfigured, SourceUnavailable
 from modules.data_sources.config import load_data_source_config
@@ -623,8 +624,8 @@ def _write_outputs(
     latest_csv = out / f"yahoo_zapi_reconciliation_{market_date}.csv"
     latest_json = out / f"yahoo_zapi_reconciliation_{market_date}.json"
     frame = pd.DataFrame(rows)
-    frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    frame.to_csv(latest_csv, index=False, encoding="utf-8-sig")
+    atomic_csv(frame, csv_path, encoding="utf-8-sig")
+    atomic_csv(frame, latest_csv, encoding="utf-8-sig")
     payload = dict(summary)
     payload["output_paths"] = {
         "csv": str(csv_path), "json": str(json_path),
@@ -632,9 +633,8 @@ def _write_outputs(
     }
     payload["csv_path"] = str(csv_path)
     payload["json_path"] = str(json_path)
-    rendered = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
-    json_path.write_text(rendered, encoding="utf-8")
-    latest_json.write_text(rendered, encoding="utf-8")
+    write_json(json_path, payload)
+    write_json(latest_json, payload)
     audit_path = out / "zapi_reconciliation_audit.jsonl"
     audit = {key: value for key, value in payload.items() if key != "rows"}
     with audit_path.open("a", encoding="utf-8") as handle:

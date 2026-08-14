@@ -1,4 +1,6 @@
-# SDE Swing V1.7.0 Multi-Source
+# SDE Swing V1.7.1
+
+Multi-Source Decision Support System
 
 The official entry point is `run_sde_job.py`. It accepts a job name and creates
 one Runtime Context. Legacy scripts remain available for compatibility, but

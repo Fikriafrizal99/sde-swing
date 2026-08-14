@@ -25,6 +25,7 @@ import pandas as pd
 from modules.data_sources.base import SourceError
 from modules.data_sources.config import load_data_source_config
 from modules.data_sources.zapi_idx_adapter import ZapiIdxAdapter, ZapiIdxClient, canonical_symbol
+from swing_utils import atomic_csv, write_json as _durable_write_json
 
 
 EventCallback = Callable[[str, dict[str, Any]], None]
@@ -54,10 +55,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(dict(payload), ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-    temporary.replace(path)
+    _durable_write_json(path, dict(payload))
 
 
 def _text(value: Any) -> str:
@@ -494,10 +492,7 @@ class ZapiEnrichmentService:
                 "Provider": "ZAPI_IDX",
                 "Retrieved_Date": record.get("cache_date", ""),
             })
-        output.parent.mkdir(parents=True, exist_ok=True)
-        temporary = output.with_name(output.name + ".tmp")
-        pd.DataFrame(rows).to_csv(temporary, index=False, encoding="utf-8-sig")
-        temporary.replace(output)
+        atomic_csv(pd.DataFrame(rows), output, encoding="utf-8-sig")
 
 
 def load_cached_enrichment(path: str | Path, trade_date: date | None = None) -> dict[str, Any]:

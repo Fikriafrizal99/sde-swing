@@ -139,10 +139,10 @@ def test_final_watchlist_uses_agreed_format_and_exports_active_rows(tmp_path: Pa
     for section in required_sections:
         assert section in text
     assert "S1 | BREAKOUT RETEST" in text
-    assert "💰 Current 103 | Entry 100–105" in text
-    assert "🛑 SL 95 | 🎯 TP1 115 | 🚀 TP2 120" in text
-    assert "1. AK — Rp1,00 miliar | Avg Rp103 | Lokal" in text
-    assert "Jarak Buy Avg +0.98%" in text
+    assert "💰 103 | Entry 100–105" in text
+    assert "🛑 SL 95 | 🎯 TP1/TP2 115 | 120" in text
+    assert "1. AK — Rp1,00B | Avg Rp103" in text
+    assert "Buy Avg +0.98%" in text
     assert "Yahoo: VALID" not in text
     assert "ZAPI IDX:" not in text
 
@@ -246,21 +246,23 @@ def test_post_market_matches_final_agreed_sections_and_counts(tmp_path: Path) ->
         "trade_date": "2026-08-04",
         "finished_at": "2026-08-04T18:37:00+07:00",
         "process_status": "SUCCESS_WITH_WARNING",
+        "market_regime": "STRONG_BULLISH",
+        "ihsg_change": 1.69,
+        "ihsg_status": "CURRENT_SESSION",
+        "ihsg_data_date": "2026-08-04",
+        "technical_data_date": "2026-08-04",
+        "technical_bullish_count": 350,
+        "technical_neutral_count": 50,
+        "technical_bearish_count": 37,
         "symbols_requested": 441,
         "symbols_loaded": 439,
         "symbols_valid": 437,
         "symbols_failed": 2,
         "symbols_skipped": 0,
         "coverage": 99.1,
-        "buy_ready_count": 2,
-        "buy_candidate_count": 4,
-        "watch_count": 7,
-        "wait_count": 6,
-        "avoid_count": 1,
         "technical_status": "READY",
         "candidate_status": "READY",
         "broker_status": "READY",
-        "final_watchlist_status": "READY_TO_RUN",
         "historical_status": "VALID",
         "zapi_status": "SUCCESS_WITH_WARNING",
         "zapi_note": "Menggunakan completed trading session terakhir.",
@@ -269,29 +271,26 @@ def test_post_market_matches_final_agreed_sections_and_counts(tmp_path: Path) ->
     })
     text = artifact.text
     ordered_sections = [
-        "✅ PROCESS STATUS",
-        "📦 DATA QUALITY",
-        "🔎 PIPELINE READINESS",
-        "📊 SCREENING RESULT",
-        "📡 SOURCE STATUS",
-        "🎯 NEXT PROCESS",
-        "📌 POST MARKET STATUS",
+        "📊 MARKET PULSE",
+        "📈 TECHNICAL BREADTH",
+        "🧭 ARAHAN BESOK",
+        "🏦 BROKER STATUS",
+        "📦 SYSTEM HEALTH",
+        "🎯 NEXT — FINAL WATCHLIST",
     ]
     positions = [text.index(section) for section in ordered_sections]
     assert positions == sorted(positions)
-    assert "🕒 Proses selesai: 18:37 WIB" in text
-    assert "SUCCESS WITH WARNING" in text
-    assert "⚠️ Warning         : <b>4 data bermasalah</b>" in text
-    assert "❌ Not Loaded      : <b>2 saham</b>" in text
-    assert "⚠️ Invalid         : <b>2 saham</b>" in text
-    assert "🎯 Impact          : <b>TIDAK MATERIAL</b>" in text
-    assert "🟢 BUY READY       : <b>2</b>" in text
-    assert "🟠 BUY CANDIDATE   : <b>4</b>" in text
-    assert "<b>Run ID:</b> <code>POST-20260804-183700</code>" in text
-    assert "MARKET SUMMARY" not in text
-    assert "SECTOR BIAS" not in text
-    assert "ZAPI ENRICHMENT" not in text
-    assert "data tidak tersedia" not in text.lower()
+    assert "🕒 18:37 WIB" in text
+    assert "Bullish 80% · Neutral 11% · Bearish 9%" in text
+    assert "🟢 IHSG    : +1,69%" in text
+    assert "🧭 Market  : RISK-ON" in text
+    assert "📊 Breadth : BULLISH DOMINANT" in text
+    assert "🟡 Neutral : 50" in text
+    assert "🟢 Coverage  : 99,1%" in text
+    assert "POST-20260804-183700" in text
+    assert "PROCESS STATUS" not in text
+    assert "SOURCE STATUS" not in text
+    assert "ZAPI" not in text.upper()
 
 
 def test_post_market_does_not_invent_missing_screening_counts(tmp_path: Path) -> None:
@@ -309,12 +308,13 @@ def test_post_market_does_not_invent_missing_screening_counts(tmp_path: Path) ->
         "coverage": 100,
     })
     text = artifact.text
-    assert "🌐 Universe        : <b>10 saham</b>" in text
-    assert "📊 Coverage        : <b>100%</b>" in text
-    assert "Belum tersedia dari artifact keputusan." in text
+    assert "📊 MARKET PULSE" in text
+    assert "Data technical sesi berjalan tidak tersedia." in text
+    assert "Coverage  : 100,0%" in text
+    assert "🟢 Bullish" not in text
     assert "BUY READY" not in text
     assert "BUY CANDIDATE" not in text
-    assert "data tidak tersedia" not in text.lower()
+    assert "ZAPI" not in text.upper()
 
 
 class CountingInterpreter(GeminiInterpreter):

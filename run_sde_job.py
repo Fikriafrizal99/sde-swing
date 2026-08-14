@@ -55,6 +55,7 @@ from modules.job_runner.runtime import (
     load_context,
     resolve,
     trading_day_status,
+    write_traceback,
     write_status,
     write_json,
     read_json,
@@ -70,6 +71,7 @@ from modules.job_runner.enhanced_runtime_bridge import (
 from modules.job_runner.report_validation import ReportSourceValidationError, record_validation_error
 from modules.decision.adapter import canonicalize_candidates
 from modules.runtime.jobs import INTEGRATED_JOB_NAMES, JOB_DEPENDENCIES, validate_dependency_status
+from swing_utils import PACKAGE_VERSION
 
 
 def _finish(ctx, status: str, stage: str, code: int, details: dict | None = None) -> int:
@@ -102,8 +104,8 @@ def _finish(ctx, status: str, stage: str, code: int, details: dict | None = None
 
 
 def _official_runtime(ctx) -> bool:
-    """True for the versioned 1.7 multi-source runtime, false for test/legacy contexts."""
-    return str(ctx.config_provenance.get("config_version", "")) == "1.7.0-multisource"
+    """True for the current versioned runtime, false for test/legacy contexts."""
+    return str(ctx.config_provenance.get("config_version", "")) == PACKAGE_VERSION
 
 
 def _reports_enabled(ctx) -> bool:
@@ -417,14 +419,11 @@ def job_post_market(ctx) -> int:
                 print("[fallback] Refresh gagal; snapshot teknikal existing hari ini dipakai.", flush=True)
                 manifest = _manifest_from_existing_snapshot(ctx, snapshot, warning=warning)
             else:
-                trace_dir = resolve("data/output/job_status/tracebacks")
-                trace_dir.mkdir(parents=True, exist_ok=True)
-                trace_path = trace_dir / f"{ctx.run_id}-post-market.txt"
                 rendered = traceback.format_exc()
-                trace_path.write_text(rendered, encoding="utf-8")
+                trace_path = write_traceback(ctx, "post-market", rendered)
                 append_job_log(ctx, "POST_MARKET_STAGE_EXCEPTION", rendered)
                 return _finish(ctx, "FAILED", "POST_MARKET_EXCEPTION", EXIT_FAILED, {
-                    "error": str(exc), "errors": [str(exc)], "traceback_path": str(trace_path),
+                    "error": str(exc), "errors": [str(exc)], "traceback_path": trace_path,
                 })
     stage_manifest_path = ctx.path("manifest_dir", "data/output/manifests") / f"SWING_RUN_MANIFEST_{ctx.run_id}.json"
     manifest["Run_ID"] = ctx.run_id
@@ -818,7 +817,7 @@ def _require_integrated_dependencies(ctx, job_name: str) -> dict | None:
         return check
     # Hand-built legacy test contexts do not carry config provenance. They keep
     # the proven Stage 1/2 behaviour; official load_context runs are strict.
-    if str(ctx.config_provenance.get("config_version", "")) != "1.7.0-multisource":
+    if not _official_runtime(ctx):
         return None
     check = validate_dependency_status(ctx.runtime_context, job_name, _integrated_statuses(ctx))
     if check.get("valid"):
@@ -1258,16 +1257,13 @@ def main() -> int:
                 "details": exc.details,
             })
         except Exception as exc:
-            trace_dir = resolve("data/output/job_status/tracebacks")
-            trace_dir.mkdir(parents=True, exist_ok=True)
-            trace_path = trace_dir / f"{ctx.run_id}.txt"
             rendered = traceback.format_exc()
-            trace_path.write_text(rendered, encoding="utf-8")
+            trace_path = write_traceback(ctx, rendered=rendered)
             append_job_log(ctx, "UNHANDLED_JOB_EXCEPTION", rendered)
             if ctx.debug:
                 print(rendered, file=sys.stderr, flush=True)
             return _finish(ctx, "FAILED", "EXCEPTION", EXIT_FAILED, {
-                "error": str(exc), "errors": [str(exc)], "traceback_path": str(trace_path),
+                "error": str(exc), "errors": [str(exc)], "traceback_path": trace_path,
             })
 
     try:
@@ -1286,13 +1282,10 @@ def main() -> int:
     except JobAlreadyRunning as exc:
         return _finish(ctx, exc.status, "LOCK", EXIT_SKIPPED, {"error": str(exc), "lock_status": "BUSY"})
     except Exception as exc:
-        trace_dir = resolve("data/output/job_status/tracebacks")
-        trace_dir.mkdir(parents=True, exist_ok=True)
-        trace_path = trace_dir / f"{ctx.run_id}.txt"
         rendered = traceback.format_exc()
-        trace_path.write_text(rendered, encoding="utf-8")
+        trace_path = write_traceback(ctx, rendered=rendered)
         append_job_log(ctx, "LOCK_BOUNDARY_EXCEPTION", rendered)
-        return _finish(ctx, "FAILED", "EXCEPTION", EXIT_FAILED, {"error": str(exc), "errors": [str(exc)], "traceback_path": str(trace_path)})
+        return _finish(ctx, "FAILED", "EXCEPTION", EXIT_FAILED, {"error": str(exc), "errors": [str(exc)], "traceback_path": trace_path})
 
 
 if __name__ == "__main__":

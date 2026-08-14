@@ -21,4 +21,6 @@ def test_news_without_topic_is_explicitly_unresolved() -> None:
 def test_report_isolation_is_unchanged() -> None:
     router = TelegramRouter({}, {"TELEGRAM_THREAD_REPORT_ID": "701"})
     assert router.resolve("market_outlook", "market_outlook").message_thread_id == ""
-    assert router.resolve("position_management", "report").message_thread_id == "701"
+    # Concrete reports never inherit the generic REPORT env route directly.
+    # delivery.telegram_route() applies scheduler-specific report fallback.
+    assert router.resolve("position_management", "report").message_thread_id == ""

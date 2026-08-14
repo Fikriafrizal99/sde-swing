@@ -7,10 +7,11 @@ import pandas as pd
 import pytest
 
 from modules.broker_bridge.wait_for_broker_export import files_for_scan
-from modules.database.swing_history_db import connect, init_schema
+from modules.database.swing_history_db import archive_broker, connect, init_schema
 from modules.portfolio.broker_portfolio_backfill import (
     archive_backfill,
     build_tasks,
+    status_rows,
     validate_backfill_dataframe,
 )
 
@@ -114,6 +115,43 @@ def test_prepare_manual_symbol_outside_final_watchlist_is_supported(tmp_path):
     assert all(row["SOURCE"] == "MANUAL" for row in tasks)
 
 
+def test_multiple_open_lots_are_deduplicated_at_earliest_buy_and_closed_excluded(
+    tmp_path,
+):
+    db = tmp_path / "history.db"
+    conn = connect(db)
+    try:
+        init_schema(conn)
+        conn.executemany(
+            """
+            INSERT INTO portfolio_positions (
+                position_id, signal_id, symbol, buy_date, quantity, buy_price,
+                current_status, notes, created_at, updated_at
+            ) VALUES (?, NULL, ?, ?, 100, 1000, ?, '', ?, ?)
+            """,
+            [
+                ("bbca-new", "BBCA", "2026-08-05", "OPEN", "2026-08-05", "2026-08-05"),
+                ("bbca-old", "BBCA", "2026-08-03", "OPEN", "2026-08-03", "2026-08-03"),
+                ("tlkm-closed", "TLKM", "2026-08-03", "CLOSED", "2026-08-03", "2026-08-03"),
+            ],
+        )
+        conn.commit()
+        tasks, meta = build_tasks(
+            conn,
+            to_date="2026-08-04",
+            calendar_path=ROOT / "config/trading_calendar.json",
+        )
+    finally:
+        conn.close()
+
+    assert meta["requested_symbols"] == 1
+    assert [(row["Symbol"], row["TO_DATE"]) for row in tasks] == [
+        ("BBCA", "2026-08-03"),
+        ("BBCA", "2026-08-04"),
+    ]
+    assert {row["POSITION_ID"] for row in tasks} == {"bbca-old"}
+
+
 def test_prepare_skips_dates_already_present_in_shared_broker_database(tmp_path):
     db = tmp_path / "history.db"
     archive_root = tmp_path / "archive"
@@ -137,6 +175,64 @@ def test_prepare_skips_dates_already_present_in_shared_broker_database(tmp_path)
 
     assert [row["TO_DATE"] for row in tasks] == ["2026-08-03", "2026-08-05"]
     assert meta["skipped_existing"] == 1
+
+
+def test_aggregate_snapshot_does_not_satisfy_portfolio_daily_coverage(tmp_path):
+    db = tmp_path / "history.db"
+    archive_root = tmp_path / "archive"
+    aggregate_path = tmp_path / "BROKER_SUMMARY_AGGREGATE.csv"
+    conn = connect(db)
+    try:
+        _insert_open_position(conn, "MDKA", "2026-08-12")
+
+        aggregate = _summary_row("MDKA", "2026-08-12")
+        aggregate["FROM_DATE"] = "2026-08-10"
+        pd.DataFrame([aggregate]).to_csv(aggregate_path, index=False)
+        aggregate_snapshot = archive_broker(conn, aggregate_path)
+        conn.commit()
+        assert aggregate_snapshot
+
+        tasks, meta = build_tasks(
+            conn,
+            symbol="MDKA",
+            to_date="2026-08-12",
+            calendar_path=ROOT / "config/trading_calendar.json",
+        )
+        coverage = status_rows(
+            conn,
+            calendar_path=ROOT / "config/trading_calendar.json",
+            to_date="2026-08-12",
+        )
+
+        assert [row["TO_DATE"] for row in tasks] == ["2026-08-12"]
+        assert meta["skipped_existing"] == 0
+        assert coverage[0]["available"] == 0
+        assert coverage[0]["missing_dates"] == ["2026-08-12"]
+
+        archive_backfill(
+            conn,
+            pd.DataFrame([_summary_row("MDKA", "2026-08-12")]),
+            source_path=tmp_path / "daily.csv",
+            archive_root=archive_root,
+        )
+        tasks_after_daily, meta_after_daily = build_tasks(
+            conn,
+            symbol="MDKA",
+            to_date="2026-08-12",
+            calendar_path=ROOT / "config/trading_calendar.json",
+        )
+        coverage_after_daily = status_rows(
+            conn,
+            calendar_path=ROOT / "config/trading_calendar.json",
+            to_date="2026-08-12",
+        )
+    finally:
+        conn.close()
+
+    assert tasks_after_daily == []
+    assert meta_after_daily["skipped_existing"] == 1
+    assert coverage_after_daily[0]["available"] == 1
+    assert coverage_after_daily[0]["missing"] == 0
 
 
 def test_force_prepare_can_refresh_existing_dates_for_actor_nominals(tmp_path):

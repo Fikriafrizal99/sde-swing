@@ -56,7 +56,7 @@ def test_status_writer_writes_dated_and_latest(tmp_path: Path) -> None:
 def test_final_watchlist_dependency_requires_fresh_trade_date_and_config() -> None:
     context = RuntimeContext.create("final_watchlist", date(2026, 8, 3), root=ROOT, mode="MOCK", run_id="RUN-4")
     statuses = {
-        name: {"status": "SUCCESS", "trade_date": "2026-08-03", "config_version": "1.7.0-multisource"}
+        name: {"status": "SUCCESS", "trade_date": "2026-08-03", "config_version": "1.7.1"}
         for name in JOB_DEPENDENCIES["final_watchlist"]
     }
     assert validate_dependency_status(context, "final_watchlist", statuses)["valid"]
@@ -79,7 +79,7 @@ def test_snapshot_builder_adds_metadata_and_hash(tmp_path: Path) -> None:
     context.data_sources_path = ROOT / "config/data_sources.json"
     builder = SnapshotBuilder(context, "technical")
     document = builder.build([], snapshot_id="T-1", symbols_requested=2, symbols_loaded=1, symbols_valid=1, symbols_failed=1)
-    assert document["config_version"] == "1.7.0-multisource"
+    assert document["config_version"] == "1.7.1"
     assert document["content_hash"]
     path = builder.write(document)
     assert path.parts[-3:] == ("technical", "2026-08-03", "T-1.json")

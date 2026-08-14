@@ -3,7 +3,7 @@ name: SDE Swing CI
 on:
   pull_request:
   push:
-    branches: [main, "agent/**"]
+    branches: [main, "agent/**", "audit/**"]
 
 permissions:
   contents: read
@@ -32,6 +32,10 @@ jobs:
           cache: pip
       - run: python -m pip install --disable-pip-version-check -r requirements.txt pytest
       - run: python -m compileall -q .
+
+      - name: Quant freeze
+        run: python tools/ci_validate_quant_freeze.py
+
       - run: python -m pytest -q
       - run: git diff --check
 
@@ -40,6 +44,9 @@ jobs:
 
       - name: Canonical + multi-day contract
         run: python tools/ci_validate_contracts.py
+
+      - name: Stabilization release gate
+        run: python tools/ci_validate_stabilization_release.py
 
       - name: Source integrity
         shell: bash

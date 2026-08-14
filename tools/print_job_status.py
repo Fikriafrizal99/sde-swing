@@ -9,6 +9,15 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_JOBS = (
+    "pre_market",
+    "market_outlook",
+    "post_market",
+    "broker_summary",
+    "broker_multi_day",
+    "final_watchlist",
+    "full_manual",
+)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -63,14 +72,8 @@ def outside_current_root(text: str) -> bool:
         return True
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Print latest SDE job status in a click-friendly format")
-    parser.add_argument("--job", required=True)
-    parser.add_argument("--status-only", action="store_true")
-    parser.add_argument("--log-fields", action="store_true")
-    args = parser.parse_args()
-
-    path = ROOT / "data/output/job_status" / f"{args.job}_latest.json"
+def print_job_status(job: str, args: argparse.Namespace) -> int:
+    path = ROOT / "data/output/job_status" / f"{job}_latest.json"
     payload = load_json(path)
     if not payload:
         print(f"Status belum ada: {path}")
@@ -98,7 +101,7 @@ def main() -> int:
         )
         return 0
     print("============================================================")
-    print(f"SDE Job Status: {args.job}")
+    print(f"SDE Job Status: {job}")
     print("============================================================")
     if overall_status == "SUCCESS_WITH_WARNING":
         print("[OK WITH WARNING]")
@@ -176,6 +179,27 @@ def main() -> int:
     print("")
     print(f"Status JSON  : {path}")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Print latest SDE job status in a click-friendly format"
+    )
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--job")
+    selection.add_argument("--jobs", nargs="+")
+    selection.add_argument("--all", action="store_true")
+    parser.add_argument("--status-only", action="store_true")
+    parser.add_argument("--log-fields", action="store_true")
+    args = parser.parse_args(argv)
+
+    jobs = list(DEFAULT_JOBS) if args.all else list(args.jobs or [args.job])
+    result = 0
+    for index, job in enumerate(jobs):
+        if index:
+            print("")
+        result = print_job_status(str(job), args)
+    return result
 
 
 if __name__ == "__main__":

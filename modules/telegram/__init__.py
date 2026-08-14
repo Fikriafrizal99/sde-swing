@@ -1,15 +1,22 @@
 """Telegram presentation package overrides.
 
-Market Outlook and Post Market formatters are kept in dedicated modules so
-presentation can evolve independently from engine/report calculations.  Only
-those human-facing formatters are rebound here; engine-owned artifacts remain
-untouched.
+Market Outlook, Post Market, and Final Watchlist formatters are kept in
+dedicated modules so presentation can evolve independently from engine/report
+calculations. Only those human-facing formatters are rebound here; engine-owned
+artifacts remain untouched.
 """
 
 from . import daily_report_ui as _daily_report_ui
+from .final_watchlist_ui import format_watchlist_detail as _final_watchlist_formatter
 from .market_outlook_ui import format_market_outlook as _market_outlook_formatter
 from .post_market_ui import format_post_market as _post_market_formatter
 
+_daily_report_ui.format_final_watchlist_detail = getattr(
+    _daily_report_ui,
+    "format_final_watchlist_detail",
+    _daily_report_ui.format_watchlist_detail,
+)
+_daily_report_ui.format_watchlist_detail = _final_watchlist_formatter
 _daily_report_ui.format_market_outlook = _market_outlook_formatter
 _daily_report_ui.format_post_market = _post_market_formatter
 

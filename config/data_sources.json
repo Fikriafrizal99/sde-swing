@@ -1,5 +1,5 @@
 {
-  "config_version": "1.7.0-multisource",
+  "config_version": "1.7.1",
   "schema_version": "1.0.0",
   "resolver_mode": "PRIMARY_WITH_FALLBACK",
   "primary_broker_window": "5D",
@@ -142,7 +142,7 @@
       "conflict_tolerance": 0.02,
       "required_fields": ["symbol", "market_date"],
       "fail_open_or_closed": "FAIL_OPEN",
-      "note": "Existing yfinance / historical downloader path. Fallback only."
+      "note": "Primary DailyBar owner for production OHLCV acquisition. The existing Yahoo/historical downloader and legacy adapter remain the compatibility/acquisition boundary before canonical DataSourceManager routing."
     }
   },
   "conflict_defaults": {

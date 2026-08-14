@@ -10,6 +10,16 @@ config/*local*.json
 
 # Python
 .venv/
+
+# Understand-Anything developer configuration remains tracked in
+# .ua/.understandignore; generated graph data stays local.
+.ua/fingerprints.json
+.ua/knowledge-graph.json
+.ua/meta.json
+.ua/.trash-*/
+.ua/tmp/
+.ua/intermediate/
+.ua/diff-overlay.json
 venv/
 __pycache__/
 *.py[cod]
@@ -24,9 +34,14 @@ coverage.xml
 data/input/
 data/output/
 data/state/
+data/state/broker_playwright.json
+data/state/playwright/stockbit/
+data/logs/broker_playwright/
 data/database/
 data/runtime/
 data/cache/
+data/archive/broker_portfolio_backfill/
+output/final_watchlist/*_setup.png
 logs/
 runtime/
 **/*.lock
@@ -61,7 +76,6 @@ Thumbs.db
 .DS_Store
 
 # Generated cache and machine-specific files
-data/cache/
 scheduler/windows/generated/
 data/output/job_status/
 data/output/snapshots/

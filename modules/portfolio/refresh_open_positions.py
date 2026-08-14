@@ -27,6 +27,7 @@ from swing_utils import make_run_id
 WIB = ZoneInfo("Asia/Jakarta")
 YAHOO_IMPORT_TIMEOUT_SECONDS = 20
 YAHOO_RUNTIME_FAILURE_EXIT = 71
+REQUIRED_CANDLE_FIELDS = ("date", "open", "high", "low", "close", "volume")
 
 
 def load_json(path: Path) -> dict:
@@ -55,6 +56,126 @@ def write_symbols(path: Path, symbols: list[str]) -> None:
         writer = csv.writer(handle)
         writer.writerow(["Symbol"])
         writer.writerows([[symbol] for symbol in symbols])
+
+
+def _normalized_symbol(value: object) -> str:
+    text = str(value or "").strip().upper()
+    return text[:-3] if text.endswith(".JK") else text
+
+
+def _history_file(historical_dir: Path, symbol: str) -> Path | None:
+    for candidate in (
+        historical_dir / f"{symbol}.csv",
+        historical_dir / f"{symbol}.JK.csv",
+    ):
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    return None
+
+
+def _valid_closed_candle(
+    path: Path,
+    *,
+    symbol: str,
+    trade_date: str,
+    market_close: str,
+) -> tuple[bool, str]:
+    try:
+        close_hour, close_minute = (int(part) for part in market_close.split(":", 1))
+        target_day = datetime.fromisoformat(trade_date).date()
+        closed_at = datetime(
+            target_day.year,
+            target_day.month,
+            target_day.day,
+            close_hour,
+            close_minute,
+            tzinfo=WIB,
+        )
+        modified_at = datetime.fromtimestamp(path.stat().st_mtime, tz=WIB)
+    except (OSError, TypeError, ValueError) as exc:
+        return False, f"METADATA_INVALID:{type(exc).__name__}"
+    if datetime.now(WIB) < closed_at:
+        return False, "TARGET_SESSION_NOT_CLOSED"
+    if modified_at < closed_at:
+        return False, "FILE_WRITTEN_BEFORE_MARKET_CLOSE"
+
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            columns = {
+                str(column).strip().lower().replace("_", " "): column
+                for column in (reader.fieldnames or [])
+            }
+            aliases = {
+                "date": ("date", "datetime", "timestamp", "index"),
+                "open": ("open",),
+                "high": ("high",),
+                "low": ("low",),
+                "close": ("close",),
+                "volume": ("volume",),
+            }
+            selected = {
+                field: next(
+                    (columns[name] for name in names if name in columns),
+                    None,
+                )
+                for field, names in aliases.items()
+            }
+            if any(selected[field] is None for field in REQUIRED_CANDLE_FIELDS):
+                return False, "SCHEMA_INVALID"
+
+            matched: list[dict[str, str]] = []
+            for row in reader:
+                date_column = selected["date"]
+                if str(row.get(date_column, "")).strip()[:10] == trade_date:
+                    matched.append(row)
+    except (OSError, UnicodeError, csv.Error) as exc:
+        return False, f"FILE_UNREADABLE:{type(exc).__name__}"
+
+    if len(matched) != 1:
+        return False, "TARGET_CANDLE_MISSING_OR_DUPLICATE"
+    row = matched[0]
+    symbol_column = columns.get("symbol")
+    if symbol_column and _normalized_symbol(row.get(symbol_column)) != symbol:
+        return False, "SYMBOL_MISMATCH"
+    for field in REQUIRED_CANDLE_FIELDS[1:]:
+        value = str(row.get(selected[field], "")).strip()
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return False, f"{field.upper()}_INVALID"
+        if number != number:
+            return False, f"{field.upper()}_INVALID"
+    return True, "VALID_CLOSED_CANDLE"
+
+
+def local_portfolio_history_current(
+    historical_dir: Path,
+    symbols: list[str],
+    *,
+    trade_date: str,
+    market_close: str,
+) -> tuple[bool, dict[str, str]]:
+    """Prove every OPEN symbol already has the requested closed daily candle."""
+    evidence: dict[str, str] = {}
+    for raw_symbol in symbols:
+        symbol = _normalized_symbol(raw_symbol)
+        path = _history_file(historical_dir, symbol)
+        if path is None:
+            evidence[symbol] = "FILE_MISSING"
+            continue
+        valid, reason = _valid_closed_candle(
+            path,
+            symbol=symbol,
+            trade_date=trade_date,
+            market_close=market_close,
+        )
+        evidence[symbol] = reason
+        if not valid:
+            continue
+    return bool(symbols) and all(
+        reason == "VALID_CLOSED_CANDLE" for reason in evidence.values()
+    ), evidence
 
 
 def probe_yahoo_runtime(timeout_seconds: int = YAHOO_IMPORT_TIMEOUT_SECONDS) -> tuple[bool, str]:
@@ -120,6 +241,22 @@ def main() -> int:
         flush=True,
     )
 
+    historical_dir = resolve(paths.get("historical_dir", "data/output/historical/by_symbol"))
+    market_close = str(freshness.get("market_close", "16:15"))
+    already_current, current_evidence = local_portfolio_history_current(
+        historical_dir,
+        symbols,
+        trade_date=args.trade_date,
+        market_close=market_close,
+    )
+    if already_current:
+        print(
+            f"PORTFOLIO HISTORY REFRESH: SKIPPED_ALREADY_CURRENT | "
+            f"{len(current_evidence)} symbol(s) valid through {args.trade_date}",
+            flush=True,
+        )
+        return 0
+
     runtime_ok, runtime_detail = probe_yahoo_runtime()
     if not runtime_ok:
         print(
@@ -139,11 +276,9 @@ def main() -> int:
     symbol_file = resolve("data/state/portfolio/OPEN_PORTFOLIO_SYMBOLS.csv")
     write_symbols(symbol_file, symbols)
 
-    historical_dir = resolve(paths.get("historical_dir", "data/output/historical/by_symbol"))
     historical_root = historical_dir.parent
     manifest_dir = resolve(paths.get("manifest_dir", "data/output/manifests"))
     downloader = resolve(paths.get("historical_downloader", "modules/historical_downloader/historical_downloader.py"))
-    market_close = str(freshness.get("market_close", "16:15"))
     run_id = make_run_id(prefix="SDE-POSITION-REFRESH")
 
     command = [

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 import pandas as pd
+from swing_utils import atomic_csv
 
 from modules.data_sources.config import load_data_source_config
 from modules.data_sources.zapi_idx_adapter import ZapiIdxClient, canonical_symbol
@@ -175,10 +176,7 @@ def refresh_sector_metadata(
         frame = pd.DataFrame(sorted(rows_by_symbol.values(), key=lambda item: item["Symbol"]))
         frame["Provider"] = "ZAPI_IDX"
         frame["Retrieved_Date"] = trade_date.isoformat()
-        output.parent.mkdir(parents=True, exist_ok=True)
-        temporary = output.with_name(output.name + ".tmp")
-        frame.to_csv(temporary, index=False, encoding="utf-8-sig")
-        temporary.replace(output)
+        atomic_csv(frame, output, encoding="utf-8-sig")
         request_count = zapi_client.request_attempt_count - request_count_before
         result = {
             "status": "SUCCESS",

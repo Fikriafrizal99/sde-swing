@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from swing_utils import write_json
+
 
 IMMUTABLE_FIELDS = {
     "symbol",
@@ -292,9 +294,7 @@ class GeminiInterpreter:
                 "main_risk": result.main_risk,
                 "execution_note": result.execution_note,
             }
-            temporary = path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            temporary.replace(path)
+            write_json(path, payload)
         except Exception:
             return
 

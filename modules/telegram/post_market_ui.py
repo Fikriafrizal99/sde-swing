@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from html import escape
+from math import floor
 from typing import Any, Mapping
 
 
 SEPARATOR = "━━━━━━━━━━━━━━━━━━━"
+PULSE_WIDTH = 10
 
 
 def _present(value: Any) -> bool:
@@ -17,22 +19,39 @@ def _present(value: Any) -> bool:
 
 
 def _dt(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
     try:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except Exception:
         return None
 
 
+def _iso_date(value: Any) -> str:
+    parsed = _dt(value)
+    return parsed.date().isoformat() if parsed else ""
+
+
 def _date(value: Any, *, long: bool = False) -> str:
     parsed = _dt(value)
     if parsed is None:
         return ""
-    months = ["", "Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
     if not long:
+        months = ["", "Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
         return f"{parsed.day:02d} {months[parsed.month]} {parsed.year}"
     days = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
-    full_months = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
-    return f"{days[parsed.weekday()]}, {parsed.day} {full_months[parsed.month]} {parsed.year}"
+    months = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+    return f"{days[parsed.weekday()]}, {parsed.day} {months[parsed.month]} {parsed.year}"
+
+
+def _full_date(value: Any) -> str:
+    parsed = _dt(value)
+    if parsed is None:
+        return ""
+    months = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+    return f"{parsed.day} {months[parsed.month]} {parsed.year}"
 
 
 def _time(value: Any) -> str:
@@ -46,263 +65,465 @@ def _upper(value: Any) -> str:
     return str(value).strip().replace("_", " ").upper()
 
 
-def _int_text(value: Any) -> str:
+def _text(value: Any, fallback: str = "") -> str:
     if not _present(value):
-        return ""
-    try:
-        return f"{int(float(value)):,}".replace(",", ".")
-    except Exception:
-        return escape(str(value).strip())
+        return fallback
+    return escape(str(value), quote=False)
 
 
 def _number(value: Any) -> float | None:
     try:
-        return float(value)
-    except Exception:
+        number = float(value)
+    except (TypeError, ValueError):
         return None
+    return number if number == number else None
 
 
-def _smart_pct(value: Any, *, ratio_aware: bool = False) -> str:
+def _integer(value: Any) -> int:
+    number = _number(value)
+    return max(0, int(number)) if number is not None else 0
+
+
+def _int_text(value: Any) -> str:
+    return f"{_integer(value):,}".replace(",", ".")
+
+
+def _pct(value: Any, *, signed: bool = False, decimals: int = 1) -> str:
     number = _number(value)
     if number is None:
         return ""
-    if ratio_aware and 0 <= abs(number) <= 1:
+    prefix = "+" if signed and number > 0 else ""
+    return f"{prefix}{number:.{decimals}f}%".replace(".", ",")
+
+
+def _coverage(value: Any) -> str:
+    number = _number(value)
+    if number is None:
+        return ""
+    if 0 <= number <= 1:
         number *= 100.0
-    decimals = 0 if abs(number - round(number)) < 1e-9 else 1
-    return f"{number:.{decimals}f}%".replace(".", ",")
+    return _pct(number, decimals=1)
 
 
-def _metric_line(icon: str, label: str, value: str) -> str:
-    return f"{icon} {label:<16}: <b>{escape(value)}</b>"
+def _counts(data: Mapping[str, Any]) -> tuple[int, int, int]:
+    def value(*keys: str) -> int:
+        for key in keys:
+            if _present(data.get(key)):
+                return _integer(data.get(key))
+        return 0
+
+    return (
+        value("technical_bullish_count", "bullish_count", "bullish_symbols"),
+        value("technical_neutral_count", "neutral_count", "neutral_symbols"),
+        value("technical_bearish_count", "bearish_count", "bearish_symbols"),
+    )
 
 
-def _status_icon(value: Any, *, neutral: str = "🟡") -> str:
+def _allocate_units(counts: tuple[int, int, int], units: int) -> tuple[int, int, int]:
+    """Allocate integer display units by largest remainder, deterministically."""
+    total = sum(max(0, int(value)) for value in counts)
+    if total <= 0 or units <= 0:
+        return (0, 0, 0)
+    raw = [units * max(0, int(value)) / total for value in counts]
+    allocated = [floor(value) for value in raw]
+    remaining = units - sum(allocated)
+    order = sorted(range(len(raw)), key=lambda index: (-(raw[index] - allocated[index]), index))
+    for index in order[:remaining]:
+        allocated[index] += 1
+    return tuple(allocated)  # type: ignore[return-value]
+
+
+def _percentages(data: Mapping[str, Any]) -> tuple[int, int, int] | None:
+    counts = _counts(data)
+    if sum(counts) <= 0:
+        return None
+    return _allocate_units(counts, 100)
+
+
+def _technical_current(data: Mapping[str, Any]) -> bool:
+    status = _upper(data.get("breadth_status"))
+    if status in {
+        "NOT CURRENT", "STALE", "UNAVAILABLE", "NOT AVAILABLE",
+        "NOT READY", "FAILED", "INVALID", "ERROR",
+    }:
+        return False
+    trade_date = _iso_date(data.get("trade_date"))
+    technical_date = _iso_date(data.get("technical_data_date"))
+    # The normal runtime always carries both dates.  Once a trade date is
+    # present, missing lineage is as unsafe as a mismatch and fails closed.
+    return (not trade_date and not technical_date) or (
+        bool(trade_date and technical_date) and trade_date == technical_date
+    )
+
+
+def _ihsg_current(data: Mapping[str, Any]) -> bool:
+    status = _upper(data.get("ihsg_status"))
+    if status not in {"CURRENT SESSION", "CURRENT"}:
+        return False
+    trade_date = _iso_date(data.get("trade_date"))
+    data_date = _iso_date(data.get("ihsg_data_date"))
+    return bool(data_date) and (not trade_date or trade_date == data_date)
+
+
+def _candidate_current(data: Mapping[str, Any]) -> bool:
+    status = _upper(data.get("candidate_status"))
+    if status in {
+        "NOT CURRENT", "STALE", "UNAVAILABLE", "NOT AVAILABLE",
+        "NOT READY", "FAILED", "INVALID", "ERROR",
+    }:
+        return False
+    trade_date = _iso_date(data.get("trade_date"))
+    candidate_date = _iso_date(
+        data.get("candidate_data_date")
+        or data.get("candidate_ranking_trade_date")
+        or data.get("candidate_trade_date")
+    )
+    return (not trade_date and not candidate_date) or (
+        bool(trade_date and candidate_date) and trade_date == candidate_date
+    )
+
+
+def _true_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "ready", "current", "valid"}
+
+
+def _broker_presentation_status(data: Mapping[str, Any]) -> str:
+    """Return a fail-closed presentation status for current broker data."""
+    declared = _upper(data.get("broker_status") or data.get("stockbit_status"))
+    upstream = _upper(
+        data.get("broker_upstream_status")
+        or data.get("broker_data_status")
+        or data.get("broker_freshness_status")
+    )
+    reason = _upper(data.get("broker_readiness_reason"))
+    combined = " ".join(value for value in (declared, upstream, reason) if value)
+
+    failure_tokens = (
+        "FAILED", "ERROR", "INVALID", "FILE NOT FOUND", "EMPTY DATA",
+        "PARSE FAILED", "SCHEMA INVALID", "UNAVAILABLE", "BLOCKED",
+        "NOT AVAILABLE", "NOT READY",
+    )
+    if any(token in combined for token in failure_tokens):
+        return "NOT READY"
+
+    available = _true_flag(data.get("broker_artifact_available"))
+    verified = _true_flag(data.get("broker_data_verified"))
+    current = _true_flag(data.get("broker_data_current"))
+    if not available:
+        return "NOT READY"
+
+    stale_tokens = ("STALE", "NOT CURRENT", "DATE MISMATCH", "FILE WRITING")
+    if any(token in combined for token in stale_tokens):
+        return "WAITING"
+
+    trade_date = _iso_date(data.get("trade_date"))
+    broker_date = _iso_date(
+        data.get("broker_data_date")
+        or data.get("broker_date")
+        or data.get("broker_trade_date")
+    )
+    if trade_date and (not broker_date or broker_date != trade_date):
+        return "WAITING"
+    if not verified or not current or declared != "READY":
+        return "WAITING"
+    return "READY"
+
+
+def _sector_payload(data: Mapping[str, Any]) -> Mapping[str, Any]:
+    payload = data.get("sector_rotation")
+    return payload if isinstance(payload, Mapping) else data
+
+
+def _sector_current(data: Mapping[str, Any]) -> bool:
+    payload = _sector_payload(data)
+    status = _upper(data.get("sector_rotation_status") or payload.get("status"))
+    if status and status not in {"VALID", "CURRENT", "READY"}:
+        return False
+    trade_date = _iso_date(data.get("trade_date"))
+    rotation_date = _iso_date(
+        data.get("sector_rotation_trade_date")
+        or payload.get("trade_date")
+    )
+    return (not trade_date and not rotation_date) or (
+        bool(trade_date and rotation_date) and trade_date == rotation_date
+    )
+
+
+def _breadth_label(data: Mapping[str, Any]) -> str:
+    if not _technical_current(data):
+        return "DATA NOT CURRENT"
+    bullish, neutral, bearish = _counts(data)
+    total = bullish + neutral + bearish
+    if total <= 0:
+        return "INSUFFICIENT DATA"
+    if bullish / total >= 0.60:
+        return "BULLISH DOMINANT"
+    if bearish / total >= 0.60:
+        return "BEARISH DOMINANT"
+    if neutral / total >= 0.50:
+        return "NEUTRAL DOMINANT"
+    return "MIXED"
+
+
+def _market_label(data: Mapping[str, Any]) -> str:
+    breadth = _breadth_label(data)
+    if breadth in {"DATA NOT CURRENT", "INSUFFICIENT DATA"}:
+        return "SELECTIVE"
+
+    # Market regime and IHSG direction share the IHSG session lineage.  A
+    # stale/missing IHSG session must not be reused to present RISK-ON/OFF.
+    if not _ihsg_current(data):
+        return "SELECTIVE"
+
+    regime = _upper(data.get("market_regime"))
+    ihsg = _number(data.get("ihsg_change"))
+    explicit = regime.replace("-", " ")
+    if explicit in {"RISK ON", "RISK OFF", "SELECTIVE"}:
+        if explicit == "RISK ON" and breadth == "BULLISH DOMINANT":
+            return "RISK-ON"
+        if explicit == "RISK OFF" and breadth == "BEARISH DOMINANT":
+            return "RISK-OFF"
+        if explicit == "SELECTIVE":
+            return "SELECTIVE"
+
+    if breadth == "BULLISH DOMINANT" and "BULL" in regime and (ihsg is None or ihsg >= 0):
+        return "RISK-ON"
+    if breadth == "BEARISH DOMINANT" and "BEAR" in regime and (ihsg is None or ihsg <= 0):
+        return "RISK-OFF"
+    return "SELECTIVE"
+
+
+def _pulse_bar(data: Mapping[str, Any]) -> str:
+    green, yellow, red = _allocate_units(_counts(data), PULSE_WIDTH)
+    if green + yellow + red != PULSE_WIDTH:
+        return ""
+    return "🟩" * green + "🟨" * yellow + "🟥" * red
+
+
+def _sector_values(data: Mapping[str, Any]) -> list[str]:
+    if not _sector_current(data):
+        return []
+    payload = _sector_payload(data)
+    values: list[str] = []
+    for key in ("leading", "rotating_in", "improving"):
+        raw = payload.get(key)
+        if isinstance(raw, (list, tuple)):
+            values.extend(str(item).strip() for item in raw if str(item).strip())
+    return list(dict.fromkeys(values))
+
+
+def _setup_items(data: Mapping[str, Any]) -> list[tuple[str, int]]:
+    if not _technical_current(data) or not _candidate_current(data):
+        return []
+    raw = data.get("setup_distribution")
+    if not isinstance(raw, Mapping):
+        return []
+    items: list[tuple[str, int]] = []
+    for label, value in raw.items():
+        count = _integer(value)
+        if count > 0:
+            items.append((str(label).replace("_", " ").upper(), count))
+    return sorted(items, key=lambda item: (-item[1], item[0]))[:5]
+
+
+def _status_icon(value: Any) -> str:
     status = _upper(value)
-    if not status:
-        return neutral
-    if any(token in status for token in ("FAILED", "INVALID", "ERROR", "BLOCKED")):
+    if any(token in status for token in ("FAILED", "INVALID", "ERROR", "BLOCKED", "UNAVAILABLE", "NOT CURRENT", "NOT READY")):
         return "🔴"
-    if any(token in status for token in ("WARNING", "WAITING", "EMPTY", "PARTIAL", "UNAVAILABLE", "NOT READY")):
+    if any(token in status for token in ("WARNING", "WAITING", "EMPTY", "PARTIAL", "DEGRADED")):
         return "🟡"
-    if any(token in status for token in ("SUCCESS", "READY", "VALID", "ACTIVE")):
+    if any(token in status for token in ("READY", "VALID", "CURRENT", "SUCCESS")):
         return "🟢"
-    return neutral
+    return "🟡"
 
 
-def _issue_counts(data: Mapping[str, Any]) -> tuple[int, list[str]]:
-    total = 0
-    notes: list[str] = []
+def _market_breadth_sentence(data: Mapping[str, Any]) -> str:
+    """Describe IHSG direction and the already-classified breadth fact."""
+    breadth = _breadth_label(data)
+    ihsg = _number(data.get("ihsg_change")) if _ihsg_current(data) else None
 
-    if _present(data.get("symbols_not_loaded")):
-        value = int(float(data.get("symbols_not_loaded") or 0))
-        if value > 0:
-            total += value
-            notes.append(f"{value} saham tidak berhasil dimuat")
+    if breadth == "DATA NOT CURRENT":
+        return "Data technical breadth sesi berjalan belum tersedia."
+    if breadth == "INSUFFICIENT DATA":
+        return "Breadth sesi berjalan belum cukup untuk menyimpulkan kondisi pasar."
 
-    if _present(data.get("symbols_invalid")):
-        value = int(float(data.get("symbols_invalid") or 0))
-        if value > 0:
-            total += value
-            notes.append(f"{value} saham gagal validasi")
+    if ihsg is None:
+        if breadth == "BULLISH DOMINANT":
+            return "Breadth sesi berjalan didominasi saham bullish; data IHSG current belum tersedia."
+        if breadth == "BEARISH DOMINANT":
+            return "Breadth sesi berjalan didominasi saham bearish; data IHSG current belum tersedia."
+        if breadth == "NEUTRAL DOMINANT":
+            return "Breadth sesi berjalan cenderung netral; data IHSG current belum tersedia."
+        return "Breadth sesi berjalan menunjukkan kondisi campuran; data IHSG current belum tersedia."
 
-    if _present(data.get("symbols_skipped")):
-        value = int(float(data.get("symbols_skipped") or 0))
-        if value > 0:
-            total += value
-            notes.append(f"{value} saham dilewati")
-
-    return total, notes
-
-
-def _screening_rows(data: Mapping[str, Any]) -> list[str]:
-    specs = (
-        ("🟢", "BUY READY", "buy_ready_count"),
-        ("🟠", "BUY CANDIDATE", "buy_candidate_count"),
-        ("🔵", "WATCH", "watch_count"),
-        ("🟡", "WAITING", "wait_count"),
-        ("🔴", "AVOID", "avoid_count"),
-    )
-    rows: list[str] = []
-    for icon, label, key in specs:
-        if not _present(data.get(key)):
-            continue
-        value = _int_text(data.get(key))
-        if value:
-            rows.append(_metric_line(icon, label, value))
-    return rows
+    direction = "menguat" if ihsg > 0 else "melemah" if ihsg < 0 else "datar"
+    subject = "Pasar" if ihsg != 0 else "IHSG"
+    if breadth == "BULLISH DOMINANT":
+        if ihsg < 0:
+            return "Pasar ditutup melemah, namun breadth masih didominasi saham bullish."
+        return f"{subject} ditutup {direction} dengan breadth didominasi saham bullish."
+    if breadth == "BEARISH DOMINANT":
+        if ihsg > 0:
+            return "IHSG ditutup menguat, namun breadth pasar masih didominasi saham bearish."
+        return f"{subject} ditutup {direction} dengan breadth didominasi saham bearish."
+    if breadth == "NEUTRAL DOMINANT":
+        return f"{subject} ditutup {direction} dengan breadth cenderung netral."
+    return f"{subject} ditutup {direction} dengan breadth campuran."
 
 
-def _source_rows(data: Mapping[str, Any]) -> list[str]:
-    specs = (
-        ("Yahoo Technical", data.get("historical_status") or data.get("yahoo_status")),
-        ("ZAPI IDX", data.get("zapi_status") or data.get("reconciliation_status")),
-        ("Stockbit Broker", data.get("stockbit_status")),
-    )
-    rows: list[str] = []
-    for label, value in specs:
-        status = _upper(value)
-        if not status:
-            continue
-        rows.append(_metric_line(_status_icon(status), label, status))
-    return rows
+def _guidance(data: Mapping[str, Any], setups: list[tuple[str, int]], broker: str) -> list[str]:
+    breadth = _breadth_label(data)
+    market = _market_label(data)
+    lines = [_market_breadth_sentence(data)]
+
+    if market == "RISK-OFF" or breadth == "BEARISH DOMINANT":
+        lines.extend([
+            "Prioritaskan proteksi modal dan batasi kandidat pada setup",
+            "dengan technical quality terbaik dan konfirmasi yang lengkap.",
+        ])
+    elif market == "RISK-ON" or breadth == "BULLISH DOMINANT":
+        lines.extend([
+            "Fokus pada setup matang yang masih berada di area entry",
+            "dan memiliki konfirmasi yang lengkap.",
+        ])
+    else:
+        lines.append("Fokus pada saham dengan setup matang dan konfirmasi yang lengkap.")
+
+    if broker != "READY":
+        lines.append("Tunggu data broker sesi berjalan sebelum menggunakannya sebagai konfirmasi.")
+
+    if not setups:
+        lines.append("Setup current belum tersedia untuk sesi ini.")
+    lines.extend(["", "Hindari mengejar saham yang sudah terlalu jauh dari area entry."])
+    return lines
 
 
-def _pipeline_rows(data: Mapping[str, Any]) -> list[str]:
-    specs = (
-        ("📈", "Technical Snapshot", data.get("technical_status")),
-        ("🔍", "Candidate Screening", data.get("candidate_status")),
-        ("🏦", "Broker Dependency", data.get("broker_status")),
-        ("🎯", "Final Watchlist", data.get("final_watchlist_status")),
-    )
-    rows: list[str] = []
-    for icon, label, value in specs:
-        status = _upper(value)
-        if status:
-            rows.append(_metric_line(icon, label, status))
-    return rows
+def _health_lines(data: Mapping[str, Any], trade_date: str) -> list[str]:
+    coverage_number = _number(data.get("coverage"))
+    if coverage_number is not None and 0 <= coverage_number <= 1:
+        coverage_number *= 100.0
+    if coverage_number is None:
+        coverage_icon, coverage_text = "🔴", "DATA TIDAK TERSEDIA"
+    else:
+        coverage_icon = "🟢" if coverage_number >= 90 else "🟡"
+        coverage_text = _coverage(coverage_number)
+
+    technical_status = _upper(data.get("technical_status"))
+    if not _technical_current(data):
+        technical_status = "NOT CURRENT"
+    if not technical_status:
+        technical_status = "UNAVAILABLE"
+
+    screening_status = _upper(data.get("screening_result") or data.get("candidate_status"))
+    if not _candidate_current(data):
+        screening_status = "NOT CURRENT"
+    if not screening_status:
+        screening_status = "WAITING"
+
+    return [
+        f"{coverage_icon} Coverage  : {coverage_text or 'DATA TIDAK TERSEDIA'}",
+        f"{_status_icon(technical_status)} Technical : {escape(technical_status, quote=False)}",
+        f"{_status_icon(screening_status)} Screening : {escape(screening_status, quote=False)}",
+        f"📅 Data      : {_text(_full_date(trade_date), 'DATA TIDAK TERSEDIA')}",
+    ]
 
 
-def _post_status_rows(data: Mapping[str, Any]) -> list[str]:
-    rows: list[str] = []
-    technical = _upper(data.get("technical_status"))
-    if technical:
-        rows.append(_metric_line(_status_icon(technical), "Technical Data", technical))
-
-    coverage = _smart_pct(data.get("coverage"), ratio_aware=True)
-    if coverage:
-        rows.append(_metric_line("🟢" if (_number(data.get("coverage")) or 0) >= 90 else "🟡", "Coverage", coverage))
-
-    screening = _upper(data.get("candidate_status"))
-    if screening:
-        rows.append(_metric_line(_status_icon(screening), "Screening", screening))
-
-    broker = _upper(data.get("broker_status") or data.get("stockbit_status"))
-    if broker:
-        rows.append(_metric_line(_status_icon(broker), "Broker", broker))
-
-    final = _upper(data.get("final_watchlist_status"))
-    if final:
-        rows.append(_metric_line(_status_icon(final), "Final Watchlist", final))
-    return rows
-
-
-def _join_compact(lines: list[str]) -> str:
-    result: list[str] = []
-    for line in lines:
-        if line == "" and (not result or result[-1] == ""):
-            continue
-        result.append(line)
-    return "\n".join(result).strip()
+def _ihsg_line(data: Mapping[str, Any]) -> str:
+    if _ihsg_current(data):
+        change = _number(data.get("ihsg_change"))
+        rendered = _pct(change, signed=True, decimals=2)
+        icon = "🟢" if change is not None and change > 0 else "🔴" if change is not None and change < 0 else "🟡"
+        return f"{icon} IHSG    : {rendered or '0,00%'}"
+    status = _upper(data.get("ihsg_status")) or "NOT CURRENT SESSION"
+    data_date = _iso_date(data.get("ihsg_data_date"))
+    suffix = f" ({data_date})" if data_date else ""
+    return f"🟡 IHSG    : DATA SESI TERKINI TIDAK TERSEDIA [{escape(status, quote=False)}{suffix}]"
 
 
 def format_post_market(data: dict[str, Any]) -> str:
-    status = _upper(data.get("process_status"))
-    lines = ["<b>🌆 SDE SWING — POST MARKET</b>"]
+    """Render the single market-first Telegram Post Market contract.
 
-    trade_date = _date(data.get("trade_date"), long=True)
-    if trade_date:
-        lines.append(f"📅 {escape(trade_date)}")
+    ``CURRENT_V2`` remains accepted as a runtime/schema field, but it never
+    selects the retired UI.  This formatter is presentation-only and refuses
+    to render explicitly stale section inputs as current-session facts.
+    """
+    trade_date = _iso_date(data.get("trade_date"))
+    percentages = _percentages(data) if _technical_current(data) else None
+    breadth = _breadth_label(data)
+    market = _market_label(data)
+    sectors = _sector_values(data)
+    setups = _setup_items(data)
+    broker = _broker_presentation_status(data)
 
-    finished_time = _time(data.get("finished_at") or data.get("generated_at") or data.get("completed_at"))
-    if finished_time:
-        lines.append(f"🕒 Proses selesai: {escape(finished_time)} WIB")
-        lines.append(SEPARATOR)
+    lines = [
+        "🌆 SDE SWING — POST MARKET",
+        f"📅 {_text(_date(trade_date, long=True), 'DATA TIDAK TERSEDIA')}",
+    ]
+    finished = _time(data.get("finished_at") or data.get("generated_at") or data.get("completed_at"))
+    if finished:
+        lines.append(f"🕒 {finished} WIB")
+    lines += [SEPARATOR, "", "📊 MARKET PULSE"]
 
-    if status:
-        lines += ["", "<b>✅ PROCESS STATUS</b>"]
-        lines.append(_metric_line(_status_icon(status), "Status", status))
-
-        issue_total, issue_notes = _issue_counts(data)
-        if issue_total > 0:
-            lines.append(_metric_line("⚠️", "Warning", f"{issue_total} data bermasalah"))
-            lines.append(escape(" dan ".join(issue_notes) + "."))
-
-        impact = _upper(data.get("data_impact"))
-        if impact:
-            if issue_total > 0:
-                lines.append(f"Dampaknya terhadap hasil keseluruhan <b>{escape(impact)}</b>.")
-            else:
-                lines.append(f"Impact proses: <b>{escape(impact)}</b>.")
-
-    quality_rows: list[str] = []
-    if _present(data.get("symbols_requested")):
-        quality_rows.append(_metric_line("🌐", "Universe", f"{_int_text(data.get('symbols_requested'))} saham"))
-    if _present(data.get("symbols_loaded")):
-        quality_rows.append(_metric_line("📥", "Loaded", f"{_int_text(data.get('symbols_loaded'))} saham"))
-    if _present(data.get("symbols_valid")):
-        quality_rows.append(_metric_line("✅", "Valid", f"{_int_text(data.get('symbols_valid'))} saham"))
-    if _present(data.get("symbols_invalid")) and _present(data.get("symbols_loaded")) and _present(data.get("symbols_valid")):
-        quality_rows.append(_metric_line("⚠️", "Invalid", f"{_int_text(data.get('symbols_invalid'))} saham"))
-    if _present(data.get("symbols_not_loaded")) and _present(data.get("symbols_requested")) and _present(data.get("symbols_loaded")):
-        quality_rows.append(_metric_line("❌", "Not Loaded", f"{_int_text(data.get('symbols_not_loaded'))} saham"))
-    if _present(data.get("symbols_skipped")):
-        skipped = _number(data.get("symbols_skipped"))
-        if skipped is not None and skipped > 0:
-            quality_rows.append(_metric_line("⏭️", "Skipped", f"{_int_text(data.get('symbols_skipped'))} saham"))
-    coverage = _smart_pct(data.get("coverage"), ratio_aware=True)
-    if coverage:
-        quality_rows.append(_metric_line("📊", "Coverage", coverage))
-    impact = _upper(data.get("data_impact"))
-    if impact:
-        quality_rows.append(_metric_line("🎯", "Impact", impact))
-
-    if quality_rows:
-        lines += ["", "<b>📦 DATA QUALITY</b>"]
-        for row in quality_rows:
-            lines.append(row)
-        if coverage and impact == "TIDAK MATERIAL":
-            lines.append("Coverage tetap memadai sehingga data teknikal masih layak digunakan untuk proses berikutnya.")
-
-    pipeline_rows = _pipeline_rows(data)
-    if pipeline_rows:
-        lines += ["", "<b>🔎 PIPELINE READINESS</b>"]
-        for row in pipeline_rows:
-            lines.append(row)
-
-    screening_rows = _screening_rows(data)
-    lines += ["", "<b>📊 SCREENING RESULT</b>"]
-    if screening_rows:
-        for row in screening_rows:
-            lines.append(row)
+    if percentages is None:
+        lines.append("Data technical sesi berjalan tidak tersedia.")
     else:
-        lines += ["Belum tersedia dari artifact keputusan.", "Klasifikasi final akan ditentukan oleh <b>Final Watchlist</b>."]
+        bullish, neutral, bearish = percentages
+        lines.append(_pulse_bar(data))
+        lines.append(f"Bullish {bullish}% · Neutral {neutral}% · Bearish {bearish}%")
+    lines += [_ihsg_line(data), f"🧭 Market  : {market}", f"📊 Breadth : {breadth}"]
 
-    source_rows = _source_rows(data)
-    if source_rows:
-        lines += ["", "<b>📡 SOURCE STATUS</b>"]
-        for row in source_rows:
-            lines.append(row)
-        source_note = data.get("degraded_reason") or data.get("zapi_note")
-        if _present(source_note):
-            lines.append(escape(str(source_note).strip()))
+    lines += ["", "🔥 Sektor kuat"]
+    if sectors:
+        lines.extend(f"• {_text(sector)}" for sector in sectors)
+    else:
+        lines.append("⚠️ Data sektor current tidak tersedia.")
 
+    lines += ["", "📈 TECHNICAL BREADTH"]
+    if _technical_current(data) and sum(_counts(data)) > 0:
+        bullish, neutral, bearish = _counts(data)
+        lines += [
+            f"✅ Valid   : {_int_text(data.get('symbols_valid'))} saham",
+            f"🟢 Bullish : {_int_text(bullish)}",
+            f"🟡 Neutral : {_int_text(neutral)}",
+            f"🔴 Bearish : {_int_text(bearish)}",
+        ]
+    else:
+        lines.append("⚠️ Data technical breadth sesi berjalan tidak tersedia.")
+
+    lines += ["", "🔥 SETUP DISTRIBUTION"]
+    if setups:
+        lines.extend(f"• {_text(label)} : {count}" for label, count in setups)
+    else:
+        lines.append("⚠️ Data setup current tidak tersedia.")
+
+    lines += ["", "🧭 ARAHAN BESOK", *_guidance(data, setups, broker)]
     lines += [
         "",
-        "<b>🎯 NEXT PROCESS</b>",
-        "Final Watchlist akan menentukan:",
-        "• saham prioritas;",
-        "• status keputusan dan kesiapan eksekusi;",
-        "• area entry dan trigger;",
-        "• target dan stop loss;",
-        "• broker confirmation;",
-        "• alasan utama dan risiko.",
+        "🏦 BROKER STATUS",
+        f"{_status_icon(broker)} Stockbit : {_text(broker)}",
     ]
+    if broker == "READY":
+        lines.append("Broker siap digunakan sebagai konfirmasi di Final Watchlist.")
+    elif broker == "WAITING":
+        lines.append("Data broker belum terverifikasi untuk sesi berjalan.")
+    else:
+        lines.append("Data broker belum tersedia untuk konfirmasi.")
 
-    status_rows = _post_status_rows(data)
-    if status_rows:
-        lines += ["", "<b>📌 POST MARKET STATUS</b>"]
-        for row in status_rows:
-            lines.append(row)
-
-        final_status = _upper(data.get("final_watchlist_status"))
-        candidate_status = _upper(data.get("candidate_status"))
-        broker_status = _upper(data.get("broker_status") or data.get("stockbit_status"))
-        if final_status and "READY" in final_status and "NOT READY" not in final_status:
-            lines.append("➡️ <b>Final Watchlist siap dilanjutkan.</b>")
-        elif any(token in f"{candidate_status} {broker_status} {final_status}" for token in ("WAITING", "EMPTY", "NOT READY")):
-            lines.append("➡️ Sistem menunggu dependency yang dibutuhkan sebelum Final Watchlist.")
-
+    lines += ["", "📦 SYSTEM HEALTH", *_health_lines(data, trade_date)]
+    lines += [
+        "",
+        "🎯 NEXT — FINAL WATCHLIST",
+        "Final Watchlist akan menentukan kandidat prioritas,",
+        "broker confirmation, Entry, SL, TP, serta keputusan final.",
+        "",
+        "📌 Post Market hanya menggambarkan kondisi pasar setelah penutupan.",
+        "Keputusan trading tetap ditentukan pada Final Watchlist.",
+    ]
     if _present(data.get("run_id")):
-        lines += ["", f"<b>Run ID:</b> <code>{escape(str(data['run_id']))}</code>"]
+        lines += ["", _text(data.get("run_id"))]
+    return "\n".join(lines).strip()
 
-    return _join_compact(lines)
+
+__all__ = ["format_post_market"]

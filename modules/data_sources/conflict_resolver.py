@@ -14,7 +14,8 @@ Key rules from the Stage 3 brief:
 * Corporate actions are checked before an OHLC conflict is declared (a legit
   split/dividend gap is not a data conflict).
 * Fallback usage is always flagged on the winning record.
-* Records with different market dates are never merged.
+* Records with different market dates are never merged and never select a
+  source-priority winner.
 """
 
 from dataclasses import dataclass, field
@@ -102,16 +103,22 @@ class ConflictResolver:
             only = candidates[0]
             return ResolutionResult(only, C.CONFLICT_NONE, False, reason="SINGLE_SOURCE")
 
-        # Never merge different market dates.
+        # Different market dates are incomparable facts.  Selecting a
+        # source-priority winner would silently choose a trading session, so
+        # the only valid production behavior is no record + fail closed.
         dates = {str(c.market_date) for c in candidates}
         if len(dates) > 1:
-            winner = self._by_priority(candidates)
-            winner.conflict_status = C.CONFLICT_UNRESOLVED
+            for candidate in candidates:
+                candidate.conflict_status = C.CONFLICT_FAIL_CLOSED
+                candidate.quality_status = C.QUALITY_REJECTED
+                candidate.quality_reasons = sorted(
+                    set(candidate.quality_reasons) | {C.SOURCE_CONFLICT}
+                )
             return ResolutionResult(
-                winner,
-                C.CONFLICT_UNRESOLVED,
-                False,
-                reason=f"MARKET_DATE_MISMATCH: {sorted(dates)}",
+                None,
+                C.CONFLICT_FAIL_CLOSED,
+                True,
+                reason=f"MARKET_DATE_MISMATCH_FAIL_CLOSED: {sorted(dates)}",
             )
 
         rtype = candidates[0].record_type

@@ -166,7 +166,7 @@ def build_global_market_snapshot(
     coverage = float(sentiment.get("coverage_ratio", 0.0))
     minimum_coverage = float(registry.get("minimum_sentiment_coverage_ratio", 0.5))
     snapshot = {
-        "schema_version": "1.7.0-multisource",
+        "schema_version": PACKAGE_VERSION,
         "config_version": PACKAGE_VERSION,
         "snapshot_id": snapshot_id,
         "job_run_id": ctx.run_id,

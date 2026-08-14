@@ -1,0 +1,330 @@
+{
+  "schema_version": 1,
+  "baseline": {
+    "commit": "121bc58b0f6a62dc3a844ee59575fe48ce86cc7d",
+    "audit_document": "docs/SDE_AUDIT_BASELINE.md",
+    "audit_date": "2026-08-13",
+    "implementation_branch": "audit/sde-stabilization"
+  },
+  "policy": {
+    "scope": "P0_P1_STABILIZATION_ONLY",
+    "production_profile": "MODERATE_BASELINE",
+    "auto_entry_enabled": false,
+    "quant_change_policy": "FROZEN",
+    "lifecycle_exception": "Only lifecycle semantics required to unify the audited lifecycle contract may change; scoring, thresholds, hard blockers, and entry/SL/TP price calculations remain frozen."
+  },
+  "pipeline_protected": {
+    "config_version": "1.7.0-multisource",
+    "data_freshness": {
+      "daily_candle_policy": "LAST_CLOSED_CANDLE",
+      "allow_partial_daily_candle": false
+    },
+    "candidate": {
+      "top": 40,
+      "min_score": 58,
+      "max_relative_rank_pct": 15,
+      "setup_min_scores": {
+        "BREAKOUT": 60,
+        "PULLBACK": 58,
+        "TREND_CONTINUATION": 60,
+        "EARLY_ACCUMULATION": 56,
+        "DEVELOPING": 62
+      }
+    },
+    "broker": {
+      "min_coverage": 0.8,
+      "allow_old_date": false,
+      "broker_date_policy": "ask",
+      "scheduler_broker_date_policy": "exact",
+      "allow_partial_broker": true,
+      "minimum_multiday_sessions": 20,
+      "required_matched_count": 40
+    },
+    "exit": {
+      "min_rr": 1.0,
+      "preferred_rr": 2.0,
+      "max_risk_pct": 7.0,
+      "max_hold_days": 20,
+      "bear_market_policy": "CONDITIONAL",
+      "thin_liquidity_policy": "CONDITIONAL",
+      "resistance_must_be_above_entry": true
+    },
+    "decision": {
+      "policy": "MODERATE_SINGLE_DECISION_V1_6_2",
+      "weights": {
+        "technical_quality": 0.42,
+        "entry_readiness": 0.18,
+        "liquidity": 0.1,
+        "broker_decorrelated": 0.17,
+        "foreign": 0.08,
+        "relative_rank": 0.05
+      },
+      "hard_blockers": [
+        "INVALID_DATA",
+        "LIQUIDITY_VERY_POOR",
+        "STRONG_BROKER_DISTRIBUTION",
+        "PRICE_EXTENDED_HARD",
+        "INVALID_STOP",
+        "RISK_REWARD_BELOW_MINIMUM"
+      ],
+      "statuses": [
+        "BUY READY",
+        "BUY ON TRIGGER",
+        "WATCH",
+        "AVOID"
+      ],
+      "production_profile": "MODERATE_BASELINE",
+      "shadow_profiles": [
+        "MODERATE_BASELINE",
+        "MODERATE_BALANCED",
+        "MODERATE_FLEXIBLE"
+      ],
+      "profiles": {
+        "MODERATE_BASELINE": {
+          "weights": {
+            "technical_quality": 0.42,
+            "entry_readiness": 0.18,
+            "liquidity": 0.1,
+            "broker_decorrelated": 0.17,
+            "foreign": 0.08,
+            "relative_rank": 0.05
+          }
+        }
+      },
+      "setup_profiles": {
+        "BREAKOUT": {
+          "technical_min": 67.0,
+          "strong_quality": 72.0,
+          "composite_trigger": 65.0,
+          "watch_score": 56.0,
+          "readiness_ready": 66.0,
+          "readiness_trigger_reference": 45.0,
+          "volume_ratio_min": 1.2,
+          "soft_extension": 2.6,
+          "hard_extension": 3.3,
+          "min_rr": 1.0,
+          "preferred_rr": 2.0,
+          "support_lookback": 20.0,
+          "resistance_lookback": 120.0
+        },
+        "PULLBACK": {
+          "technical_min": 67.0,
+          "strong_quality": 72.0,
+          "composite_trigger": 64.0,
+          "watch_score": 55.0,
+          "readiness_ready": 64.0,
+          "readiness_trigger_reference": 42.0,
+          "volume_ratio_min": 0.8,
+          "soft_extension": 2.2,
+          "hard_extension": 2.8,
+          "min_rr": 1.0,
+          "preferred_rr": 2.0,
+          "support_lookback": 30.0,
+          "resistance_lookback": 120.0
+        },
+        "TREND_CONTINUATION": {
+          "technical_min": 68.0,
+          "strong_quality": 73.0,
+          "composite_trigger": 65.0,
+          "watch_score": 56.0,
+          "readiness_ready": 65.0,
+          "readiness_trigger_reference": 44.0,
+          "volume_ratio_min": 0.9,
+          "soft_extension": 2.5,
+          "hard_extension": 3.0,
+          "min_rr": 1.0,
+          "preferred_rr": 2.0,
+          "support_lookback": 25.0,
+          "resistance_lookback": 120.0
+        },
+        "EARLY_ACCUMULATION": {
+          "technical_min": 61.0,
+          "strong_quality": 68.0,
+          "composite_trigger": 63.0,
+          "watch_score": 54.0,
+          "readiness_ready": 58.0,
+          "readiness_trigger_reference": 35.0,
+          "volume_ratio_min": 0.65,
+          "soft_extension": 2.0,
+          "hard_extension": 2.6,
+          "min_rr": 1.0,
+          "preferred_rr": 1.8,
+          "support_lookback": 30.0,
+          "resistance_lookback": 120.0
+        },
+        "DEVELOPING": {
+          "technical_min": 67.0,
+          "strong_quality": 74.0,
+          "composite_trigger": 66.0,
+          "watch_score": 57.0,
+          "readiness_ready": 66.0,
+          "readiness_trigger_reference": 48.0,
+          "volume_ratio_min": 1.0,
+          "soft_extension": 2.4,
+          "hard_extension": 3.0,
+          "min_rr": 1.0,
+          "preferred_rr": 2.0,
+          "support_lookback": 20.0,
+          "resistance_lookback": 120.0
+        }
+      },
+      "calibration": {
+        "mode": "SHADOW_ONLY",
+        "minimum_shadow_sessions": 20,
+        "preferred_shadow_sessions": 40,
+        "auto_entry_enabled": false,
+        "selection_metric": "EXPECTANCY_R_WITH_RISK_GUARDRAILS"
+      },
+      "portfolio": {
+        "reference_capital": 10000000,
+        "risk_per_trade_pct": 1.0,
+        "max_position_pct": 0.2,
+        "max_market_participation_pct": 0.02
+      },
+      "microstructure": {
+        "minimum_required_metrics": 2,
+        "buy_ready_required_metrics": [
+          "SPREAD",
+          "DEPTH",
+          "FREQUENCY"
+        ],
+        "missing_data_position_multiplier": 0.35,
+        "missing_data_class": "INSUFFICIENT_MICROSTRUCTURE_DATA"
+      }
+    }
+  },
+  "code_defaults": {
+    "moderate_profile": {
+      "description": "Audit V1.6.2 baseline; production control profile.",
+      "weights": {
+        "technical_quality": 0.42,
+        "entry_readiness": 0.18,
+        "liquidity": 0.1,
+        "broker_decorrelated": 0.17,
+        "foreign": 0.08,
+        "relative_rank": 0.05
+      },
+      "strong_setup_trigger_relief": 0.0,
+      "broker_adjustments": {
+        "STRONG_ACCUMULATION": 3.0,
+        "ACCUMULATION": 1.5,
+        "NEUTRAL": 0.0,
+        "DIVERGENCE": -3.0,
+        "DISTRIBUTION": -6.0
+      },
+      "foreign_adjustments": {
+        "POSITIVE": 2.0,
+        "NEUTRAL": 0.0,
+        "NEGATIVE_MILD": -2.0,
+        "NEGATIVE_STRONG": -4.0
+      },
+      "market_adjustments": {
+        "BULL": 0.0,
+        "SIDEWAYS": 0.0,
+        "BEAR": -3.0
+      },
+      "thin_position_multiplier": 0.6,
+      "bear_position_multiplier": 0.6,
+      "sideways_trigger_required": true,
+      "bear_trigger_required": true,
+      "minimum_bear_confidence": 68.0,
+      "bear_max_active_positions": 2
+    },
+    "setup_profiles": {
+      "BREAKOUT": {
+        "technical_min": 67.0,
+        "strong_quality": 72.0,
+        "composite_trigger": 65.0,
+        "watch_score": 56.0,
+        "readiness_ready": 66.0,
+        "readiness_trigger_reference": 45.0,
+        "volume_ratio_min": 1.2,
+        "soft_extension": 2.6,
+        "hard_extension": 3.3,
+        "min_rr": 1.0,
+        "preferred_rr": 2.0,
+        "support_lookback": 20.0,
+        "resistance_lookback": 120.0
+      },
+      "PULLBACK": {
+        "technical_min": 67.0,
+        "strong_quality": 72.0,
+        "composite_trigger": 64.0,
+        "watch_score": 55.0,
+        "readiness_ready": 64.0,
+        "readiness_trigger_reference": 42.0,
+        "volume_ratio_min": 0.8,
+        "soft_extension": 2.2,
+        "hard_extension": 2.8,
+        "min_rr": 1.0,
+        "preferred_rr": 2.0,
+        "support_lookback": 30.0,
+        "resistance_lookback": 120.0
+      },
+      "TREND_CONTINUATION": {
+        "technical_min": 68.0,
+        "strong_quality": 73.0,
+        "composite_trigger": 65.0,
+        "watch_score": 56.0,
+        "readiness_ready": 65.0,
+        "readiness_trigger_reference": 44.0,
+        "volume_ratio_min": 0.9,
+        "soft_extension": 2.5,
+        "hard_extension": 3.0,
+        "min_rr": 1.0,
+        "preferred_rr": 2.0,
+        "support_lookback": 25.0,
+        "resistance_lookback": 120.0
+      },
+      "EARLY_ACCUMULATION": {
+        "technical_min": 61.0,
+        "strong_quality": 68.0,
+        "composite_trigger": 63.0,
+        "watch_score": 54.0,
+        "readiness_ready": 58.0,
+        "readiness_trigger_reference": 35.0,
+        "volume_ratio_min": 0.65,
+        "soft_extension": 2.0,
+        "hard_extension": 2.6,
+        "min_rr": 1.0,
+        "preferred_rr": 1.8,
+        "support_lookback": 30.0,
+        "resistance_lookback": 120.0
+      },
+      "DEVELOPING": {
+        "technical_min": 67.0,
+        "strong_quality": 74.0,
+        "composite_trigger": 66.0,
+        "watch_score": 57.0,
+        "readiness_ready": 66.0,
+        "readiness_trigger_reference": 48.0,
+        "volume_ratio_min": 1.0,
+        "soft_extension": 2.4,
+        "hard_extension": 3.0,
+        "min_rr": 1.0,
+        "preferred_rr": 2.0,
+        "support_lookback": 20.0,
+        "resistance_lookback": 120.0
+      }
+    }
+  },
+  "evidence_blob_shas": {
+    "config/pipeline.json": "31dcff3f80d9fb0a644b539b5bd2b30e9bf99e42",
+    "modules/decision_engine/moderate_profiles.py": "9058c55b635ea8e49f8b5b074312371a321c04b9",
+    "modules/decision_engine/smart_selective_v162.py": "05fd29e596efa2ed08c7b8168b27735692488c3b",
+    "modules/entry_plan_validator/validator.py": "cbcb5e751d87e52137aa211bf50404e7fc658173",
+    "modules/candidate_selector/technical_candidate_selector.py": "3e9e77d11eb520e3ebed3b0beffbbc9e726ccfdb",
+    "modules/technical_feature_engine/technical_feature_engine.py": "d95f86f212ebe61823c54c53c2e9732a7763df12",
+    "modules/broker_fusion/broker_fusion.py": "d2e737200201dcb588971106f840fe9fa686b06d",
+    "modules/exit_engine/exit_engine.py": "422dfc663a3b8d4c26131c10bdf13daed32dad4c",
+    "modules/analytics/outcome_tracker.py": "6ef2b12800e6efcac9dd7b47e8c85ad405c974cc",
+    "modules/database/swing_history_db.py": "e380bafcbf1807f608ea6eeafd0b4e74730760d4"
+  },
+  "protected_source_blobs": {
+    "modules/decision_engine/moderate_profiles.py": "9058c55b635ea8e49f8b5b074312371a321c04b9",
+    "modules/decision_engine/smart_selective_v162.py": "05fd29e596efa2ed08c7b8168b27735692488c3b",
+    "modules/entry_plan_validator/validator.py": "cbcb5e751d87e52137aa211bf50404e7fc658173",
+    "modules/candidate_selector/technical_candidate_selector.py": "3e9e77d11eb520e3ebed3b0beffbbc9e726ccfdb",
+    "modules/technical_feature_engine/technical_feature_engine.py": "d95f86f212ebe61823c54c53c2e9732a7763df12"
+  }
+}

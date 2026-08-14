@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from swing_utils import PACKAGE_VERSION, write_json
 
 
 def _norm(value: Any) -> str:
@@ -38,7 +39,7 @@ def _number(value: Any) -> float | None:
 
 def _empty(trade_date: date, output_path: Path, source_path: Path) -> dict[str, Any]:
     return {
-        "schema_version": "1.7.0-multisource",
+        "schema_version": PACKAGE_VERSION,
         "trade_date": trade_date.isoformat(),
         "generated_at": pd.Timestamp.now(tz="Asia/Jakarta").isoformat(timespec="seconds"),
         "provider": "NONE",
@@ -149,7 +150,7 @@ def produce_sector_rotation(
                     # no decision field is embedded in this presentation file.
                     buckets[bucket].append(str(row.sector))
                 payload = {
-                    "schema_version": "1.7.0-multisource",
+                    "schema_version": PACKAGE_VERSION,
                     "trade_date": trade_date.isoformat(),
                     "generated_at": pd.Timestamp.now(tz="Asia/Jakarta").isoformat(timespec="seconds"),
                     "provider": "LOCAL_TECHNICAL",
@@ -161,6 +162,5 @@ def produce_sector_rotation(
                     **buckets,
                     "output_path": str(output_path),
                 }
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json(output_path, payload)
     return payload

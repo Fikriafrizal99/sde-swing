@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from modules.runtime.context import RuntimeContext
+from swing_utils import write_json
 
 
 @dataclass
@@ -48,8 +49,7 @@ class SnapshotBuilder:
         snapshot_id = str(document.get("snapshot_id") or "snapshot")
         file_name = name or snapshot_id
         target = self.context.paths.output(f"snapshots/{self.category}", self.context.trade_date) / f"{file_name}.json"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(dict(document), ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        write_json(target, dict(document))
         return target
 
 

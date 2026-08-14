@@ -11,13 +11,19 @@ The adapter uses the environment variables `ZAPI_IDX_BASE_URL` and
 header. The published contract documents a 60-request/minute free-tier limit,
 which is handled as a retryable 429 response.
 
-Only these paths are routed:
+The adapter understands these documented acquisition paths:
 
 - `DailyBar` → `/stock-summary` (`length`, `start`, `date`, `code`)
 - `MarketIndex` → `/index-summary` (`length`, `start`, `date`)
 - `SymbolMetadata` → `/companies` and `/securities` (`length`, `start`, `code`;
   securities also accepts `sector` and `board`)
 - `TradingStatus` → `/market-activity` (`type=suspend|relisting|uma`)
+
+Production ownership is narrower than adapter capability. `DailyBar` and
+`MarketIndex` are `DISABLED_IN_PRODUCTION` for ZAPI; their mappings remain a
+compatibility boundary only. ZAPI owns the configured `SymbolMetadata` and
+`TradingStatus` routes, while `config/data_sources.json` remains authoritative
+for every resolution chain.
 
 `/broker-summary` is documented and its response is covered by a fixture, but
 it is not enabled as `BrokerFlow`: the response is aggregate per-broker
@@ -36,7 +42,12 @@ the endpoint in canonical field provenance. Missing credentials produce
 
 - Stockbit API is optional. An empty key leaves the API `NOT_CONFIGURED` and
   allows CSV/JSON/Tampermonkey/local broker raw file fallback.
-- Historical provider is file fallback for existing daily history.
+- `HISTORICAL_PROVIDER` is the primary `DailyBar` owner for production OHLCV
+  acquisition. The existing Yahoo/historical downloader and
+  `LegacyHistoricalProviderAdapter` are the compatibility/acquisition boundary
+  that maps those rows into canonical `DailyBar` records before technical
+  consumption; the word "legacy" does not change provider ownership or
+  priority.
 
 Every routed record carries canonical provenance and the manager emits source
 health and coverage telemetry.

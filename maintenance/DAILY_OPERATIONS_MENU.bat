@@ -11,6 +11,11 @@ if not defined SDE_PYTHON_CMD (
   exit /b 9009
 )
 
+REM Full Daily wrapper mendelegasikan Post Market ke market-first runtime
+REM dengan closing-session IHSG validation; Market Outlook tetap terpisah.
+REM Lifecycle runner legacy tetap run_sde_job_integrated.py.
+REM Broker Period Bridge kemudian mengambil alih orchestration Final Watchlist tanpa mengubah menu utama.
+
 :MENU
 cls
 echo ================================================================
@@ -32,9 +37,9 @@ goto MENU
 
 :FULL_WITH_PORTFOLIO
 cls
-echo Menjalankan Full Daily V1.7.0 + Portfolio Management...
+echo Menjalankan Full Daily + Broker Period Bridge + Portfolio Management...
 echo.
-%SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job full_manual --interactive-broker
+%SDE_PYTHON_CMD% -u tools\run_full_daily_broker_period.py
 set "RC=!ERRORLEVEL!"
 if "!RC!"=="0" (
   echo.
@@ -45,18 +50,19 @@ if "!RC!"=="0" (
   echo [SKIPPED] Portfolio Management tidak dijalankan karena Full Daily exit code !RC!.
 )
 echo.
-%SDE_PYTHON_CMD% tools\print_job_status.py --job full_manual
+%SDE_PYTHON_CMD% tools\print_job_status.py --job final_watchlist
 pause
 goto MENU
 
 :FULL_ENGINE_ONLY
 cls
-echo Menjalankan Full Daily V1.7.0 tanpa Portfolio Management...
+echo Menjalankan Full Daily tanpa Portfolio Management...
+echo Broker period akan dipilih sebelum Final Watchlist.
 echo.
-%SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job full_manual --interactive-broker
+%SDE_PYTHON_CMD% -u tools\run_full_daily_broker_period.py
 set "RC=!ERRORLEVEL!"
 echo.
-%SDE_PYTHON_CMD% tools\print_job_status.py --job full_manual
+%SDE_PYTHON_CMD% tools\print_job_status.py --job final_watchlist
 echo Exit code: !RC!
 pause
 goto MENU

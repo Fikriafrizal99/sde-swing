@@ -1,5 +1,5 @@
 {
-  "config_version": "1.7.0-multisource",
+  "config_version": "1.7.1",
   "timezone": "Asia/Jakarta",
   "trading_days_only": true,
   "trading_calendar": "config/trading_calendar.json",

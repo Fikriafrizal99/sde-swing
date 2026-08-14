@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from swing_utils import PACKAGE_VERSION, PIPELINE_VERSION, file_sha256
+from swing_utils import PACKAGE_VERSION, PIPELINE_VERSION, file_sha256, write_json
 from modules.market_calendar.idx_calendar import normalized_holidays
 
 EXPECTED_STATUSES = ["BUY READY", "BUY ON TRIGGER", "WATCH", "AVOID"]
@@ -229,5 +229,5 @@ def write_runtime_config_audit(path: Path, provenance: dict[str, Any], payload: 
             "exit": exit_cfg,
         },
     }
-    target.write_text(json.dumps(audit, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    write_json(target, audit)
     return target

@@ -4,6 +4,10 @@ chcp 65001 >nul
 cd /d "%~dp0"
 title SDE Swing - Post Market
 
+REM Canonical Post Market payload/runtime is the market-first closing-session
+REM builder. The shim keeps the integrated lifecycle while using that one path.
+REM The underlying control remains compatible with run_sde_job_integrated.py.
+
 :MENU
 cls
 echo ================================================================
@@ -37,12 +41,12 @@ set "ARGS="
 if "%MODE%"=="1" set "ARGS=--job post_market"
 if "%MODE%"=="2" set "ARGS=--job post_market --preview-existing --no-telegram"
 if not defined ARGS goto MENU
-%SDE_PYTHON_CMD% -u run_sde_job_integrated.py %ARGS%
+%SDE_PYTHON_CMD% -u run_sde_job_integrated_market_first.py %ARGS%
 set "RC=!ERRORLEVEL!"
 goto STATUS
 
 :NORMAL_WITH_NEWS
-%SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job post_market
+%SDE_PYTHON_CMD% -u run_sde_job_integrated_market_first.py --job post_market
 set "RC=!ERRORLEVEL!"
 if "!RC!"=="0" (
   echo.
@@ -78,7 +82,7 @@ goto MENU
 
 :RESEND
 set "RESEND_DATE="
-for /f "delims=" %%D in ('%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py 2^>nul') do set "RESEND_DATE=%%D"
+for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py" 2^>nul`) do set "RESEND_DATE=%%D"
 if not defined RESEND_DATE goto RESEND_DATE_FAILED
 
 echo.

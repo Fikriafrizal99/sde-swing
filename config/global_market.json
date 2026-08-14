@@ -1,5 +1,5 @@
 {
-  "config_version": "1.7.0-multisource",
+  "config_version": "1.7.1",
   "provider": "YAHOO",
   "enabled": true,
   "source_mode": "LIVE",

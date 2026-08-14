@@ -94,12 +94,12 @@ def test_buy_signal_is_deduplicated_and_downgrade_only_updates_scan_state(tmp_pa
     conn.close()
 
 
-def test_waiting_trigger_opens_then_closes_at_tp1_with_events(tmp_path: Path) -> None:
+def test_waiting_trigger_opens_then_keeps_tp1_open_and_closes_at_tp2_with_events(tmp_path: Path) -> None:
     db = tmp_path / "history.db"
     historical = tmp_path / "prices"
     historical.mkdir()
     decisions, plans = _write_signal_files(tmp_path)
-    _write_prices(historical, [106, 108])
+    _write_prices(historical, [106])
     conn = connect(db)
     register_decision_file(conn, decisions, plans, "RUN-1", "2026-08-01")
     result = update_outcomes(conn, historical)
@@ -109,14 +109,25 @@ def test_waiting_trigger_opens_then_closes_at_tp1_with_events(tmp_path: Path) ->
     assert row["entry_date"] == "2026-08-04"
     assert {item["event_type"] for item in pending_lifecycle_events(conn)} >= {"SIGNAL_CREATED", "ENTRY_TRIGGERED"}
 
-    _write_prices(historical, [106, 111, 108])
+    _write_prices(historical, [106, 111])
+    update_outcomes(conn, historical)
+    row = conn.execute("SELECT * FROM signal_outcome_ledger").fetchone()
+    assert row["current_status"] == "OPEN"
+    assert row["final_outcome"] == "OPEN"
+    assert row["tp1_hit"] == 1
+    assert row["trailing_active"] == 1
+    assert row["exit_price"] is None
+    event_types = {item["event_type"] for item in pending_lifecycle_events(conn)}
+    assert "TP1_HIT" in event_types
+
+    _write_prices(historical, [106, 111, 116])
     update_outcomes(conn, historical)
     row = conn.execute("SELECT * FROM signal_outcome_ledger").fetchone()
     assert row["current_status"] == "CLOSED"
     assert row["final_outcome"] == "WIN"
-    assert row["exit_reason"] == "TP1_HIT"
+    assert row["exit_reason"] == "TP2_HIT"
     event_types = {item["event_type"] for item in pending_lifecycle_events(conn)}
-    assert {"TP1_HIT", "CLOSED"} <= event_types
+    assert {"TP1_HIT", "TP2_HIT", "CLOSED"} <= event_types
     conn.close()
 
 
@@ -168,6 +179,7 @@ def test_export_reports_writes_lifecycle_and_portfolio_artifacts(tmp_path: Path)
         "SIGNAL_OUTCOME_LEDGER.csv",
         "ACTIVE_RECOMMENDATIONS.csv",
         "LIFECYCLE_EVENTS.csv",
+        "SIGNAL_RECOMMENDATION_HISTORY.csv",
         "PORTFOLIO_POSITIONS.csv",
         "ACTIVE_RECOMMENDATIONS_TELEGRAM.txt",
         "STATUS_CHANGES_TELEGRAM.txt",
@@ -323,7 +335,7 @@ def test_lifecycle_digest_keeps_events_pending_when_send_fails(tmp_path: Path) -
         symbol="BBCA",
         event_type="TP1_HIT",
         previous_status="OPEN",
-        new_status="CLOSED",
+        new_status="OPEN",
         event_date="2026-08-05",
         event_price=9100,
         event_reason="TP1_HIT",
@@ -397,7 +409,7 @@ def test_lifecycle_digest_acknowledges_only_events_in_bounded_message(tmp_path: 
         symbol="TLKM",
         event_type="TP1_HIT",
         previous_status="OPEN",
-        new_status="CLOSED",
+        new_status="OPEN",
         event_date="2026-08-05",
         event_price=3000,
         event_reason="TP1_HIT",

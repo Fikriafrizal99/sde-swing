@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Deprecated compatibility entry point.
 
-Use ``run_sde_job.py`` for the V1.7.0 integrated runtime.  This module stays
+Use ``run_sde_job.py`` for the V1.7.1 integrated runtime.  This module stays
 available because the Stage 1/2 command contract and regression fixtures still
 invoke it through ``job_full_manual``.
 """

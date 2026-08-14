@@ -2,23 +2,26 @@ from __future__ import annotations
 
 """Broker multi-day window definitions and per-window feature computation.
 
-Windows use the IDX trading calendar, not calendar days.  Each window computes
-cumulative flow, consistency, acceleration, weighted broker cost, persistence,
-concentration, and coverage.  Nothing here makes a BUY/WATCH/AVOID decision.
+Production windows are anchored to an explicit IDX market session.  A missing
+session therefore stays missing instead of being replaced by an older file.
+Legacy/unit callers that omit ``as_of_date`` retain the historical "most recent
+N observations" behaviour for backward compatibility.
 
-Broker cost is weighted by traded value/volume (not a simple average), and a
-window is never reported complete when coverage is short.
+Nothing here makes a BUY/WATCH/AVOID decision.
 """
 
+import json
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from pathlib import Path
+from typing import Any
 
-# Window sizes in trading sessions.
+from modules.market_calendar.idx_calendar import is_idx_trading_day, previous_idx_trading_day
+
 WINDOWS: dict[str, int] = {"1D": 1, "3D": 3, "5D": 5, "10D": 10, "20D": 20}
 DEFAULT_PRIMARY_WINDOW = "5D"
-
-# A window is "complete" only at/above this coverage ratio.
 COVERAGE_COMPLETE_THRESHOLD = 0.8
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+TRADING_CALENDAR_PATH = PROJECT_ROOT / "config/trading_calendar.json"
 
 
 @dataclass
@@ -29,7 +32,6 @@ class BrokerDay:
     rows: list[dict[str, Any]] = field(default_factory=list)
 
     def net_value(self) -> float:
-        # Net across brokers: BUY net positive, SELL net negative.
         total = 0.0
         for r in self.rows:
             side = str(r.get("side", "")).upper()
@@ -119,15 +121,90 @@ def _f(value: Any) -> float | None:
         f = float(value)
     except (TypeError, ValueError):
         return None
-    return f if f == f else None  # drop NaN
+    return f if f == f else None
+
+
+def _calendar_rules() -> tuple[list[str], list[str]]:
+    if not TRADING_CALENDAR_PATH.exists():
+        return [], []
+    try:
+        payload = json.loads(TRADING_CALENDAR_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return [], []
+    raw_holidays = payload.get("holidays", {})
+    if isinstance(raw_holidays, dict):
+        holidays = [
+            str(day)
+            for day, detail in raw_holidays.items()
+            if not isinstance(detail, dict) or bool(detail.get("holiday", True))
+        ]
+    else:
+        holidays = [str(item) for item in raw_holidays or []]
+    special = [str(item) for item in payload.get("special_trading_days", []) or []]
+    return holidays, special
+
+
+def expected_session_dates(as_of_date: str, session_count: int) -> list[str]:
+    """Return the exact IDX sessions in a window ending at ``as_of_date``."""
+    if not as_of_date or session_count <= 0:
+        return []
+    holidays, special = _calendar_rules()
+    try:
+        from datetime import date
+        end = date.fromisoformat(str(as_of_date)[:10])
+    except Exception:
+        return []
+    if not is_idx_trading_day(end, holidays=holidays, special_trading_days=special):
+        return []
+    sessions = [end]
+    probe = end
+    while len(sessions) < session_count:
+        probe = previous_idx_trading_day(
+            probe,
+            holidays=holidays,
+            special_trading_days=special,
+        )
+        sessions.append(probe)
+    return [item.isoformat() for item in sorted(sessions)]
+
+
+def _unique_days(days: list[BrokerDay]) -> list[BrokerDay]:
+    """Keep one observation per market date; later input wins deterministically."""
+    by_date: dict[str, BrokerDay] = {}
+    for day in days:
+        by_date[str(day.market_date)] = day
+    return [by_date[key] for key in sorted(by_date)]
+
+
+def select_window_days(
+    days: list[BrokerDay],
+    window: str,
+    *,
+    as_of_date: str | None = None,
+    session_count: int | None = None,
+    expected_dates_override: list[str] | None = None,
+) -> tuple[list[BrokerDay], list[str]]:
+    """Select broker observations for one window.
+
+    With explicit ``as_of_date`` (the production path), only exact IDX session
+    dates are eligible.  Without it, the previous N-observation behaviour is
+    retained for backward-compatible helpers/tests and historical utilities.
+    """
+    expected = int(session_count) if session_count is not None else WINDOWS[window]
+    if expected <= 0:
+        raise ValueError("BROKER_WINDOW_SESSION_COUNT_INVALID")
+    unique = _unique_days(days)
+    if as_of_date is None:
+        ordered = unique[-expected:]
+        return ordered, [day.market_date for day in ordered]
+
+    expected_dates = list(expected_dates_override or expected_session_dates(str(as_of_date), expected))
+    by_date = {day.market_date: day for day in unique}
+    selected = [by_date[session] for session in expected_dates if session in by_date]
+    return selected, expected_dates
 
 
 def _weighted_cost(rows: list[dict[str, Any]], side: str) -> float | None:
-    """Value/volume-weighted average broker cost for one side.
-
-    Weighted by gross value when avg_price is present; falls back to
-    net_lot-weighted.  Never a simple mean of prices.
-    """
     num = 0.0
     den = 0.0
     for r in rows:
@@ -150,7 +227,6 @@ def _weighted_cost(rows: list[dict[str, Any]], side: str) -> float | None:
 
 
 def _concentration(rows: list[dict[str, Any]], side: str) -> float:
-    """Herfindahl-style concentration of net value among brokers on one side."""
     vals = [
         abs(_f(r.get("net_value")) or 0.0)
         for r in rows
@@ -163,7 +239,6 @@ def _concentration(rows: list[dict[str, Any]], side: str) -> float:
 
 
 def _persistent_brokers(days: list[BrokerDay], side: str, limit: int = 5) -> tuple[list[str], float]:
-    """Brokers appearing in the top ranks across most sessions + overlap ratio."""
     if not days:
         return [], 0.0
     per_day_sets: list[set[str]] = []
@@ -173,21 +248,19 @@ def _persistent_brokers(days: list[BrokerDay], side: str, limit: int = 5) -> tup
         per_day_sets.append(set(top))
         for code in top:
             counts[code] = counts.get(code, 0) + 1
-    # Persistent = present in >= half of the sessions.
     threshold = max(1, len(days) // 2)
     persistent = sorted(
         [code for code, n in counts.items() if n >= threshold],
-        key=lambda c: counts[c],
+        key=lambda code: counts[code],
         reverse=True,
     )[:limit]
-    # Overlap ratio: average pairwise Jaccard of consecutive sessions.
     if len(per_day_sets) < 2:
         overlap = 1.0 if per_day_sets and per_day_sets[0] else 0.0
     else:
         ratios = []
-        for a, b in zip(per_day_sets, per_day_sets[1:]):
-            union = a | b
-            ratios.append(len(a & b) / len(union) if union else 0.0)
+        for left, right in zip(per_day_sets, per_day_sets[1:]):
+            union = left | right
+            ratios.append(len(left & right) / len(union) if union else 0.0)
         overlap = sum(ratios) / len(ratios) if ratios else 0.0
     return persistent, round(overlap, 4)
 
@@ -197,43 +270,51 @@ def compute_window_features(
     window: str,
     *,
     current_price: float | None = None,
+    as_of_date: str | None = None,
+    session_count: int | None = None,
+    expected_dates_override: list[str] | None = None,
 ) -> WindowFeatures:
-    expected = WINDOWS[window]
-    # Use the most recent `expected` sessions available.
-    ordered = sorted(days, key=lambda d: d.market_date)[-expected:]
+    expected = int(session_count) if session_count is not None else WINDOWS[window]
+    ordered, expected_dates = select_window_days(
+        days,
+        window,
+        as_of_date=as_of_date,
+        session_count=expected,
+        expected_dates_override=expected_dates_override,
+    )
     available = len(ordered)
     coverage = available / expected if expected else 0.0
-    complete = coverage >= COVERAGE_COMPLETE_THRESHOLD and available >= 1
+    if as_of_date is None:
+        # Compatibility contract: old callers considered >=80% coverage usable.
+        complete = coverage >= COVERAGE_COMPLETE_THRESHOLD and available >= 1
+    else:
+        # Production contract: named N-session windows are complete only when
+        # every expected IDX session exists. Missing != zero flow.
+        complete = bool(expected_dates) and available == expected
 
-    net_values = [d.net_value() for d in ordered]
-    net_volumes = [d.net_volume() for d in ordered]
+    net_values = [day.net_value() for day in ordered]
+    net_volumes = [day.net_volume() for day in ordered]
     cumulative_value = sum(net_values)
     cumulative_volume = sum(net_volumes)
     avg_daily = cumulative_value / available if available else 0.0
 
-    positive_days = sum(1 for v in net_values if v > 0)
-    negative_days = sum(1 for v in net_values if v < 0)
+    positive_days = sum(1 for value in net_values if value > 0)
+    negative_days = sum(1 for value in net_values if value < 0)
     positive_ratio = positive_days / available if available else 0.0
     negative_ratio = negative_days / available if available else 0.0
-
-    # Flow consistency: fraction of days sharing the dominant sign.
     if net_values:
         dominant = positive_days if cumulative_value >= 0 else negative_days
         consistency = dominant / available
     else:
         consistency = 0.0
 
-    # Flow acceleration: latest-half average vs earlier-half average.
     acceleration = _acceleration(net_values)
-
-    # Contributions.
-    abs_total = sum(abs(v) for v in net_values)
-    latest_contribution = (abs(net_values[-1]) / abs_total) if abs_total else 0.0
-    largest_contribution = (max((abs(v) for v in net_values), default=0.0) / abs_total) if abs_total else 0.0
-    # Single-day domination: one session drives most of the window flow.
+    abs_total = sum(abs(value) for value in net_values)
+    latest_contribution = abs(net_values[-1]) / abs_total if abs_total else 0.0
+    largest_contribution = max((abs(value) for value in net_values), default=0.0) / abs_total if abs_total else 0.0
     single_day_domination = largest_contribution >= 0.6 and available >= 2
 
-    all_rows: list[dict[str, Any]] = [r for d in ordered for r in d.rows]
+    all_rows: list[dict[str, Any]] = [row for day in ordered for row in day.rows]
     buy_cost = _weighted_cost(all_rows, "BUY")
     sell_cost = _weighted_cost(all_rows, "SELL")
     distance = None
@@ -272,11 +353,9 @@ def compute_window_features(
 
 
 def _acceleration(net_values: list[float]) -> float:
-    """Positive when recent flow exceeds earlier flow, normalized to [-1, 1]."""
-    n = len(net_values)
-    if n < 2:
+    if len(net_values) < 2:
         return 0.0
-    half = n // 2
+    half = len(net_values) // 2
     earlier = net_values[:half] or net_values[:1]
     recent = net_values[half:]
     earlier_avg = sum(earlier) / len(earlier)

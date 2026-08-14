@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
-"""Run the unchanged Technical Feature Engine on the current validated universe.
+"""Run the frozen Technical Feature Engine behind the canonical data boundary.
 
-The baseline technical engine intentionally scans every CSV in its input
-folder. Historical files can outlive the current universe, and a transient
-Yahoo failure can leave a stale symbol file behind. This wrapper builds a
-run-scoped hardlink/copy view containing only symbols proven current by the
-Yahoo refresh manifest, then delegates to the baseline engine unchanged.
+The legacy Yahoo/historical downloader remains the acquisition provider.  This
+wrapper selects only symbols proven current by the Yahoo refresh manifest, then
+routes their historical rows through ``DataSourceManager`` and the legacy
+DailyBar adapter.  The frozen Technical Feature Engine receives only the
+run-scoped canonical CSV materialization, never the raw provider folder.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import os
-import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,11 +19,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from modules.data_sources.legacy_daily_bar_adapter import (  # noqa: E402
+    CANONICAL_DAILY_HISTORY_CONTRACT,
+    materialize_legacy_daily_history,
+)
+from modules.runtime.data_source_manager import DataSourceManager  # noqa: E402
 from modules.technical_feature_engine import technical_feature_engine as base  # noqa: E402
+from swing_utils import write_json  # noqa: E402
 
 
 ACCEPTED_YAHOO_QUALITY = {"VALID", "PARTIAL_COVERAGE"}
 CURRENT_PLAN_STATUSES = {"UPDATED", "ALREADY_CURRENT", "UPDATED_VALID", "UNCHANGED_ALREADY_CURRENT"}
+CANONICAL_BOUNDARY = "DataSourceManager.route"
 
 
 def _clean_symbol(value: object) -> str:
@@ -64,13 +69,8 @@ def _load_manifest(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _link_or_copy(source: Path, destination: Path) -> str:
-    try:
-        os.link(source, destination)
-        return "hardlink"
-    except OSError:
-        shutil.copy2(source, destination)
-        return "copy"
+def _atomic_audit(path: Path, payload: dict[str, Any]) -> None:
+    write_json(path, payload)
 
 
 def build_validated_input(
@@ -85,28 +85,27 @@ def build_validated_input(
         or manifest.get("Latest_Closed_Candle_Date")
         or ""
     )
+    if not expected:
+        raise RuntimeError("YAHOO_EXPECTED_CLOSED_DATE_MISSING")
     if not selected:
         raise RuntimeError("YAHOO_VALIDATED_UNIVERSE_EMPTY")
 
-    root = input_dir.parent / "validated_runs" / run_id
-    if root.exists():
-        shutil.rmtree(root)
-    root.mkdir(parents=True, exist_ok=True)
-
-    linked: list[str] = []
-    missing_files: list[str] = []
-    link_modes: dict[str, int] = {"hardlink": 0, "copy": 0}
-    for symbol in selected:
-        source = input_dir / f"{symbol}.csv"
-        if not source.exists() or source.stat().st_size == 0:
-            missing_files.append(symbol)
-            continue
-        mode = _link_or_copy(source, root / source.name)
-        link_modes[mode] = link_modes.get(mode, 0) + 1
-        linked.append(symbol)
-
-    if not linked:
-        raise RuntimeError("YAHOO_VALIDATED_INPUT_FILES_EMPTY")
+    manager = DataSourceManager(
+        PROJECT_ROOT / "config/data_sources.json",
+        root=PROJECT_ROOT,
+        mode="LIVE",
+        run_id=run_id,
+        force_mock=False,
+        file_roots={"historical": input_dir},
+    )
+    canonical_dir, canonical = materialize_legacy_daily_history(
+        manager,
+        input_dir=input_dir,
+        symbols=selected,
+        expected_market_date=expected,
+        run_id=run_id,
+        manifest_dir=manifest_dir,
+    )
 
     input_files = sorted(input_dir.glob("*.csv")) if input_dir.exists() else []
     all_existing = {_clean_symbol(path.stem) for path in input_files}
@@ -117,28 +116,43 @@ def build_validated_input(
     }
     ignored_not_in_universe = sorted(all_existing - universe)
     omitted_not_current = sorted(universe - set(selected))
+    accepted = list(canonical.get("Accepted_Symbols", []))
+    rejected = dict(canonical.get("Rejected_Symbols", {}))
 
     audit = {
         "Run_ID": run_id,
+        "Canonical_Boundary": CANONICAL_BOUNDARY,
+        "Canonical_Contract": CANONICAL_DAILY_HISTORY_CONTRACT,
+        "Legacy_Adapter": canonical.get("Legacy_Adapter", "LegacyHistoricalProviderAdapter"),
         "Expected_Closed_Date": expected,
         "Yahoo_Data_Quality_Status": manifest.get("Data_Quality_Status"),
         "Yahoo_Valid_Symbol_Coverage_Ratio": manifest.get("Valid_Symbol_Coverage_Ratio", 1.0),
         "Source_Input_Dir": str(input_dir.resolve()),
-        "Validated_Input_Dir": str(root.resolve()),
+        "Validated_Input_Dir": str(canonical_dir.resolve()),
+        "Canonical_Input_Dir": str(canonical_dir.resolve()),
+        "Canonical_Manifest": canonical.get("Manifest_Path", ""),
         "Universe_Symbol_Count": len(universe),
         "Selected_Current_Symbol_Count": len(selected),
-        "Linked_Current_Symbol_Count": len(linked),
-        "Missing_Current_File_Count": len(missing_files),
+        # Compatibility name retained for older operational readers.  These
+        # are canonicalized files now; no hardlinks/copies are created.
+        "Linked_Current_Symbol_Count": len(accepted),
+        "Canonicalized_Current_Symbol_Count": len(accepted),
+        "Missing_Current_File_Count": sum(
+            1 for reason in rejected.values() if reason == "SOURCE_FILE_MISSING"
+        ),
+        "Rejected_Canonical_Symbol_Count": len(rejected),
+        "Canonical_Coverage_Ratio": canonical.get("Canonical_Coverage_Ratio", 0.0),
         "Omitted_Not_Current_Count": len(omitted_not_current),
         "Ignored_Not_In_Current_Universe_Count": len(ignored_not_in_universe),
-        "Missing_Current_Files": missing_files,
+        "Rejected_Canonical_Symbols": rejected,
         "Omitted_Not_Current": omitted_not_current,
         "Ignored_Not_In_Current_Universe": ignored_not_in_universe,
-        "Link_Mode_Counts": link_modes,
+        "Link_Mode_Counts": {"hardlink": 0, "copy": 0, "canonical_materialized": len(accepted)},
+        "Engine_Input_Is_Raw_Provider_Directory": False,
     }
     audit_path = manifest_dir / f"TECHNICAL_INPUT_FILTER_{run_id}.json"
-    audit_path.write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
-    return root, audit
+    _atomic_audit(audit_path, audit)
+    return canonical_dir, audit
 
 
 def _wrapper_args(argv: list[str]) -> argparse.Namespace:
@@ -164,6 +178,28 @@ def _replace_input_arg(argv: list[str], new_input: Path) -> list[str]:
     return result
 
 
+def _annotate_technical_manifest(
+    manifest_dir: Path,
+    run_id: str,
+    raw_input: Path,
+    canonical_input: Path,
+    audit: dict[str, Any],
+) -> None:
+    path = manifest_dir / f"TECHNICAL_MANIFEST_{run_id}.json"
+    payload = _load_manifest(path)
+    if not payload:
+        raise RuntimeError(f"TECHNICAL_MANIFEST_NOT_FOUND_AFTER_ENGINE:{path}")
+    payload.update({
+        "Canonical_Data_Boundary": CANONICAL_BOUNDARY,
+        "Canonical_Data_Contract": CANONICAL_DAILY_HISTORY_CONTRACT,
+        "Canonical_Input_Manifest": audit.get("Canonical_Manifest", ""),
+        "Canonical_Input_Dir": str(canonical_input.resolve()),
+        "Raw_Provider_Input_Dir": str(raw_input.resolve()),
+        "Engine_Input_Is_Raw_Provider_Directory": False,
+    })
+    _atomic_audit(path, payload)
+
+
 def main() -> int:
     wrapper = _wrapper_args(sys.argv[1:])
     manifest_dir = Path(wrapper.manifest_dir)
@@ -179,20 +215,21 @@ def main() -> int:
         return 2
 
     try:
-        validated_dir, audit = build_validated_input(
+        canonical_dir, audit = build_validated_input(
             Path(wrapper.input),
             manifest,
             wrapper.run_id,
             manifest_dir,
         )
     except Exception as exc:
-        print(f"ERROR: gagal membangun validated technical input: {exc}", file=sys.stderr)
+        print(f"ERROR: gagal membangun canonical technical input: {exc}", file=sys.stderr)
         return 2
 
     print(
-        "[VALIDATED INPUT] "
-        f"current={audit['Linked_Current_Symbol_Count']}/"
-        f"{audit['Universe_Symbol_Count']} | "
+        "[CANONICAL INPUT] "
+        f"current={audit['Canonicalized_Current_Symbol_Count']}/"
+        f"{audit['Selected_Current_Symbol_Count']} | "
+        f"coverage={float(audit['Canonical_Coverage_Ratio']):.0%} | "
         f"omitted_not_current={audit['Omitted_Not_Current_Count']} | "
         f"ignored_old_files={audit['Ignored_Not_In_Current_Universe_Count']}",
         flush=True,
@@ -200,10 +237,24 @@ def main() -> int:
 
     original_argv = sys.argv
     try:
-        sys.argv = [original_argv[0], *_replace_input_arg(original_argv[1:], validated_dir)]
-        return base.main()
+        sys.argv = [original_argv[0], *_replace_input_arg(original_argv[1:], canonical_dir)]
+        result = base.main()
     finally:
         sys.argv = original_argv
+
+    if result == 0:
+        try:
+            _annotate_technical_manifest(
+                manifest_dir,
+                wrapper.run_id,
+                Path(wrapper.input),
+                canonical_dir,
+                audit,
+            )
+        except Exception as exc:
+            print(f"ERROR: canonical technical lineage tidak dapat dipersist: {exc}", file=sys.stderr)
+            return 2
+    return result
 
 
 if __name__ == "__main__":

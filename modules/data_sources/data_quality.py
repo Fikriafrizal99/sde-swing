@@ -24,6 +24,19 @@ from modules.market_calendar.idx_calendar import is_idx_trading_day
 from modules.data_sources.canonical import REQUIRED_FIELDS
 
 
+MARKET_SESSION_RECORD_TYPES = frozenset(
+    {
+        "DailyBar",
+        "IntradayQuote",
+        "OrderBookSnapshot",
+        "BrokerFlow",
+        "ForeignFlow",
+        "TradingStatus",
+        "MarketIndex",
+    }
+)
+
+
 @dataclass
 class QualityFinding:
     reason: str
@@ -182,8 +195,12 @@ class DataQualityEngine:
             except ValueError:
                 findings.append(QualityFinding(C.INVALID_SCHEMA, C.SEVERITY_MEDIUM, "event_timestamp"))
 
-        # Non-trading day.
-        if not is_idx_trading_day(market, self.holidays, self.special_trading_days):
+        # Only exchange-session records require an open BEI session. Metadata
+        # and corporate-action records may legitimately arrive on closed days.
+        if (
+            record.record_type in MARKET_SESSION_RECORD_TYPES
+            and not is_idx_trading_day(market, self.holidays, self.special_trading_days)
+        ):
             findings.append(QualityFinding(C.NON_TRADING_DAY, C.SEVERITY_HIGH, market.isoformat()))
 
         # Expected market date mismatch.

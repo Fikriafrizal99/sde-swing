@@ -44,53 +44,85 @@ def _event_label(event_type: str) -> tuple[str, str]:
     }.get(event_type, ("🔄", event_type.replace("_", " ") or "STATUS CHANGE"))
 
 
+EVENT_GROUP_ORDER = (
+    "ENTRY_TRIGGERED",
+    "TP1_HIT",
+    "STOP_LOSS_HIT",
+    "TP2_HIT",
+    "MAX_HOLD_EXIT",
+    "EXPIRED",
+    "INVALIDATED_BEFORE_ENTRY",
+)
+
+
 def build_lifecycle_message(events: list[Mapping[str, Any]], *, max_events: int = 20) -> str:
     material = tracker.material_lifecycle_events(events)
     if not material:
         return ""
 
     limit = max(int(max_events or 1), 1)
+    rendered = material[:limit]
     lines = [
-        "🔔 <b>CUANS HIT DAILY</b>",
-        f"📊 <b>{len(material)} Hit Plan</b>",
+        "🔔 <b>SDE SWING — LIFECYCLE DIGEST</b>",
+        f"📊 <b>{len(material)} perubahan material</b>",
         "━━━━━━━━━━━━━━━━━━━",
     ]
     body: list[str] = []
 
-    for event in material[:limit]:
-        symbol = str(_value(event, "symbol") or "").strip().upper()
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for event in rendered:
         event_type = str(_value(event, "event_type") or "").strip().upper()
-        reason = str(_value(event, "event_reason") or event_type or "").replace("_", " ").strip()
-        price = fmt_idx_price(_value(event, "event_price"), anchor_price=_value(event, "event_price"))
-        date_text = _event_date(_value(event, "event_date"))
+        grouped.setdefault(event_type, []).append(event)
+
+    ordered_types = [event_type for event_type in EVENT_GROUP_ORDER if grouped.get(event_type)]
+    ordered_types.extend(event_type for event_type in grouped if event_type not in EVENT_GROUP_ORDER)
+    for event_type in ordered_types:
+        group = grouped[event_type]
         emoji, label = _event_label(event_type)
-
-        block = [f"{emoji} {symbol} | {label}"]
-        if event_type == "ENTRY_TRIGGERED":
-            block.extend([
-                f"Trigger   {reason.title() or '-'}",
-                f"Price     {price}",
-            ])
-        elif event_type in {"TP1_HIT", "TP2_HIT", "STOP_LOSS_HIT", "MAX_HOLD_EXIT"}:
-            block.append(f"Exit      {price}")
-        elif event_type in {"EXPIRED", "INVALIDATED_BEFORE_ENTRY"}:
-            block.extend([
-                f"Reason    {reason.title() or '-'}",
-                f"Price     {price}",
-            ])
-        else:
-            previous = str(_value(event, "previous_status") or "-").replace("_", " ")
-            new = str(_value(event, "new_status") or "-").replace("_", " ")
-            block.append(f"Status    {previous} -> {new}")
-            if reason:
-                block.append(f"Reason    {reason.title()}")
-            if price != "-":
-                block.append(f"Price     {price}")
-        block.append(f"Date      {date_text}")
-
         if body:
             body.append("")
-        body.extend(block)
+        body.append(f"{emoji} {label} — {len(group)}")
+        for event in group:
+            symbol = str(_value(event, "symbol") or "").strip().upper()
+            reason = str(_value(event, "event_reason") or event_type or "").replace("_", " ").strip()
+            price = fmt_idx_price(
+                _value(event, "event_price"),
+                anchor_price=_value(event, "event_price"),
+            )
+            date_text = _event_date(_value(event, "event_date"))
+            if event_type == "ENTRY_TRIGGERED":
+                body.append(f"◆ {symbol} @ {price} · {date_text} · {reason.title() or '-'}")
+            elif event_type == "TP1_HIT":
+                body.extend([
+                    f"◆ {symbol} @ {price} · {date_text}",
+                    "  → Trailing active",
+                ])
+            elif event_type in {"TP2_HIT", "STOP_LOSS_HIT", "MAX_HOLD_EXIT"}:
+                body.append(f"◆ {symbol} @ {price} · {date_text}")
+            elif event_type == "EXPIRED":
+                expiry = tracker.waiting_expiry_sessions(
+                    _value(event, "trigger_expiry_days", 7)
+                )
+                rec = tracker.as_int(_value(event, "recommendation_count"), 0)
+                original = _event_date(
+                    _value(event, "original_signal_date", _value(event, "event_date"))
+                )
+                body.extend([
+                    f"◆ {symbol} · {date_text}",
+                    f"  Waiting {expiry} sesi perdagangan tanpa entry trigger",
+                    f"  REC selama lifecycle: {rec}x",
+                    f"  Original signal: {original}",
+                ])
+            elif event_type == "INVALIDATED_BEFORE_ENTRY":
+                body.extend([
+                    f"◆ {symbol} · {date_text}",
+                    f"  Reason: {reason.title() or '-'}",
+                    f"  Price: {price}",
+                ])
+            else:
+                previous = str(_value(event, "previous_status") or "-").replace("_", " ")
+                new = str(_value(event, "new_status") or "-").replace("_", " ")
+                body.append(f"◆ {symbol} · {previous} -> {new} · {date_text}")
 
     lines.extend(["", "<pre>" + html.escape("\n".join(body)) + "</pre>"])
     if len(material) > limit:

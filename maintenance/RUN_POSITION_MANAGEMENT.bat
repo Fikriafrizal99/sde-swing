@@ -24,7 +24,7 @@ for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "[Environment]
 if defined PERSISTED_REPORT_ID set "TELEGRAM_THREAD_REPORT_ID=!PERSISTED_REPORT_ID!"
 
 set "TRADE_DATE="
-for /f "delims=" %%D in ('%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py 2^>nul') do set "TRADE_DATE=%%D"
+for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py" 2^>nul`) do set "TRADE_DATE=%%D"
 if not defined TRADE_DATE (
   echo [FAILED] Tidak dapat menentukan hari trading IDX terakhir.
   if "%NON_BLOCKING%"=="0" pause
@@ -54,6 +54,14 @@ if "!ROUTE_RC!"=="0" (
 )
 echo.
 
+echo [0/2] Sinkron metadata histori broker legacy...
+%SDE_PYTHON_CMD% -u modules\portfolio\repair_legacy_broker_backfill_provenance.py --db data\database\sde_swing_history.db
+set "BROKER_META_RC=!ERRORLEVEL!"
+if not "!BROKER_META_RC!"=="0" (
+  echo [WARNING] Repair metadata broker gagal. Analisis tetap dilanjutkan tanpa mengubah raw broker data.
+)
+
+echo.
 echo [1/2] Refresh data posisi OPEN...
 %SDE_PYTHON_CMD% -u modules\portfolio\refresh_open_positions.py --config config\pipeline.json --trade-date "!TRADE_DATE!"
 set "REFRESH_RC=!ERRORLEVEL!"

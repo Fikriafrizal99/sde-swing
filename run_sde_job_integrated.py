@@ -31,6 +31,7 @@ from modules.job_runner.runtime import (
     load_context,
     read_json,
     resolve,
+    write_traceback,
     write_status,
 )
 
@@ -62,7 +63,7 @@ SUPPORTED_JOBS = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="SDE Swing V1.7 integrated runner: deterministic engine + source validation + Gemini interpretation + Telegram UI"
+        description="SDE Swing V1.7.1 integrated runner: deterministic engine + source validation + Gemini interpretation + Telegram UI"
     )
     parser.add_argument("--job", required=True, choices=SUPPORTED_JOBS)
     parser.add_argument("--config", default="config/pipeline.json")
@@ -347,16 +348,13 @@ def main() -> int:
         try:
             return _run_integrated(args, ctx)
         except Exception as exc:
-            trace_dir = resolve("data/output/job_status/tracebacks")
-            trace_dir.mkdir(parents=True, exist_ok=True)
-            trace_path = trace_dir / f"{ctx.run_id}-integrated.txt"
             rendered = traceback.format_exc()
-            trace_path.write_text(rendered, encoding="utf-8")
+            trace_path = write_traceback(ctx, "integrated", rendered)
             append_job_log(ctx, "INTEGRATED_RUN_EXCEPTION", rendered)
             if ctx.debug:
                 print(rendered, file=sys.stderr, flush=True)
             write_status(ctx, "FAILED", "INTEGRATED_EXCEPTION", EXIT_FAILED, {
-                "error": str(exc), "errors": [str(exc)], "traceback_path": str(trace_path),
+                "error": str(exc), "errors": [str(exc)], "traceback_path": trace_path,
             })
             return EXIT_FAILED
 

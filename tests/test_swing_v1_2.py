@@ -191,7 +191,7 @@ class SwingV12Tests(unittest.TestCase):
             self.assertEqual(plan.download_start_date, "2026-07-20")
             self.assertEqual(plan.download_end_date, "2026-07-21")
 
-    def test_yahoo_multiple_run_same_day_second_run_skips_current(self) -> None:
+    def test_yahoo_multiple_run_same_day_second_run_revalidates_current_session_offline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             universe = tmp_path / "universe.csv"
@@ -223,9 +223,11 @@ class SwingV12Tests(unittest.TestCase):
             self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
             self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
             manifest = json.loads((manifests / "YAHOO_REFRESH_MANIFEST_SWING-SAMEDAY-2.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest["Refresh_Mode"], SKIP_ALREADY_CURRENT)
-            self.assertEqual(manifest["Skipped_Count"], 1)
-            self.assertEqual(manifest["Network_Request_Symbol_Count"], 0)
+            self.assertEqual(manifest["Refresh_Mode"], REPAIR_OVERLAP)
+            self.assertEqual(manifest["Provider_Mode"], "FIXTURE")
+            self.assertEqual(manifest["Data_Source"], "OFFLINE_FIXTURE")
+            self.assertFalse(manifest["Network_Request_Performed"])
+            self.assertFalse(manifest["Live_Response_Received"])
 
     def test_yahoo_retry_only_problem_symbols_are_planned_for_request(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -663,7 +665,6 @@ class SwingV12Tests(unittest.TestCase):
             signals = load_signals(path)
             self.assertEqual(signals["Decision"].iloc[0], "STRONG BUY")
             self.assertEqual(signals["Symbol"].iloc[0], "BBCA")
-
 
     def test_candidate_contract_prefers_252_day_high_and_close_slope(self) -> None:
         df = pd.DataFrame({

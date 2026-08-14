@@ -1,109 +1,68 @@
-name: Hotfix Exit Engine Volume State
+name: Validate Exit Engine Volume State
 
 on:
-  push:
-    branches:
-      - agent/sde-swing-v1-7-0-multisource
+  pull_request:
     paths:
       - .github/workflows/hotfix-exit-volume.yml
+      - modules/exit_engine/exit_engine.py
+      - modules/exit_engine/exit_engine_baseline.py
+      - tests/test_signal_quality_v160.py
+      - tests/test_release_governance_workflow.py
+  push:
+    branches: [main, "agent/**", "audit/**"]
+    paths:
+      - .github/workflows/hotfix-exit-volume.yml
+      - modules/exit_engine/exit_engine.py
+      - modules/exit_engine/exit_engine_baseline.py
+      - tests/test_signal_quality_v160.py
+      - tests/test_release_governance_workflow.py
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch:
+  validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout triggering revision without persisted credentials
+        uses: actions/checkout@v4
         with:
-          ref: agent/sde-swing-v1-7-0-multisource
-          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Patch uninitialized volume confirmation
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt pytest
+
+      - name: Inspect existing volume-state contract
         shell: python
         run: |
           from pathlib import Path
 
-          path = Path("modules/exit_engine/exit_engine.py")
-          text = path.read_text(encoding="utf-8")
-          anchor = '''    warnings: list[str] = []
-    conditional_reasons: list[str] = []
+          source = Path("modules/exit_engine/exit_engine_baseline.py").read_text(
+              encoding="utf-8"
+          )
+          required = (
+              "volume_confirmed: bool | None = None",
+              '"Volume_Confirmation_Pass": volume_confirmed',
+          )
+          missing = [fragment for fragment in required if fragment not in source]
+          if missing:
+              raise SystemExit(f"Volume-state contract missing: {missing}")
+          print("Volume-state contract is present; no patch was applied.")
 
-    if risk <= 0:
-'''
-          replacement = '''    warnings: list[str] = []
-    conditional_reasons: list[str] = []
-    # Always define this output field, including early REJECT paths.
-    volume_confirmed: bool | None = None
-
-    if risk <= 0:
-'''
-          if replacement in text:
-              print("Hotfix already applied")
-          elif anchor in text:
-              path.write_text(text.replace(anchor, replacement, 1), encoding="utf-8")
-              print("Hotfix applied")
-          else:
-              raise SystemExit("Expected anchor not found")
-
-      - name: Add regression test
-        shell: python
+      - name: Validate source and regression contracts
         run: |
-          from pathlib import Path
+          python -m py_compile modules/exit_engine/exit_engine.py modules/exit_engine/exit_engine_baseline.py
+          python -m pytest -q tests/test_signal_quality_v160.py tests/test_release_governance_workflow.py
 
-          path = Path("tests/test_exit_engine_volume_state.py")
-          path.write_text('''import pandas as pd
-
-from modules.exit_engine.exit_engine import build_entry_plan
-
-
-def test_early_reject_has_defined_volume_confirmation():
-    row = pd.Series({
-        "Symbol": "TEST",
-        "Decision": "BUY ON TRIGGER",
-        "Decision_Status_PrePlan": "BUY ON TRIGGER",
-        "Setup_Type": "DEVELOPING",
-        "Entry_Hard_Blocker": True,
-        "Technical_Quality_Score": 75,
-        "Entry_Readiness_PreScore": 65,
-        "Liquidity_Score": 70,
-    })
-    prices = pd.DataFrame({
-        "Date": pd.date_range("2026-01-01", periods=30),
-        "Open": [100.0] * 30,
-        "High": [101.0] * 30,
-        "Low": [99.0] * 30,
-        "Close": [100.0] * 30,
-        "Volume": [1_000_000.0] * 30,
-    })
-    prev_close = prices["Close"].shift(1)
-    tr = pd.concat([
-        prices["High"] - prices["Low"],
-        (prices["High"] - prev_close).abs(),
-        (prices["Low"] - prev_close).abs(),
-    ], axis=1).max(axis=1)
-    prices["ATR14"] = tr.rolling(14).mean()
-    prices["EMA20"] = prices["Close"].ewm(span=20, adjust=False).mean()
-
-    result = build_entry_plan(row, prices, 1.0, 2.0, 7.0, 20, decision_config={})
-
-    assert result["Plan_Status"] == "REJECT"
-    assert result["Volume_Confirmation_Pass"] is None
-''', encoding="utf-8")
-
-      - name: Validate
+      - name: Verify validation left tracked files unchanged
         run: |
-          python -m py_compile modules/exit_engine/exit_engine.py
-          python -m pytest -q tests/test_exit_engine_volume_state.py
-
-      - name: Commit hotfix
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add modules/exit_engine/exit_engine.py tests/test_exit_engine_volume_state.py
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "fix: initialize exit volume confirmation for rejected plans"
-            git push origin HEAD:agent/sde-swing-v1-7-0-multisource
-          fi
+          git diff --exit-code
+          git diff --cached --exit-code

@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul
 cd /d "%~dp0"
-title SDE Swing V1.7.0 Multi-Source - Control Center
+title SDE Swing V1.7.1 - Control Center
 
 set "SDE_ROOT=%CD%"
 call tools\set_python_cmd.bat
@@ -15,14 +15,14 @@ if not defined SDE_PYTHON_CMD (
 )
 
 set "PYTHON_VERSION=UNKNOWN"
-for /f "delims=" %%V in ('%SDE_PYTHON_CMD% --version 2^>^&1') do set "PYTHON_VERSION=%%V"
+for /f "usebackq delims=" %%V in (`"%SDE_PYTHON_CMD% --version" 2^>^&1`) do set "PYTHON_VERSION=%%V"
 set "GIT_BRANCH=UNKNOWN"
 for /f "delims=" %%B in ('git branch --show-current 2^>nul') do set "GIT_BRANCH=%%B"
 
 :MENU
 cls
 echo ================================================================
-echo          SDE SWING V1.7.0 MULTI-SOURCE - CONTROL CENTER
+echo                    SDE SWING V1.7.1 - CONTROL CENTER
 echo ================================================================
 echo Root   : %SDE_ROOT%
 echo Branch : !GIT_BRANCH!
