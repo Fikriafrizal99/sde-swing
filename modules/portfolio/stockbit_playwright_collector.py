@@ -14,6 +14,8 @@ the optional package or a browser installation.
 from __future__ import annotations
 
 import argparse
+import csv
+import importlib
 import json
 import os
 import re
@@ -27,17 +29,59 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
-import pandas as pd
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from modules.portfolio.broker_portfolio_backfill import (  # noqa: E402
-    BACKFILL_PREFIX,
-    validate_backfill_dataframe,
-)
-from swing_utils import atomic_csv, atomic_write_text, ensure_dir, file_sha256  # noqa: E402
+
+class _LazyPandas:
+    """Load pandas only when collection/validation actually needs it."""
+
+    def __init__(self) -> None:
+        self._module: Any | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        if self._module is None:
+            self._module = importlib.import_module("pandas")
+        return getattr(self._module, name)
+
+
+pd = _LazyPandas()
+
+
+def validate_backfill_dataframe(frame: Any) -> Any:
+    from modules.portfolio.broker_portfolio_backfill import (
+        validate_backfill_dataframe as validate,
+    )
+
+    return validate(frame)
+
+
+def atomic_csv(frame: Any, destination: Path, **kwargs: Any) -> None:
+    from swing_utils import atomic_csv as write_atomic_csv
+
+    write_atomic_csv(frame, destination, **kwargs)
+
+
+def atomic_write_text(path: Path, body: str) -> None:
+    from swing_utils import atomic_write_text as write_atomic_text
+
+    write_atomic_text(path, body)
+
+
+def ensure_dir(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def file_sha256(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 TARGET_URL = "https://stockbit.com/broker-analysis/stock"
@@ -47,6 +91,7 @@ DEFAULT_PROFILE = PROJECT_ROOT / "data/state/playwright/stockbit"
 DEFAULT_LOG_DIR = PROJECT_ROOT / "data/logs/broker_playwright"
 COLLECTOR_VERSION = "1.1.0"
 MARKETDETECTOR_PATH = "/marketdetectors/"
+BACKFILL_PREFIX = "BROKER_PORTFOLIO_BACKFILL_SUMMARY_"
 
 TASK_COLUMNS = ("Symbol", "FROM_DATE", "TO_DATE", "TASK_KEY", "POSITION_ID", "SOURCE")
 SUMMARY_COLUMNS = (
@@ -503,19 +548,24 @@ def read_tasks(path: Path) -> list[BrokerTask]:
     if not path.exists():
         raise CollectorError("TASK_FILE_NOT_FOUND", str(path))
     try:
-        frame = pd.read_csv(path, encoding="utf-8-sig", dtype=str, keep_default_na=False)
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            fieldnames = list(reader.fieldnames or [])
+            rows = list(reader)
     except Exception as exc:
         raise CollectorError("TASK_FILE_INVALID", type(exc).__name__) from exc
-    missing = [column for column in TASK_COLUMNS[:4] if column not in frame.columns]
+    if not fieldnames:
+        raise CollectorError("TASK_FILE_INVALID", "EMPTY_HEADER")
+    missing = [column for column in TASK_COLUMNS[:4] if column not in fieldnames]
     if missing:
         raise CollectorError("TASK_COLUMNS_MISSING", ",".join(missing))
-    if frame.empty:
+    if not rows:
         return []
 
     tasks: list[BrokerTask] = []
     seen_keys: set[str] = set()
     seen_pairs: set[tuple[str, str]] = set()
-    for index, row in frame.iterrows():
+    for index, row in enumerate(rows):
         symbol = normalize_symbol(row.get("Symbol"))
         from_date = normalize_date(row.get("FROM_DATE"))
         to_date = normalize_date(row.get("TO_DATE"))
@@ -807,7 +857,7 @@ def _safe_number(value: Any) -> float:
         return 0.0
     try:
         number = float(value)
-        return number if pd.notna(number) else 0.0
+        return number if number == number else 0.0
     except (TypeError, ValueError):
         return 0.0
 

@@ -13,11 +13,7 @@ echo ================================================================
 echo                    STATUS SDE SWING
 echo ================================================================
 echo.
-%SDE_PYTHON_CMD% tools\print_job_status.py --job market_outlook
-echo.
-%SDE_PYTHON_CMD% tools\print_job_status.py --job post_market
-echo.
-%SDE_PYTHON_CMD% tools\print_job_status.py --job final_watchlist
+%SDE_PYTHON_CMD% tools\print_job_status.py --jobs market_outlook post_market final_watchlist
 echo.
 pause
 exit /b 0
