@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from modules.database import swing_history_db_baseline as baseline
 from modules.database.swing_history_db import archive_prices, connect, init_schema
 from swing_utils import file_sha256
 
@@ -144,4 +145,54 @@ def test_fresh_schema_current_projection_tracks_latest_archived_revision(tmp_pat
         assert conn.execute(
             "SELECT source_revision, close FROM market_prices_daily"
         ).fetchone() == (revision_b, 115.0)
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+def test_repeated_init_migrates_only_rows_missing_revision_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "history.db"
+    csv_path = tmp_path / "BBCA.csv"
+    with closing(connect(db_path)) as conn:
+        init_schema(conn)
+        _write_price(csv_path, 110.0)
+        assert archive_prices(conn, csv_path) == 1
+
+        migrated: list[str] = []
+        original_append = baseline.append_market_price_revision
+
+        def tracked_append(connection, row, **kwargs):
+            migrated.append(str(row["symbol"]))
+            return original_append(connection, row, **kwargs)
+
+        monkeypatch.setattr(baseline, "append_market_price_revision", tracked_append)
+
+        init_schema(conn)
+        assert migrated == []
+
+        conn.execute(
+            """
+            INSERT INTO market_prices_daily (
+                symbol, price_date, open, high, low, close, adjusted_close,
+                volume, source, source_revision, created_at, updated_at,
+                revision_id, revision_sequence
+            ) VALUES (
+                'BMRI', '2026-08-12', 100, 106, 99, 105, 105,
+                1000000, 'YAHOO', 'REV-LEGACY', '2026-08-12T18:00:00',
+                '2026-08-12T18:00:00', NULL, NULL
+            )
+            """
+        )
+        conn.commit()
+
+        init_schema(conn)
+        assert migrated == ["BMRI"]
+        init_schema(conn)
+        assert migrated == ["BMRI"]
+        assert conn.execute(
+            "SELECT revision_id, revision_sequence FROM market_prices_daily WHERE symbol='BMRI'"
+        ).fetchone() == conn.execute(
+            "SELECT revision_id, revision_sequence FROM market_prices_daily_revisions WHERE symbol='BMRI'"
+        ).fetchone()
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

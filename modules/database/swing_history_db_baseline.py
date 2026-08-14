@@ -9,7 +9,7 @@ import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import pandas as pd
 
@@ -327,6 +327,13 @@ def init_schema(conn: sqlite3.Connection) -> None:
     )
     _ensure_column(conn, "market_prices_daily", "revision_id", "TEXT")
     _ensure_column(conn, "market_prices_daily", "revision_sequence", "INTEGER")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_market_prices_daily_pending_revision
+        ON market_prices_daily(symbol, price_date, source)
+        WHERE revision_id IS NULL OR revision_sequence IS NULL
+        """
+    )
     _migrate_market_price_revisions(conn)
     conn.executescript(
         """
@@ -525,7 +532,11 @@ def _migrate_market_price_revisions(conn: sqlite3.Connection) -> None:
         "revision_sequence",
     ]
     rows = conn.execute(
-        f"SELECT {','.join(columns)} FROM market_prices_daily"
+        f"""
+        SELECT {','.join(columns)}
+        FROM market_prices_daily
+        WHERE revision_id IS NULL OR revision_sequence IS NULL
+        """
     ).fetchall()
     for values in rows:
         row = dict(zip(columns, values))
@@ -1061,11 +1072,20 @@ def archive_watchlist(conn: sqlite3.Connection, run_id: str, decision_path: Path
     return pd.DataFrame(now_rows)
 
 
-def load_price_map(historical_dir: Path) -> dict[str, pd.DataFrame]:
+def load_price_map(
+    historical_dir: Path,
+    symbols: Iterable[str] | None = None,
+) -> dict[str, pd.DataFrame]:
     out: dict[str, pd.DataFrame] = {}
     if not historical_dir.exists():
         return out
+    requested = None
+    if symbols is not None:
+        requested = {normalize_symbol(symbol) for symbol in symbols}
+        requested.discard("")
     for file in sorted(historical_dir.glob("*.csv")):
+        if requested is not None and normalize_symbol(file.stem) not in requested:
+            continue
         df = load_csv(file)
         if df.empty:
             continue
@@ -1110,10 +1130,15 @@ def archive_watchlist_outcomes(
 ) -> int:
     if watchlist.empty:
         return 0
-    prices = load_price_map(historical_dir)
+    active_rows = watchlist[watchlist["lifecycle"].isin(["NEW", "CONTINUING"])]
+    if active_rows.empty:
+        return 0
+    active_symbols = {normalize_symbol(symbol) for symbol in active_rows["symbol"].tolist()}
+    active_symbols.discard("")
+    prices = load_price_map(historical_dir, active_symbols)
     plans = map_entry_plans(entry_plans_path)
     count = 0
-    for _, row in watchlist[watchlist["lifecycle"].isin(["NEW", "CONTINUING"])].iterrows():
+    for _, row in active_rows.iterrows():
         symbol = row["symbol"]
         signal_date = pd.to_datetime(row.get("signal_date"), errors="coerce")
         if pd.isna(signal_date):

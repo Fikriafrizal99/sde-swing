@@ -14,7 +14,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-from typing import Any
+from typing import Any, Iterable
 import hashlib
 import json
 
@@ -35,11 +35,20 @@ for _name in dir(_baseline):
         globals()[_name] = getattr(_baseline, _name)
 
 
-def load_price_map(historical_dir: Path) -> dict[str, pd.DataFrame]:
+def load_price_map(
+    historical_dir: Path,
+    symbols: Iterable[str] | None = None,
+) -> dict[str, pd.DataFrame]:
     out: dict[str, pd.DataFrame] = {}
     if not historical_dir.exists():
         return out
+    requested = None
+    if symbols is not None:
+        requested = {_baseline.normalize_symbol(symbol) for symbol in symbols}
+        requested.discard("")
     for file in sorted(historical_dir.glob("*.csv")):
+        if requested is not None and _baseline.normalize_symbol(file.stem) not in requested:
+            continue
         df = _baseline.load_csv(file)
         if df.empty:
             continue
@@ -79,11 +88,17 @@ def archive_watchlist_outcomes(
 ) -> int:
     if watchlist.empty:
         return 0
-    prices = load_price_map(historical_dir)
+    active_rows = watchlist[watchlist["lifecycle"].isin(["NEW", "CONTINUING"])]
+    if active_rows.empty:
+        return 0
+    active_symbols = {
+        _baseline.normalize_symbol(symbol) for symbol in active_rows["symbol"].tolist()
+    }
+    active_symbols.discard("")
+    prices = load_price_map(historical_dir, active_symbols)
     plans = _baseline.map_entry_plans(entry_plans_path)
     count = 0
 
-    active_rows = watchlist[watchlist["lifecycle"].isin(["NEW", "CONTINUING"])]
     for _, row in active_rows.iterrows():
         symbol = row["symbol"]
         signal_date = pd.to_datetime(row.get("signal_date"), errors="coerce")
