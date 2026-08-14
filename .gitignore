@@ -11,11 +11,14 @@ config/*local*.json
 # Python
 .venv/
 
-# Understand-Anything generated graph scratch and review overlays
+# Understand-Anything developer configuration remains tracked in
+# .ua/.understandignore; generated graph data stays local.
+.ua/fingerprints.json
+.ua/knowledge-graph.json
+.ua/meta.json
 .ua/.trash-*/
 .ua/tmp/
-.ua/intermediate/*
-!.ua/intermediate/scan-result.json
+.ua/intermediate/
 .ua/diff-overlay.json
 venv/
 __pycache__/
