@@ -143,7 +143,7 @@ echo Auto-detect REPORT TEST + Validate + Simpan
 echo Kirim tepat REPORT TEST di topic Report sebelum melanjutkan.
 echo.
 set "REPORT_ID="
-for /f "usebackq delims=" %%I in (`%SDE_PYTHON_CMD% -u tools\detect_telegram_report_topic.py --marker "REPORT TEST" --id-only 2^>nul`) do set "REPORT_ID=%%I"
+for /f "usebackq delims=" %%I in (`"%SDE_PYTHON_CMD% -u tools\detect_telegram_report_topic.py --marker "REPORT TEST" --id-only" 2^>nul`) do set "REPORT_ID=%%I"
 if not defined REPORT_ID (
   echo [FAILED] REPORT TEST belum dapat dideteksi pada chat SDE.
   pause

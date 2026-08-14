@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -81,6 +82,73 @@ def test_python_command_helper_reuses_validated_command_before_discovery() -> No
     assert ":validate_python_cmd" in lower
     assert 'if exist %sde_python_cmd% exit /b 0' in lower
     assert '.venv\\scripts\\python.exe' in lower
+
+
+def test_for_f_python_captures_wrap_commands_for_quoted_executables() -> None:
+    for path in ROOT.rglob("*.bat"):
+        source = path.read_text(encoding="utf-8-sig")
+        for line in source.splitlines():
+            if "for /f" not in line.lower() or "SDE_PYTHON_CMD" not in line:
+                continue
+            assert "usebackq" in line.lower(), f"missing usebackq: {path}: {line}"
+            assert 'in (`"%SDE_PYTHON_CMD%' in line, (
+                f"quoted Python command is not protected: {path}: {line}"
+            )
+
+
+def test_for_f_task_count_runs_with_quoted_python_path(tmp_path: Path) -> None:
+    if os.name != "nt":
+        return
+    tasks = tmp_path / "task file with spaces.csv"
+    tasks.write_text(
+        "Symbol,FROM_DATE,TO_DATE,TASK_KEY,POSITION_ID,SOURCE\n"
+        "BBCA,2026-08-13,2026-08-13,BBCA|2026-08-13,POS-1,OPEN_PORTFOLIO\n",
+        encoding="utf-8",
+    )
+    script = tmp_path / "capture task count.bat"
+    script.write_text(
+        "\n".join(
+            (
+                "@echo off",
+                "setlocal EnableExtensions EnableDelayedExpansion",
+                f'cd /d "{ROOT}"',
+                "call tools\\set_python_cmd.bat",
+                'set "PYTHON_VERSION="',
+                'for /f "usebackq delims=" %%V in (`"%SDE_PYTHON_CMD% --version" 2^>^&1`) do set "PYTHON_VERSION=%%V"',
+                'if not defined PYTHON_VERSION exit /b 21',
+                'set "TRADE_DATE="',
+                'for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\\resolve_last_trading_day.py" 2^>nul`) do set "TRADE_DATE=%%D"',
+                'if not defined TRADE_DATE exit /b 22',
+                'set "PLAYWRIGHT_PY=modules\\portfolio\\stockbit_playwright_collector.py"',
+                f'set "TASK_FILE={tasks}"',
+                'set "TASK_COUNT="',
+                (
+                    'for /f "usebackq delims=" %%C in (`"%SDE_PYTHON_CMD% '
+                    '-u "%PLAYWRIGHT_PY%" task-count --tasks "%TASK_FILE%"" '
+                    '2^>nul`) do set "TASK_COUNT=%%C"'
+                ),
+                'if not "!TASK_COUNT!"=="1" exit /b 23',
+                "echo QUOTED_FOR_F_VERSION=!PYTHON_VERSION!",
+                "echo QUOTED_FOR_F_DATE=!TRADE_DATE!",
+                "echo QUOTED_FOR_F_COUNT=!TASK_COUNT!",
+                "exit /b 0",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", str(script)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "QUOTED_FOR_F_VERSION=Python " in completed.stdout
+    assert "QUOTED_FOR_F_DATE=20" in completed.stdout
+    assert "QUOTED_FOR_F_COUNT=1" in completed.stdout
 
 
 def test_collector_status_and_task_count_do_not_import_heavy_stack(

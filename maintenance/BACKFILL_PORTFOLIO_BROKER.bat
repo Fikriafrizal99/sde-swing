@@ -17,7 +17,7 @@ set "TASK_FILE=data\input\broker\BROKER_PORTFOLIO_BACKFILL_TASKS.csv"
 
 :MENU
 set "PLAYWRIGHT_STATUS=OFF"
-for /f "usebackq delims=" %%S in (`%SDE_PYTHON_CMD% -u "%PLAYWRIGHT_PY%" status --value 2^>nul`) do set "PLAYWRIGHT_STATUS=%%S"
+for /f "usebackq delims=" %%S in (`"%SDE_PYTHON_CMD% -u "%PLAYWRIGHT_PY%" status --value" 2^>nul`) do set "PLAYWRIGHT_STATUS=%%S"
 cls
 echo ================================================================
 echo             SDE - BROKER PORTFOLIO AKTIF
@@ -75,7 +75,7 @@ if not "!RC!"=="0" (
   goto MENU
 )
 set "TASK_COUNT="
-for /f "usebackq delims=" %%C in (`%SDE_PYTHON_CMD% -u "%PLAYWRIGHT_PY%" task-count --tasks "%TASK_FILE%" 2^>nul`) do set "TASK_COUNT=%%C"
+for /f "usebackq delims=" %%C in (`"%SDE_PYTHON_CMD% -u "%PLAYWRIGHT_PY%" task-count --tasks "%TASK_FILE%"" 2^>nul`) do set "TASK_COUNT=%%C"
 if not defined TASK_COUNT (
   echo.
   echo [FAILED] Task CSV tidak dapat diverifikasi. Gunakan workflow manual.

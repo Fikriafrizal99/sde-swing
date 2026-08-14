@@ -39,7 +39,7 @@ goto STATUS
 
 :RESEND
 set "RESEND_DATE="
-for /f "delims=" %%D in ('%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py 2^>nul') do set "RESEND_DATE=%%D"
+for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py" 2^>nul`) do set "RESEND_DATE=%%D"
 if not defined RESEND_DATE goto RESEND_DATE_FAILED
 
 echo.

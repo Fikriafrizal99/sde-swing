@@ -15,7 +15,7 @@ if not defined SDE_PYTHON_CMD (
 )
 
 set "PYTHON_VERSION=UNKNOWN"
-for /f "delims=" %%V in ('%SDE_PYTHON_CMD% --version 2^>^&1') do set "PYTHON_VERSION=%%V"
+for /f "usebackq delims=" %%V in (`"%SDE_PYTHON_CMD% --version" 2^>^&1`) do set "PYTHON_VERSION=%%V"
 set "GIT_BRANCH=UNKNOWN"
 for /f "delims=" %%B in ('git branch --show-current 2^>nul') do set "GIT_BRANCH=%%B"
 

@@ -24,7 +24,7 @@ for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "[Environment]
 if defined PERSISTED_REPORT_ID set "TELEGRAM_THREAD_REPORT_ID=!PERSISTED_REPORT_ID!"
 
 set "TRADE_DATE="
-for /f "delims=" %%D in ('%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py 2^>nul') do set "TRADE_DATE=%%D"
+for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py" 2^>nul`) do set "TRADE_DATE=%%D"
 if not defined TRADE_DATE (
   echo [FAILED] Tidak dapat menentukan hari trading IDX terakhir.
   if "%NON_BLOCKING%"=="0" pause
