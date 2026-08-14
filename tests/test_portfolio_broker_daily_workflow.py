@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from modules.database.swing_history_db import connect, init_schema
+from modules.portfolio import broker_portfolio_backfill as backfill
+from modules.portfolio import portfolio_broker_daily as daily
 from modules.portfolio.broker_portfolio_backfill import archive_backfill
 from modules.portfolio.portfolio_broker_daily import resolve_completed_broker_date, sync_tasks
 
@@ -197,3 +199,57 @@ def test_windows_menus_expose_simple_daily_flow_and_auto_sync():
     assert "portfolio_broker_daily.py" in broker_menu
     assert "call :SYNC_BROKER_TASKS" in portfolio_menu
     assert "Broker task otomatis disinkronkan setelah BUY / SELL / edit posisi." in portfolio_menu
+
+
+def test_daily_sync_uses_one_schema_boundary_and_one_batched_coverage_query(
+    tmp_path,
+    monkeypatch,
+):
+    db = tmp_path / "history.db"
+    output = tmp_path / "tasks.csv"
+    archive_root = tmp_path / "archive"
+    symbols = ["BBCA", "BBRI", "TLKM"]
+    conn = connect(db)
+    try:
+        for symbol in symbols:
+            _insert_open(conn, symbol, "2026-08-12")
+        archive_backfill(
+            conn,
+            pd.DataFrame([_summary_row(symbol, "2026-08-12") for symbol in symbols]),
+            source_path=tmp_path / "daily.csv",
+            archive_root=archive_root,
+        )
+    finally:
+        conn.close()
+
+    calls = {"init_schema": 0, "batch_query": 0}
+    original_init = daily.init_schema
+    original_batch = backfill.existing_broker_dates_by_symbol
+
+    def counted_init(conn):
+        calls["init_schema"] += 1
+        return original_init(conn)
+
+    def counted_batch(conn, date_ranges, **kwargs):
+        calls["batch_query"] += 1
+        assert set(date_ranges) == set(symbols)
+        return original_batch(conn, date_ranges, **kwargs)
+
+    monkeypatch.setattr(daily, "init_schema", counted_init)
+    monkeypatch.setattr(backfill, "existing_broker_dates_by_symbol", counted_batch)
+
+    tasks, meta, coverage = daily.sync_tasks(
+        db_path=db,
+        calendar_path=ROOT / "config/trading_calendar.json",
+        output_path=output,
+        to_date="2026-08-13",
+    )
+
+    assert calls == {"init_schema": 1, "batch_query": 1}
+    assert {(row["Symbol"], row["TO_DATE"]) for row in tasks} == {
+        (symbol, "2026-08-13") for symbol in symbols
+    }
+    assert meta["skipped_existing"] == 3
+    assert {row["symbol"]: row["available"] for row in coverage} == {
+        symbol: 1 for symbol in symbols
+    }

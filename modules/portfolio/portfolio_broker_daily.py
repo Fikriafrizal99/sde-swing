@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from modules.database.swing_history_db import connect
+from modules.database.swing_history_db import connect, init_schema
 from modules.market_calendar.idx_calendar import is_idx_trading_day
 from modules.portfolio.broker_portfolio_backfill import (
     DEFAULT_ARCHIVE,
@@ -170,6 +170,8 @@ def sync_tasks(
 
     conn = connect(db_path)
     try:
+        init_schema(conn)
+        workflow_state: dict = {}
         tasks, meta = build_tasks(
             conn,
             symbol=symbol,
@@ -177,8 +179,25 @@ def sync_tasks(
             to_date=resolved_to_date,
             calendar_path=calendar_path,
             force=force,
+            initialize_schema=False,
+            state_out=workflow_state,
         )
-        coverage = status_rows(conn, calendar_path=calendar_path, to_date=resolved_to_date)
+        if not symbol and not force:
+            coverage = status_rows(
+                conn,
+                calendar_path=calendar_path,
+                to_date=resolved_to_date,
+                initialize_schema=False,
+                positions=workflow_state.get("positions"),
+                existing_by_symbol=workflow_state.get("existing_by_symbol"),
+            )
+        else:
+            coverage = status_rows(
+                conn,
+                calendar_path=calendar_path,
+                to_date=resolved_to_date,
+                initialize_schema=False,
+            )
     finally:
         conn.close()
     meta.update(target_meta)

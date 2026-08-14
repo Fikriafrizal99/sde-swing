@@ -115,6 +115,43 @@ def test_prepare_manual_symbol_outside_final_watchlist_is_supported(tmp_path):
     assert all(row["SOURCE"] == "MANUAL" for row in tasks)
 
 
+def test_multiple_open_lots_are_deduplicated_at_earliest_buy_and_closed_excluded(
+    tmp_path,
+):
+    db = tmp_path / "history.db"
+    conn = connect(db)
+    try:
+        init_schema(conn)
+        conn.executemany(
+            """
+            INSERT INTO portfolio_positions (
+                position_id, signal_id, symbol, buy_date, quantity, buy_price,
+                current_status, notes, created_at, updated_at
+            ) VALUES (?, NULL, ?, ?, 100, 1000, ?, '', ?, ?)
+            """,
+            [
+                ("bbca-new", "BBCA", "2026-08-05", "OPEN", "2026-08-05", "2026-08-05"),
+                ("bbca-old", "BBCA", "2026-08-03", "OPEN", "2026-08-03", "2026-08-03"),
+                ("tlkm-closed", "TLKM", "2026-08-03", "CLOSED", "2026-08-03", "2026-08-03"),
+            ],
+        )
+        conn.commit()
+        tasks, meta = build_tasks(
+            conn,
+            to_date="2026-08-04",
+            calendar_path=ROOT / "config/trading_calendar.json",
+        )
+    finally:
+        conn.close()
+
+    assert meta["requested_symbols"] == 1
+    assert [(row["Symbol"], row["TO_DATE"]) for row in tasks] == [
+        ("BBCA", "2026-08-03"),
+        ("BBCA", "2026-08-04"),
+    ]
+    assert {row["POSITION_ID"] for row in tasks} == {"bbca-old"}
+
+
 def test_prepare_skips_dates_already_present_in_shared_broker_database(tmp_path):
     db = tmp_path / "history.db"
     archive_root = tmp_path / "archive"
