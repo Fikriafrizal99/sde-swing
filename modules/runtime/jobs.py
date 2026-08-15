@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Integrated job dependency graph and execution facade."""
 
+import json
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -60,6 +61,50 @@ DEFAULT_JOB_DEFINITIONS: dict[str, JobDefinition] = {
 }
 
 
+def _dated_dependency_status(context: RuntimeContext, dependency: str) -> Mapping[str, Any] | None:
+    """Return the newest persisted status for the effective trade date.
+
+    Final Watchlist can run on the latest completed trading session while the
+    calendar date is already a weekend/holiday.  In that case ``*_latest.json``
+    may legitimately point at a later skipped attempt.  The runtime already
+    keeps immutable per-trade-date status files, so use that history instead of
+    weakening the dependency date/status/config contract.
+    """
+    configured_root = str(
+        (context.scheduler_config.get("paths", {}) or {}).get(
+            "job_status_root", "data/output/job_status"
+        )
+    ).strip() or "data/output/job_status"
+    dated_root = context.paths.resolve(configured_root) / context.trade_date.isoformat()
+    if not dated_root.exists():
+        return None
+
+    try:
+        candidates = sorted(
+            dated_root.glob(f"{dependency}_*.json"),
+            key=lambda path: path.stat().st_mtime_ns,
+            reverse=True,
+        )
+    except OSError:
+        return None
+
+    expected_date = context.trade_date.isoformat()
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        payload_job = str(payload.get("job") or payload.get("job_name") or "").strip()
+        if payload_job and payload_job != dependency:
+            continue
+        if str(payload.get("trade_date", "")) != expected_date:
+            continue
+        return payload
+    return None
+
+
 def validate_dependency_status(
     context: RuntimeContext,
     job_name: str,
@@ -69,8 +114,23 @@ def validate_dependency_status(
     required = JOB_DEPENDENCIES.get(job_name, ())
     statuses = statuses or {}
     result: dict[str, Any] = {"required": list(required), "valid": True, "dependencies": {}}
+    expected_date = context.trade_date.isoformat()
     for dependency in required:
         payload = statuses.get(dependency)
+
+        # Scope this reconciliation to Final Watchlist only.  A later
+        # weekend/holiday attempt may overwrite ``*_latest.json`` even though
+        # the required completed-session status remains durably stored under
+        # ``job_status/<trade_date>/``.  Never replace a status that already
+        # belongs to the effective trade date: a same-date FAILED/SKIPPED run
+        # must remain authoritative.
+        if job_name == "final_watchlist" and (
+            payload is None or str(payload.get("trade_date", "")) != expected_date
+        ):
+            dated_payload = _dated_dependency_status(context, dependency)
+            if dated_payload is not None:
+                payload = dated_payload
+
         if payload is None:
             result["dependencies"][dependency] = {"status": "MISSING"}
             result["valid"] = False
@@ -79,7 +139,7 @@ def validate_dependency_status(
         dep_date = str(payload.get("trade_date", ""))
         dep_config = str(payload.get("config_version", ""))
         fresh = status in {"SUCCESS", "SUCCESS_WITH_WARNING", "PARTIAL"}
-        date_ok = dep_date == context.trade_date.isoformat()
+        date_ok = dep_date == expected_date
         config_ok = not dep_config or dep_config == context.config_version
         result["dependencies"][dependency] = {
             "status": status,
@@ -127,4 +187,3 @@ class IntegratedJobRunner:
 
 def new_context(job_name: str, trade_date: date, *, root: Path | None = None, mode: str = "MOCK") -> RuntimeContext:
     return RuntimeContext.create(job_name, trade_date, mode=mode, root=root)
-
