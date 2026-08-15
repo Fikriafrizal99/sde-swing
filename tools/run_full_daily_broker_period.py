@@ -16,12 +16,13 @@ internal stages and are not delivered as normal Telegram reports here.
 import argparse
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-WIB = ZoneInfo("Asia/Jakarta")
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from tools.run_final_watchlist_entrypoint import resolve_effective_trade_date
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,7 +74,7 @@ def final_watchlist_command(args: argparse.Namespace, trade_date: str) -> list[s
     command = [
         sys.executable,
         "-u",
-        str(PROJECT_ROOT / "tools/run_final_watchlist_broker_period.py"),
+        str(PROJECT_ROOT / "tools/run_final_watchlist_entrypoint.py"),
         "--config",
         args.config,
         "--scheduler-config",
@@ -94,12 +95,26 @@ def final_watchlist_command(args: argparse.Namespace, trade_date: str) -> list[s
     return command
 
 
+def resolve_full_daily_trade_date(args: argparse.Namespace) -> str:
+    resolver_args = [
+        "--config",
+        args.config,
+        "--scheduler-config",
+        args.scheduler_config,
+    ]
+    if args.trade_date:
+        resolver_args.extend(["--trade-date", args.trade_date])
+    return resolve_effective_trade_date(resolver_args)
+
+
 def main() -> int:
     args = parse_args()
-    trade_date = args.trade_date or datetime.now(WIB).date().isoformat()
+    trade_date = resolve_full_daily_trade_date(args)
+    print(f"[FULL DAILY] Effective trading date: {trade_date}", flush=True)
 
-    # Post Market now adds a same-session IHSG closing pulse after the technical
-    # refresh. Market Outlook remains a separate context stage.
+    # One effective trading date is shared by all stages so weekend/holiday and
+    # pre-data-ready runs cannot mix calendar dates with completed IDX sessions.
+    # Explicit --trade-date remains an intentional replay override.
     rc = run(integrated_job(args, "post_market", trade_date), "POST MARKET")
     if rc != 0:
         return rc
