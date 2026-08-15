@@ -70,3 +70,32 @@ def test_current_engine_failure_is_not_overwritten(monkeypatch, tmp_path):
     )
 
     assert entrypoint.read_json(status_path) == observed
+
+
+def test_running_status_is_terminalized_on_child_failure(monkeypatch, tmp_path):
+    status_path = tmp_path / "final_watchlist_latest.json"
+    monkeypatch.setattr(entrypoint, "STATUS_PATH", status_path)
+
+    previous = {
+        "run_id": "SWING-OLD",
+        "trade_date": "2026-08-13",
+        "status": "SUCCESS",
+    }
+    observed = {
+        "run_id": "SWING-NEW",
+        "trade_date": "2026-08-14",
+        "status": "RUNNING",
+    }
+    entrypoint.atomic_write_json(status_path, observed)
+
+    entrypoint.write_orchestration_failure(
+        trade_date="2026-08-14",
+        exit_code=1,
+        started_at=datetime(2026, 8, 15, 23, 0, tzinfo=ZoneInfo("Asia/Jakarta")),
+        previous_status=previous,
+        observed_status=observed,
+    )
+
+    payload = entrypoint.read_json(status_path)
+    assert payload["status"] == "FAILED"
+    assert payload["trade_date"] == "2026-08-14"
