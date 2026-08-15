@@ -123,8 +123,9 @@ def write_orchestration_failure(
     observed_changed = _status_fingerprint(observed_status) != _status_fingerprint(previous_status)
     observed_state = str(observed_status.get("status", "")).upper()
 
-    # Keep a richer current failure written by the engine/runtime itself.
-    if observed_changed and observed_state not in {"", "SUCCESS", "SUCCESS_WITH_WARNING"}:
+    # Keep a richer current terminal failure written by the engine/runtime itself.
+    # RUNNING is not terminal; a child crash must still be terminalized here.
+    if observed_changed and observed_state not in {"", "SUCCESS", "SUCCESS_WITH_WARNING", "RUNNING"}:
         return
 
     now = datetime.now(ZoneInfo("Asia/Jakarta"))
