@@ -202,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     command = [
         sys.executable,
         "-u",
-        str(ROOT / "tools/run_final_watchlist_broker_period.py"),
+        str(ROOT / "tools/run_final_watchlist_playwright_bridge.py"),
         *forwarded,
     ]
     completed = subprocess.run(command, cwd=ROOT)
