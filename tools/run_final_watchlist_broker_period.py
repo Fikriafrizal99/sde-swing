@@ -30,7 +30,6 @@ from modules.broker_bridge.broker_period_context import (
     custom_period_spec,
     expected_symbols_from_csv,
     fixed_period_spec,
-    persist_internal_rollup_snapshot,
     list_reusable_snapshots,
     persist_snapshot,
     raw_companion,
@@ -278,7 +277,19 @@ def choose_period(requested: str, custom_start: str) -> tuple[str, str]:
 
 
 def select_reuse(trade_date: str) -> dict[str, Any]:
-    snapshots = list_reusable_snapshots(trade_date)
+    all_snapshots = list_reusable_snapshots(trade_date)
+    snapshots = [
+        item
+        for item in all_snapshots
+        if str(item.get("broker_period_source", "")).strip().upper() != "INTERNAL_DAILY_ROLLUP"
+    ]
+    blocked = len(all_snapshots) - len(snapshots)
+    if blocked:
+        print(
+            f"[REUSE] {blocked} snapshot INTERNAL_DAILY_ROLLUP lama diblokir karena payload multi-day "
+            "tidak dapat dibuktikan sebagai exact aggregate.",
+            flush=True,
+        )
     if not snapshots:
         raise RuntimeError(f"BROKER_REUSE_SNAPSHOT_NOT_FOUND:{trade_date}")
     print("\nSNAPSHOT VALID TERSEDIA")
@@ -565,13 +576,53 @@ def daily_history_coverage(
     return session_coverage(expected_dates, observed)
 
 
+def capture_exact_aggregate_primary(
+    *,
+    downloads: Path,
+    expected_symbols: list[str],
+    min_coverage: float,
+    spec: BrokerPeriodSpec,
+    timeout_seconds: int,
+    poll_seconds: float,
+    snapshot_root: Path,
+) -> dict[str, Any]:
+    """Capture the exact Stockbit aggregate used by Broker Summary/Fusion.
+
+    Daily history remains the source of multi-day persistence context, but its
+    1D rows are not sufficient to reconstruct Stockbit's aggregate detector
+    fields without changing scoring semantics. Multi-day PRIMARY therefore
+    always uses the exact requested Stockbit aggregate.
+    """
+    print(
+        "\n[PRIMARY] Mengambil exact Stockbit aggregate dengan range PERSIS:",
+        f"{spec.period_start}..{spec.period_end}",
+        flush=True,
+    )
+    export_path, info = wait_for_matching_export(
+        downloads,
+        expected_symbols,
+        min_coverage,
+        spec,
+        timeout_seconds=timeout_seconds,
+        poll_seconds=poll_seconds,
+    )
+    return persist_snapshot(
+        export_path,
+        raw_companion(export_path),
+        spec,
+        info,
+        snapshot_root=snapshot_root,
+        selected_by="FINAL_WATCHLIST_EXACT_AGGREGATE_PRIMARY",
+    )
+
+
 def choose_primary_fallback(
     *,
     period_type: str,
     missing_sessions: list[str],
     daily_manifest: dict[str, Any] | None,
 ) -> str:
-    """Ask for the only allowed transition when an internal rollup is incomplete."""
+    """Legacy explicit fallback helper retained for backward compatibility."""
     print(f"\nPRIMARY {period_type} tidak bisa dibentuk dari daily history.", flush=True)
     print("Missing:", flush=True)
     for value in missing_sessions:
@@ -690,8 +741,8 @@ def main() -> int:
         print(f"Session dates    : {', '.join(requested_spec.session_dates)}")
         print(f"Symbols        : {len(expected_symbols)}")
         print(f"Navigator      : {navigator}")
-        print("Flow: CAPTURE REAL 1D hari ini -> pilih/build PRIMARY horizon.")
-        print("SDE tidak memecah aggregate export menjadi daily history.")
+        print("Flow: CAPTURE REAL 1D hari ini -> exact Stockbit PRIMARY horizon.")
+        print("Daily history tetap context-only; aggregate tidak dipecah menjadi fake daily rows.")
         print("=" * 68, flush=True)
         if period_choice == "1D":
             daily_manifest, daily_archive_path = capture_real_daily_snapshot(
@@ -707,101 +758,57 @@ def main() -> int:
             selected_manifest = daily_manifest
             spec = requested_spec
         else:
-            daily_capture_timeout = False
-            try:
-                daily_manifest, daily_archive_path = capture_real_daily_snapshot(
-                    downloads=downloads,
-                    expected_symbols=expected_symbols,
-                    min_coverage=min_coverage,
-                    trade_date=trade_date,
-                    timeout_seconds=timeout,
-                    poll_seconds=poll,
-                    archive_dir=raw_archive,
-                    snapshot_root=snapshot_root,
-                )
-            except TimeoutError as exc:
-                print(
-                    "[DAILY CAPTURE] REAL 1D hari ini belum tersedia; "
-                    "internal rollup tidak boleh mengarang sesi.",
-                    flush=True,
-                )
-                daily_capture_timeout = True
-                daily_manifest = {}
-
-            if daily_manifest:
-                daily_raw_text = str(daily_manifest.get("raw_snapshot_path", "")).strip()
-                daily_raw_snapshot = Path(daily_raw_text) if daily_raw_text else None
-
+            # TODAY PULSE is mandatory and independent from PRIMARY. Do not
+            # continue to a multi-day PRIMARY without a real current-session
+            # raw capture.
+            daily_manifest, daily_archive_path = capture_real_daily_snapshot(
+                downloads=downloads,
+                expected_symbols=expected_symbols,
+                min_coverage=min_coverage,
+                trade_date=trade_date,
+                timeout_seconds=timeout,
+                poll_seconds=poll,
+                archive_dir=raw_archive,
+                snapshot_root=snapshot_root,
+            )
+            daily_raw_text = str(daily_manifest.get("raw_snapshot_path", "")).strip()
+            daily_raw_snapshot = Path(daily_raw_text) if daily_raw_text else None
             raw_ready = bool(
                 daily_raw_snapshot
                 and daily_raw_snapshot.exists()
                 and daily_raw_snapshot.stat().st_size > 0
             )
+            if not raw_ready:
+                raise RuntimeError(f"BROKER_TODAY_PULSE_REQUIRED:{trade_date}")
+
             coverage = daily_history_coverage(
                 history_db=history_db,
                 raw_archive=raw_archive,
                 current_archive=daily_archive_path,
                 expected_dates=requested_spec.session_dates,
                 trade_date=trade_date,
-            ) if daily_manifest or raw_archive.exists() else session_coverage(
-                requested_spec.session_dates, []
+            )
+            print(
+                f"[DAILY HISTORY] {requested_spec.period_type} coverage "
+                f"{coverage.get('broker_coverage_text')} | context-only untuk persistence/multi-day.",
+                flush=True,
             )
 
-            if not daily_capture_timeout and coverage.get("broker_period_complete") and raw_ready:
-                selected_manifest = persist_internal_rollup_snapshot(
-                    daily_manifest,
-                    requested_spec,
-                    snapshot_root=snapshot_root,
-                )
-                spec = requested_spec
-                print(
-                    f"[PRIMARY] {spec.period_type} dibentuk dari INTERNAL_DAILY_ROLLUP "
-                    f"({coverage.get('broker_coverage_text')}). TODAY PULSE berasal dari REAL 1D {trade_date}.",
-                    flush=True,
-                )
-            else:
-                fallback = choose_primary_fallback(
-                    period_type=requested_spec.period_type,
-                    missing_sessions=list(coverage.get("broker_missing_sessions") or requested_spec.session_dates),
-                    daily_manifest=daily_manifest or None,
-                )
-                if fallback == "1D":
-                    selected_manifest = daily_manifest
-                    spec = fixed_period_spec("1D", trade_date)
-                    period_choice = "1D"
-                    print(
-                        "[PRIMARY] Menggunakan REAL 1D hari ini sebagai PRIMARY; "
-                        "TODAY PULSE/alignment tidak ditampilkan terpisah.",
-                        flush=True,
-                    )
-                else:
-                    print(
-                        "\n[PRIMARY FALLBACK] Export Stockbit aggregate dengan range PERSIS:",
-                        f"{requested_spec.period_start}..{requested_spec.period_end}",
-                        flush=True,
-                    )
-                    export_path, info = wait_for_matching_export(
-                        downloads,
-                        expected_symbols,
-                        min_coverage,
-                        requested_spec,
-                        timeout_seconds=timeout,
-                        poll_seconds=poll,
-                    )
-                    selected_manifest = persist_snapshot(
-                        export_path,
-                        raw_companion(export_path),
-                        requested_spec,
-                        info,
-                        snapshot_root=snapshot_root,
-                        selected_by="FINAL_WATCHLIST_AGGREGATE_FALLBACK",
-                    )
-                    spec = requested_spec
-                    print(
-                        "[PRIMARY] Aggregate hanya menjadi PRIMARY; tidak masuk daily history. "
-                        "TODAY PULSE tetap dicari dari REAL 1D.",
-                        flush=True,
-                    )
+            selected_manifest = capture_exact_aggregate_primary(
+                downloads=downloads,
+                expected_symbols=expected_symbols,
+                min_coverage=min_coverage,
+                spec=requested_spec,
+                timeout_seconds=timeout,
+                poll_seconds=poll,
+                snapshot_root=snapshot_root,
+            )
+            spec = requested_spec
+            print(
+                f"[PRIMARY] {spec.period_type} = STOCKBIT_AGGREGATE_EXPORT "
+                f"{spec.period_start}..{spec.period_end}. TODAY PULSE = REAL 1D {trade_date}.",
+                flush=True,
+            )
         summary_snapshot = Path(str(selected_manifest["summary_snapshot_path"]))
         raw_text = str(selected_manifest.get("raw_snapshot_path", "")).strip()
         raw_snapshot = Path(raw_text) if raw_text else None
@@ -815,16 +822,6 @@ def main() -> int:
             or ""
         ).strip()
         daily_raw_snapshot = Path(daily_raw_text) if daily_raw_text else None
-    if (
-        daily_raw_snapshot is None
-        and str(selected_manifest.get("broker_period_source", "")).upper() == "INTERNAL_DAILY_ROLLUP"
-        and selected_manifest.get("daily_source_snapshot_id")
-    ):
-        # The immutable internal PRIMARY copy is itself a real 1D raw source;
-        # it remains sufficient for REUSE even if the separate daily manifest
-        # sidecar is unavailable.
-        internal_daily_raw = Path(str(selected_manifest.get("raw_snapshot_path", "")))
-        daily_raw_snapshot = internal_daily_raw if internal_daily_raw.exists() else None
     if daily_raw_snapshot and daily_raw_snapshot.exists() and not daily_archive_path:
         daily_archive_path = archive_daily_raw(daily_raw_snapshot, raw_archive, trade_date)
 
