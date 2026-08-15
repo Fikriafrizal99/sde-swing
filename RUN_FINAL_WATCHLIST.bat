@@ -33,7 +33,13 @@ set "RC=!ERRORLEVEL!"
 goto STATUS
 
 :PREVIEW_EXISTING
-%SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job final_watchlist --preview-existing --no-telegram
+set "PREVIEW_DATE="
+for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py" 2^>nul`) do set "PREVIEW_DATE=%%D"
+if not defined PREVIEW_DATE goto PREVIEW_DATE_FAILED
+
+echo.
+echo Preview Final Watchlist trade date !PREVIEW_DATE! tanpa kirim Telegram...
+%SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job final_watchlist --trade-date !PREVIEW_DATE! --preview-existing --no-telegram
 set "RC=!ERRORLEVEL!"
 goto STATUS
 
@@ -50,6 +56,11 @@ goto STATUS
 
 :STATUS_ONLY
 %SDE_PYTHON_CMD% tools\print_job_status.py --job final_watchlist
+pause
+goto MENU
+
+:PREVIEW_DATE_FAILED
+echo Gagal menentukan hari trading terakhir untuk Preview Existing.
 pause
 goto MENU
 
