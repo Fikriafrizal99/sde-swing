@@ -41,6 +41,12 @@ JOB_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "job_status": (),
 }
 
+DEPENDENCY_READY_STATUSES = {"SUCCESS", "SUCCESS_WITH_WARNING", "PARTIAL"}
+FINAL_WATCHLIST_ENGINE_COMPLETE_STAGES = {
+    "market_outlook": "MARKET_OUTLOOK",
+    "post_market": "POST_MARKET",
+}
+
 
 @dataclass(frozen=True)
 class JobDefinition:
@@ -61,14 +67,32 @@ DEFAULT_JOB_DEFINITIONS: dict[str, JobDefinition] = {
 }
 
 
-def _dated_dependency_status(context: RuntimeContext, dependency: str) -> Mapping[str, Any] | None:
+def _payload_status(payload: Mapping[str, Any]) -> str:
+    return str(payload.get("status", payload.get("status_v1_7", ""))).upper()
+
+
+def _payload_stage(payload: Mapping[str, Any]) -> str:
+    return str(payload.get("stage", payload.get("stage_v1_7", ""))).upper()
+
+
+def _dated_dependency_status(
+    context: RuntimeContext,
+    dependency: str,
+    *,
+    ready_only: bool = False,
+) -> Mapping[str, Any] | None:
     """Return the newest persisted status for the effective trade date.
 
     Final Watchlist can run on the latest completed trading session while the
-    calendar date is already a weekend/holiday.  In that case ``*_latest.json``
-    may legitimately point at a later skipped attempt.  The runtime already
+    calendar date is already a weekend/holiday. In that case ``*_latest.json``
+    may legitimately point at a later skipped attempt. The runtime already
     keeps immutable per-trade-date status files, so use that history instead of
     weakening the dependency date/status/config contract.
+
+    ``ready_only`` is used only for harmless same-date reruns that were skipped
+    before executing the engine. It searches backward for the newest completed
+    predecessor from the same effective trading date; genuine engine failures
+    are never replaced by an older success.
     """
     configured_root = str(
         (context.scheduler_config.get("paths", {}) or {}).get(
@@ -101,8 +125,53 @@ def _dated_dependency_status(context: RuntimeContext, dependency: str) -> Mappin
             continue
         if str(payload.get("trade_date", "")) != expected_date:
             continue
+        if ready_only and _payload_status(payload) not in DEPENDENCY_READY_STATUSES:
+            continue
         return payload
     return None
+
+
+def _final_watchlist_dependency_payload(
+    context: RuntimeContext,
+    dependency: str,
+    payload: Mapping[str, Any] | None,
+) -> tuple[Mapping[str, Any] | None, str]:
+    """Reconcile non-engine terminal outcomes for Final Watchlist only.
+
+    Market Outlook/Post Market write their canonical engine artifacts before
+    Telegram delivery. A DELIVERY_FAILED terminal status at the engine's final
+    stage therefore means the predecessor computation completed; delivery is
+    not an engine dependency of Final Watchlist. Likewise, a later same-date
+    run that was SKIPPED at DEPENDENCY_VALIDATION did not execute or invalidate
+    the previously completed same-date engine output, so the newest ready
+    historical status may be used.
+
+    FAILED/WAITING/guardrail/exception outcomes remain authoritative.
+    """
+    if payload is None:
+        return payload, ""
+
+    status = _payload_status(payload)
+    stage = _payload_stage(payload)
+    expected_stage = FINAL_WATCHLIST_ENGINE_COMPLETE_STAGES.get(dependency, "")
+
+    if status == "DELIVERY_FAILED" and expected_stage and stage == expected_stage:
+        normalized = dict(payload)
+        normalized["status"] = "SUCCESS_WITH_WARNING"
+        normalized["status_v1_7"] = "SUCCESS_WITH_WARNING"
+        normalized["dependency_source_status"] = status
+        normalized["dependency_status_override"] = "ENGINE_COMPLETE_DELIVERY_FAILED"
+        return normalized, "ENGINE_COMPLETE_DELIVERY_FAILED"
+
+    if status == "SKIPPED" and stage == "DEPENDENCY_VALIDATION":
+        previous = _dated_dependency_status(context, dependency, ready_only=True)
+        if previous is not None:
+            normalized = dict(previous)
+            normalized["dependency_source_status"] = status
+            normalized["dependency_status_override"] = "SAME_DATE_SKIPPED_REUSE_COMPLETED_STATUS"
+            return normalized, "SAME_DATE_SKIPPED_REUSE_COMPLETED_STATUS"
+
+    return payload, ""
 
 
 def validate_dependency_status(
@@ -116,32 +185,41 @@ def validate_dependency_status(
     result: dict[str, Any] = {"required": list(required), "valid": True, "dependencies": {}}
     expected_date = context.trade_date.isoformat()
     for dependency in required:
-        payload = statuses.get(dependency)
+        payload: Mapping[str, Any] | None = statuses.get(dependency)
+        override = ""
 
-        # Scope this reconciliation to Final Watchlist only.  A later
+        # Scope this reconciliation to Final Watchlist only. A later
         # weekend/holiday attempt may overwrite ``*_latest.json`` even though
         # the required completed-session status remains durably stored under
-        # ``job_status/<trade_date>/``.  Never replace a status that already
-        # belongs to the effective trade date: a same-date FAILED/SKIPPED run
-        # must remain authoritative.
+        # ``job_status/<trade_date>/``.
         if job_name == "final_watchlist" and (
             payload is None or str(payload.get("trade_date", "")) != expected_date
         ):
             dated_payload = _dated_dependency_status(context, dependency)
             if dated_payload is not None:
                 payload = dated_payload
+                override = "EFFECTIVE_TRADE_DATE_STATUS"
+
+        if job_name == "final_watchlist" and dependency in FINAL_WATCHLIST_ENGINE_COMPLETE_STAGES:
+            payload, final_override = _final_watchlist_dependency_payload(
+                context,
+                dependency,
+                payload,
+            )
+            if final_override:
+                override = final_override
 
         if payload is None:
             result["dependencies"][dependency] = {"status": "MISSING"}
             result["valid"] = False
             continue
-        status = str(payload.get("status", payload.get("status_v1_7", ""))).upper()
+        status = _payload_status(payload)
         dep_date = str(payload.get("trade_date", ""))
         dep_config = str(payload.get("config_version", ""))
-        fresh = status in {"SUCCESS", "SUCCESS_WITH_WARNING", "PARTIAL"}
+        fresh = status in DEPENDENCY_READY_STATUSES
         date_ok = dep_date == expected_date
         config_ok = not dep_config or dep_config == context.config_version
-        result["dependencies"][dependency] = {
+        dependency_result = {
             "status": status,
             "trade_date": dep_date,
             "config_version": dep_config,
@@ -149,6 +227,13 @@ def validate_dependency_status(
             "date_match": date_ok,
             "config_match": config_ok,
         }
+        source_status = str(payload.get("dependency_source_status", "")).upper()
+        payload_override = str(payload.get("dependency_status_override", ""))
+        if source_status:
+            dependency_result["source_status"] = source_status
+        if override or payload_override:
+            dependency_result["dependency_status_override"] = override or payload_override
+        result["dependencies"][dependency] = dependency_result
         if not (fresh and date_ok and config_ok):
             result["valid"] = False
     return result
