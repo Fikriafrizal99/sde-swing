@@ -166,3 +166,11 @@ def test_scheduler_final_watchlist_routes_through_lifecycle_entrypoint():
 
     assert "tools/run_final_watchlist_entrypoint.py --period 1D" in normalized
     assert "tools/run_final_watchlist_broker_period.py --period 1D" not in normalized
+
+
+def test_preview_existing_resolves_completed_trade_date_before_integrated_runner():
+    source = (ROOT / "RUN_FINAL_WATCHLIST.bat").read_text(encoding="utf-8")
+    normalized = source.replace("\\", "/")
+
+    assert "tools/resolve_last_trading_day.py" in normalized
+    assert "--job final_watchlist --trade-date !PREVIEW_DATE! --preview-existing --no-telegram" in normalized
