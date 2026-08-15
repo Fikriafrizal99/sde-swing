@@ -28,7 +28,7 @@ if "%MODE%"=="2" goto PREVIEW_EXISTING
 goto MENU
 
 :BROKER_PERIOD_NORMAL
-%SDE_PYTHON_CMD% -u tools\run_final_watchlist_broker_period.py
+%SDE_PYTHON_CMD% -u tools\run_final_watchlist_entrypoint.py
 set "RC=!ERRORLEVEL!"
 goto STATUS
 
