@@ -1,7 +1,13 @@
+from argparse import Namespace
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from tools import run_final_watchlist_entrypoint as entrypoint
+from tools import run_full_daily_broker_period as full_daily
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_weekend_normal_resolves_to_last_completed_idx_session():
@@ -99,3 +105,64 @@ def test_running_status_is_terminalized_on_child_failure(monkeypatch, tmp_path):
     payload = entrypoint.read_json(status_path)
     assert payload["status"] == "FAILED"
     assert payload["trade_date"] == "2026-08-14"
+
+
+def _full_daily_args(trade_date: str = "") -> Namespace:
+    return Namespace(
+        config="config/pipeline.json",
+        scheduler_config="config/scheduler.json",
+        trade_date=trade_date,
+        period="1D",
+        custom_start="",
+        timeout=-1,
+        no_telegram=False,
+        debug=False,
+    )
+
+
+def test_full_daily_uses_canonical_date_resolver(monkeypatch):
+    captured = {}
+
+    def fake_resolver(argv):
+        captured["argv"] = list(argv)
+        return "2026-08-14"
+
+    monkeypatch.setattr(full_daily, "resolve_effective_trade_date", fake_resolver)
+    resolved = full_daily.resolve_full_daily_trade_date(_full_daily_args())
+
+    assert resolved == "2026-08-14"
+    assert "--scheduler-config" in captured["argv"]
+    assert "--trade-date" not in captured["argv"]
+
+
+def test_full_daily_preserves_explicit_replay_date(monkeypatch):
+    captured = {}
+
+    def fake_resolver(argv):
+        captured["argv"] = list(argv)
+        return "2026-08-13"
+
+    monkeypatch.setattr(full_daily, "resolve_effective_trade_date", fake_resolver)
+    resolved = full_daily.resolve_full_daily_trade_date(_full_daily_args("2026-08-13"))
+
+    assert resolved == "2026-08-13"
+    index = captured["argv"].index("--trade-date")
+    assert captured["argv"][index + 1] == "2026-08-13"
+
+
+def test_full_daily_final_watchlist_routes_through_lifecycle_entrypoint():
+    command = full_daily.final_watchlist_command(_full_daily_args(), "2026-08-14")
+    rendered = " ".join(command).replace("\\", "/")
+
+    assert "tools/run_final_watchlist_entrypoint.py" in rendered
+    assert "tools/run_final_watchlist_broker_period.py" not in rendered
+    index = command.index("--trade-date")
+    assert command[index + 1] == "2026-08-14"
+
+
+def test_scheduler_final_watchlist_routes_through_lifecycle_entrypoint():
+    source = (ROOT / "scheduler" / "SCHEDULE_FINAL_WATCHLIST.bat").read_text(encoding="utf-8")
+    normalized = source.replace("\\", "/")
+
+    assert "tools/run_final_watchlist_entrypoint.py --period 1D" in normalized
+    assert "tools/run_final_watchlist_broker_period.py --period 1D" not in normalized
