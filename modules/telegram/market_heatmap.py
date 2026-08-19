@@ -31,6 +31,14 @@ _NEUTRAL = "#41494F"
 _RED = "#B83333"
 _RED_STRONG = "#980D18"
 
+# Typography intentionally uses Matplotlib's bundled DejaVu Sans so production
+# rendering is deterministic and does not depend on a separately installed font.
+_FONT_FAMILY = "DejaVu Sans"
+_STRONG_MOVE_PCT = 3.0
+_NEUTRAL_BAND_PCT = 0.5
+_TILE_TEXT_MIN_AREA = 0.0018
+_TILE_TEXT_MIN_SIDE = 0.026
+
 
 @dataclass(frozen=True)
 class HeatmapItem:
@@ -46,6 +54,12 @@ class HeatmapRect:
     y: float
     w: float
     h: float
+
+
+@dataclass(frozen=True)
+class TileTypography:
+    symbol_size: float
+    show_change: bool
 
 
 def _norm(value: Any) -> str:
@@ -216,15 +230,40 @@ def _layout(items: Iterable[HeatmapItem]) -> list[HeatmapRect]:
 
 
 def _color(change_pct: float) -> str:
-    if change_pct > 3.0:
+    if change_pct > _STRONG_MOVE_PCT:
         return _GREEN_STRONG
-    if change_pct >= 1.0:
+    if change_pct >= _NEUTRAL_BAND_PCT:
         return _GREEN
-    if change_pct > -1.0:
+    if change_pct > -_NEUTRAL_BAND_PCT:
         return _NEUTRAL
-    if change_pct >= -3.0:
+    if change_pct >= -_STRONG_MOVE_PCT:
         return _RED
     return _RED_STRONG
+
+
+def _breadth_counts(items: Iterable[HeatmapItem]) -> tuple[int, int, int]:
+    rows = list(items)
+    advances = sum(1 for item in rows if item.change_pct > 0)
+    declines = sum(1 for item in rows if item.change_pct < 0)
+    unchanged = len(rows) - advances - declines
+    return advances, declines, unchanged
+
+
+def _tile_typography(area: float, minimum_side: float, height: float) -> TileTypography | None:
+    if area < _TILE_TEXT_MIN_AREA or minimum_side < _TILE_TEXT_MIN_SIDE:
+        return None
+    if area >= 0.014:
+        size = 14.0
+    elif area >= 0.007:
+        size = 12.0
+    elif area >= 0.0035:
+        size = 10.0
+    else:
+        size = 8.0
+    return TileTypography(
+        symbol_size=size,
+        show_change=area >= 0.0030 and height >= 0.060,
+    )
 
 
 def _signed_pct(value: float) -> str:
@@ -274,9 +313,29 @@ def _date_label(value: Any) -> str:
 
 
 def _metric_card(ax: Any, x: float, y: float, w: float, h: float, label: str, value: str) -> None:
-    ax.add_patch(Rectangle((x, y), w, h, facecolor=_PANEL, edgecolor=_PANEL_EDGE, linewidth=1.0))
-    ax.text(x + 0.018 * w, y + h * 0.68, label, color=_MUTED, fontsize=10, va="center", ha="left")
-    ax.text(x + 0.018 * w, y + h * 0.32, value, color=_TEXT, fontsize=17, fontweight="bold", va="center", ha="left")
+    ax.add_patch(Rectangle((x, y), w, h, facecolor=_PANEL, edgecolor=_PANEL_EDGE, linewidth=0.9))
+    ax.text(
+        x + 0.020 * w,
+        y + h * 0.68,
+        label,
+        color=_MUTED,
+        fontsize=9,
+        fontfamily=_FONT_FAMILY,
+        fontweight="medium",
+        va="center",
+        ha="left",
+    )
+    ax.text(
+        x + 0.020 * w,
+        y + h * 0.31,
+        value,
+        color=_TEXT,
+        fontsize=16,
+        fontfamily=_FONT_FAMILY,
+        fontweight="semibold",
+        va="center",
+        ha="left",
+    )
 
 
 def render_market_heatmap(ctx: Any) -> Path:
@@ -290,8 +349,7 @@ def render_market_heatmap(ctx: Any) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "market_heatmap.png"
 
-    advances = sum(1 for item in items if item.change_pct > 0)
-    declines = sum(1 for item in items if item.change_pct < 0)
+    advances, declines, unchanged = _breadth_counts(items)
     total_turnover = sum(item.turnover for item in items)
     ihsg = _ihsg_change(ctx)
 
@@ -302,10 +360,48 @@ def render_market_heatmap(ctx: Any) -> Path:
     canvas.axis("off")
     canvas.set_facecolor(_BG)
 
-    canvas.text(0.03, 0.965, "SDE SWING — MARKET HEATMAP", color=_TEXT, fontsize=23, fontweight="bold", va="top")
-    canvas.text(0.03, 0.925, _date_label(ctx.trade_date), color=_MUTED, fontsize=11, va="top")
-    canvas.text(0.97, 0.965, "POST MARKET", color=_TEXT, fontsize=16, fontweight="bold", ha="right", va="top")
-    canvas.text(0.97, 0.928, "EOD MARKET BREADTH", color=_MUTED, fontsize=9, ha="right", va="top")
+    canvas.text(
+        0.03,
+        0.965,
+        "SDE SWING — MARKET HEATMAP",
+        color=_TEXT,
+        fontsize=21,
+        fontfamily=_FONT_FAMILY,
+        fontweight="semibold",
+        va="top",
+    )
+    canvas.text(
+        0.03,
+        0.925,
+        _date_label(ctx.trade_date),
+        color=_MUTED,
+        fontsize=10,
+        fontfamily=_FONT_FAMILY,
+        fontweight="normal",
+        va="top",
+    )
+    canvas.text(
+        0.97,
+        0.965,
+        "POST MARKET",
+        color=_TEXT,
+        fontsize=15,
+        fontfamily=_FONT_FAMILY,
+        fontweight="semibold",
+        ha="right",
+        va="top",
+    )
+    canvas.text(
+        0.97,
+        0.928,
+        "EOD MARKET BREADTH",
+        color=_MUTED,
+        fontsize=8.5,
+        fontfamily=_FONT_FAMILY,
+        fontweight="normal",
+        ha="right",
+        va="top",
+    )
 
     card_y, card_h = 0.815, 0.085
     gap = 0.012
@@ -313,12 +409,39 @@ def render_market_heatmap(ctx: Any) -> Path:
     card_w = (total_w - 3 * gap) / 4
     ihsg_text = _signed_pct(ihsg) if ihsg is not None else "N/A"
     _metric_card(canvas, 0.03, card_y, card_w, card_h, "IHSG", ihsg_text)
-    _metric_card(canvas, 0.03 + card_w + gap, card_y, card_w, card_h, "ADV / DEC", f"{advances} / {declines}")
+    _metric_card(
+        canvas,
+        0.03 + card_w + gap,
+        card_y,
+        card_w,
+        card_h,
+        "ADV / DEC / UNCH",
+        f"{advances} / {declines} / {unchanged}",
+    )
     _metric_card(canvas, 0.03 + 2 * (card_w + gap), card_y, card_w, card_h, "DAILY TURNOVER", _compact_money(total_turnover))
     _metric_card(canvas, 0.03 + 3 * (card_w + gap), card_y, card_w, card_h, "ACTIVE SYMBOLS", str(len(items)))
 
-    canvas.text(0.03, 0.785, "HEATMAP BY: % CHANGE", color=_MUTED, fontsize=12, fontweight="bold", va="top")
-    canvas.text(0.97, 0.785, "Size by: Daily Turnover", color=_MUTED, fontsize=10, ha="right", va="top")
+    canvas.text(
+        0.03,
+        0.785,
+        "HEATMAP BY: % CHANGE",
+        color=_MUTED,
+        fontsize=11,
+        fontfamily=_FONT_FAMILY,
+        fontweight="semibold",
+        va="top",
+    )
+    canvas.text(
+        0.97,
+        0.785,
+        "Size by: Daily Turnover",
+        color=_MUTED,
+        fontsize=9.5,
+        fontfamily=_FONT_FAMILY,
+        fontweight="normal",
+        ha="right",
+        va="top",
+    )
 
     heat_ax = fig.add_axes([0.03, 0.12, 0.94, 0.64])
     heat_ax.set_xlim(0, 1)
@@ -334,40 +457,111 @@ def render_market_heatmap(ctx: Any) -> Path:
         h = max(0.0, rect.h - 2 * pad)
         if w <= 0 or h <= 0:
             continue
-        heat_ax.add_patch(Rectangle((x, y), w, h, facecolor=_color(rect.item.change_pct), edgecolor=_BORDER, linewidth=0.55))
+        heat_ax.add_patch(
+            Rectangle(
+                (x, y),
+                w,
+                h,
+                facecolor=_color(rect.item.change_pct),
+                edgecolor=_BORDER,
+                linewidth=0.60,
+            )
+        )
         area = w * h
         minimum_side = min(w, h)
-        if area < 0.0010 or minimum_side < 0.018:
+        typography = _tile_typography(area, minimum_side, h)
+        if typography is None:
             continue
-        fontsize = 7
-        if area >= 0.012:
-            fontsize = 15
-        elif area >= 0.006:
-            fontsize = 12
-        elif area >= 0.003:
-            fontsize = 9
-        symbol_y = y + h * (0.57 if area >= 0.0022 else 0.50)
-        heat_ax.text(x + w / 2, symbol_y, rect.item.symbol, color=_TEXT, fontsize=fontsize, fontweight="bold", ha="center", va="center", clip_on=True)
-        if area >= 0.0022 and h >= 0.055:
-            heat_ax.text(x + w / 2, y + h * 0.38, _signed_pct(rect.item.change_pct), color=_TEXT, fontsize=max(6, fontsize - 1), fontweight="bold", ha="center", va="center", clip_on=True)
+
+        symbol_y = y + h * (0.61 if typography.show_change else 0.50)
+        heat_ax.text(
+            x + w / 2,
+            symbol_y,
+            rect.item.symbol,
+            color=_TEXT,
+            fontsize=typography.symbol_size,
+            fontfamily=_FONT_FAMILY,
+            fontweight="semibold",
+            ha="center",
+            va="center",
+            clip_on=True,
+        )
+        if typography.show_change:
+            heat_ax.text(
+                x + w / 2,
+                y + h * 0.35,
+                _signed_pct(rect.item.change_pct),
+                color=_TEXT,
+                fontsize=max(7.0, typography.symbol_size - 1.5),
+                fontfamily=_FONT_FAMILY,
+                fontweight="normal",
+                ha="center",
+                va="center",
+                clip_on=True,
+            )
 
     legend_y = 0.065
-    canvas.text(0.03, legend_y + 0.018, "% CHANGE", color=_MUTED, fontsize=9, va="center")
+    canvas.text(
+        0.03,
+        legend_y + 0.018,
+        "% CHANGE",
+        color=_MUTED,
+        fontsize=9,
+        fontfamily=_FONT_FAMILY,
+        fontweight="medium",
+        va="center",
+    )
     legend = [
         (_GREEN_STRONG, "> +3%"),
-        (_GREEN, "+1% to +3%"),
-        (_NEUTRAL, "-1% to +1%"),
-        (_RED, "-3% to -1%"),
+        (_GREEN, "+0.5% to +3%"),
+        (_NEUTRAL, "-0.5% to +0.5%"),
+        (_RED, "-3% to -0.5%"),
         (_RED_STRONG, "< -3%"),
     ]
     start_x = 0.12
     for index, (color, label) in enumerate(legend):
         x = start_x + index * 0.13
-        canvas.add_patch(Rectangle((x, legend_y + 0.007), 0.014, 0.022, facecolor=color, edgecolor=_PANEL_EDGE, linewidth=0.5))
-        canvas.text(x + 0.020, legend_y + 0.018, label, color=_MUTED, fontsize=8.5, va="center")
+        canvas.add_patch(
+            Rectangle(
+                (x, legend_y + 0.007),
+                0.014,
+                0.022,
+                facecolor=color,
+                edgecolor=_PANEL_EDGE,
+                linewidth=0.5,
+            )
+        )
+        canvas.text(
+            x + 0.020,
+            legend_y + 0.018,
+            label,
+            color=_MUTED,
+            fontsize=8.5,
+            fontfamily=_FONT_FAMILY,
+            fontweight="normal",
+            va="center",
+        )
 
-    canvas.text(0.97, 0.085, "SDE SWING", color=_TEXT, fontsize=10, fontweight="bold", ha="right")
-    canvas.text(0.97, 0.055, f"Source: {source_path.name} • Color: daily % change", color=_MUTED, fontsize=8, ha="right")
+    canvas.text(
+        0.97,
+        0.085,
+        "SDE SWING",
+        color=_TEXT,
+        fontsize=10,
+        fontfamily=_FONT_FAMILY,
+        fontweight="semibold",
+        ha="right",
+    )
+    canvas.text(
+        0.97,
+        0.055,
+        f"Source: {source_path.name} • Color: daily % change",
+        color=_MUTED,
+        fontsize=8.5,
+        fontfamily=_FONT_FAMILY,
+        fontweight="normal",
+        ha="right",
+    )
 
     fig.savefig(output_path, facecolor=fig.get_facecolor(), bbox_inches=None, pad_inches=0)
     plt.close(fig)
