@@ -6,6 +6,14 @@ calculations. Only those human-facing formatters are rebound here; engine-owned
 artifacts remain untouched.
 """
 
+import logging
+
+# Matplotlib can emit noisy findfont fallback warnings on some Windows hosts when
+# DejaVu Sans resolves medium/semibold requests to its bundled regular/bold
+# faces. The renderer is deterministic and the fallback is intentional, so keep
+# those messages out of the operator console without changing report behavior.
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+
 from . import daily_report_ui as _daily_report_ui
 from .final_watchlist_ui import format_watchlist_detail as _final_watchlist_formatter
 from .market_outlook_ui import format_market_outlook as _market_outlook_formatter
