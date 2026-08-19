@@ -34,7 +34,11 @@ def _attachment_path(payload: ReportPayload) -> Path | None:
 
 
 def _attachment_caption(payload: ReportPayload) -> str:
-    return str(getattr(payload, "caption", "") or payload.text or "").strip()
+    # An explicitly supplied empty caption is intentional for standalone
+    # visual cards such as the Post Market heatmap.
+    if hasattr(payload, "caption"):
+        return str(getattr(payload, "caption", "") or "").strip()
+    return str(payload.text or "").strip()
 
 
 def _is_photo_attachment(path: Path | None) -> bool:
@@ -73,6 +77,57 @@ def _state_paths(ctx: RunnerContext) -> tuple[Path, Path]:
     index = resolve(delivery_cfg.get("idempotency_index", "data/state/scheduler/telegram_idempotency.json"))
     log = resolve(delivery_cfg.get("delivery_log", "data/state/scheduler/delivery_log.jsonl"))
     return index, log
+
+
+def _expand_post_market_heatmap_payloads(
+    ctx: RunnerContext,
+    payloads: list[ReportPayload],
+) -> list[ReportPayload]:
+    """Insert one non-blocking heatmap photo immediately before Post Market.
+
+    Rendering is deliberately performed in the delivery/output layer. A stale
+    or failed heatmap can never block the Post Market text or any SDE engine.
+    """
+    if not payloads:
+        return payloads
+
+    expanded: list[ReportPayload] = []
+    inserted = False
+    for payload in payloads:
+        if not inserted and str(payload.report_type or "").strip().lower() == "post_market":
+            try:
+                from modules.telegram.market_heatmap import heatmap_enabled, render_market_heatmap
+
+                if heatmap_enabled(ctx):
+                    path = render_market_heatmap(ctx)
+                    heatmap = ReportPayload(
+                        report_type="post_market_heatmap",
+                        filename="post_market_heatmap.txt",
+                        text=(
+                            "📊 SDE SWING — MARKET HEATMAP\n"
+                            "⚠️ Gambar heatmap tidak dapat dikirim; Post Market tetap dilanjutkan."
+                        ),
+                        topic="post_market",
+                    )
+                    setattr(heatmap, "attachment_path", path)
+                    setattr(heatmap, "caption", "")
+                    expanded.append(heatmap)
+                    inserted = True
+            except Exception as exc:
+                _, log_path = _state_paths(ctx)
+                append_jsonl(log_path, {
+                    "time": now_wib().isoformat(timespec="seconds"),
+                    "run_id": ctx.run_id,
+                    "job": ctx.job,
+                    "trade_date": ctx.trade_date.isoformat(),
+                    "report_type": "post_market_heatmap",
+                    "status": "HEATMAP_RENDER_SKIPPED",
+                    "error": f"{type(exc).__name__}:{exc}",
+                    "non_blocking": True,
+                })
+                inserted = True
+        expanded.append(payload)
+    return expanded
 
 
 def _idempotency_store(
@@ -334,7 +389,7 @@ def _send_photo(ctx: RunnerContext, payload: ReportPayload, caption: str) -> dic
 def _photo_parts(payload: ReportPayload, max_len: int) -> tuple[str, list[str]]:
     full = normalize_telegram_text(payload.text)
     if len(full) <= 1024:
-        return full, []
+        return _attachment_caption(payload), []
     caption = normalize_telegram_text(_attachment_caption(payload))
     if not caption:
         caption = full[:900]
@@ -362,6 +417,7 @@ def _record_successful_lifecycle_ack(
 
 
 def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str, Any]]:
+    payloads = _expand_post_market_heatmap_payloads(ctx, payloads)
     index_path, log_path = _state_paths(ctx)
     idempotency_store: DeliveryIdempotencyStore | None = None
     results: list[dict[str, Any]] = []
