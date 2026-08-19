@@ -139,3 +139,29 @@ def test_heatmap_render_failure_never_blocks_post_market(monkeypatch, tmp_path: 
     delivery_log = Path(ctx.scheduler_config["delivery"]["delivery_log"])
     assert delivery_log.exists()
     assert "HEATMAP_RENDER_SKIPPED" in delivery_log.read_text(encoding="utf-8")
+
+
+def test_heatmap_uses_half_percent_neutral_band() -> None:
+    assert market_heatmap._color(3.01) == market_heatmap._GREEN_STRONG
+    assert market_heatmap._color(0.98) == market_heatmap._GREEN
+    assert market_heatmap._color(0.49) == market_heatmap._NEUTRAL
+    assert market_heatmap._color(-0.49) == market_heatmap._NEUTRAL
+    assert market_heatmap._color(-0.79) == market_heatmap._RED
+    assert market_heatmap._color(-3.01) == market_heatmap._RED_STRONG
+
+
+def test_breadth_counts_include_unchanged_symbols() -> None:
+    items = [
+        market_heatmap.HeatmapItem("AAA", 1.0, 100.0),
+        market_heatmap.HeatmapItem("BBB", -1.0, 90.0),
+        market_heatmap.HeatmapItem("CCC", 0.0, 80.0),
+    ]
+    assert market_heatmap._breadth_counts(items) == (1, 1, 1)
+
+
+def test_tiny_tiles_hide_labels_and_medium_tiles_keep_readable_typography() -> None:
+    assert market_heatmap._tile_typography(0.0010, 0.020, 0.050) is None
+    style = market_heatmap._tile_typography(0.0040, 0.050, 0.080)
+    assert style is not None
+    assert style.symbol_size == 10.0
+    assert style.show_change is True
