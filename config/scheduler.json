@@ -65,7 +65,14 @@
     "allow_broker_fusion": false,
     "allow_final_decision": false,
     "fallback_to_existing_on_refresh_failure": false,
-    "report_mode": "compact_single_message"
+    "report_mode": "compact_single_message",
+    "market_heatmap": {
+      "enabled": true,
+      "max_symbols": 0,
+      "color_by": "Return_1D",
+      "size_by": "Turnover_Value",
+      "non_blocking": true
+    }
   },
   "news_monitor": {
     "enabled": true,
