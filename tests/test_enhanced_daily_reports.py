@@ -166,7 +166,7 @@ def test_market_outlook_matches_final_agreed_layout(tmp_path: Path) -> None:
     artifact = builder.build_market_outlook({
         "trade_date": "2026-08-03",
         "market_regime": "BULLISH MODERATE",
-        "execution_mode": "SELECTIVE",
+        "execution_mode": "SELECTIVE AGGRESSIVE",
         "ihsg_change": 1.65,
         "ihsg_trend": "BULLISH",
         "ihsg_momentum": "POSITIVE",
@@ -217,7 +217,7 @@ def test_market_outlook_matches_final_agreed_layout(tmp_path: Path) -> None:
     assert "<b>🌅 SDE SWING — MARKET OUTLOOK</b>" in text
     assert "<b>📊 MARKET CONDITION</b>" in text
     assert "🟢 Regime    : <b>BULLISH MODERATE</b>" in text
-    assert "🎯 Execution : <b>SELECTIVE</b>" in text
+    assert "🎯 Execution : <b>SELECTIVE AGGRESSIVE</b>" in text
     assert "🌍 Global    : <b>RISK ON | Coverage 96%</b>" in text
     assert "📈 IHSG      : <b>BULLISH</b>" in text
     assert "⚡ Momentum  : <b>POSITIVE</b>" in text
@@ -262,6 +262,14 @@ def test_post_market_matches_final_agreed_sections_and_counts(tmp_path: Path) ->
         "coverage": 99.1,
         "technical_status": "READY",
         "candidate_status": "READY",
+        "candidate_data_date": "2026-08-04",
+        "setup_distribution": {
+            "DEVELOPING": 15,
+            "BREAKOUT": 9,
+            "TREND_CONTINUATION": 8,
+            "PULLBACK": 7,
+            "EARLY_ACCUMULATION": 1,
+        },
         "broker_status": "READY",
         "historical_status": "VALID",
         "zapi_status": "SUCCESS_WITH_WARNING",
@@ -273,10 +281,8 @@ def test_post_market_matches_final_agreed_sections_and_counts(tmp_path: Path) ->
     ordered_sections = [
         "📊 MARKET PULSE",
         "📈 TECHNICAL BREADTH",
+        "🔥 SETUP DISTRIBUTION",
         "🧭 ARAHAN BESOK",
-        "🏦 BROKER STATUS",
-        "📦 SYSTEM HEALTH",
-        "🎯 NEXT — FINAL WATCHLIST",
     ]
     positions = [text.index(section) for section in ordered_sections]
     assert positions == sorted(positions)
@@ -286,11 +292,17 @@ def test_post_market_matches_final_agreed_sections_and_counts(tmp_path: Path) ->
     assert "🧭 Market  : RISK-ON" in text
     assert "📊 Breadth : BULLISH DOMINANT" in text
     assert "🟡 Neutral : 50" in text
-    assert "🟢 Coverage  : 99,1%" in text
+    assert "• DEVELOPING : 15" in text
     assert "POST-20260804-183700" in text
-    assert "PROCESS STATUS" not in text
-    assert "SOURCE STATUS" not in text
-    assert "ZAPI" not in text.upper()
+    for forbidden in (
+        "🏦 BROKER STATUS",
+        "📦 SYSTEM HEALTH",
+        "🎯 NEXT — FINAL WATCHLIST",
+        "PROCESS STATUS",
+        "SOURCE STATUS",
+        "ZAPI",
+    ):
+        assert forbidden not in text.upper()
 
 
 def test_post_market_does_not_invent_missing_screening_counts(tmp_path: Path) -> None:
@@ -310,7 +322,10 @@ def test_post_market_does_not_invent_missing_screening_counts(tmp_path: Path) ->
     text = artifact.text
     assert "📊 MARKET PULSE" in text
     assert "Data technical sesi berjalan tidak tersedia." in text
-    assert "Coverage  : 100,0%" in text
+    assert "Coverage  : 100,0%" not in text
+    assert "🏦 BROKER STATUS" not in text
+    assert "📦 SYSTEM HEALTH" not in text
+    assert "🎯 NEXT — FINAL WATCHLIST" not in text
     assert "🟢 Bullish" not in text
     assert "BUY READY" not in text
     assert "BUY CANDIDATE" not in text

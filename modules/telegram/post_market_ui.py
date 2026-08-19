@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Single-message Post Market presentation contract.
+
+This formatter is intentionally presentation-only. It keeps the exact compact
+Telegram structure approved for SDE Swing while failing closed when current
+session lineage is unavailable.
+"""
+
 from datetime import date, datetime
 from html import escape
 from math import floor
@@ -34,24 +41,16 @@ def _iso_date(value: Any) -> str:
     return parsed.date().isoformat() if parsed else ""
 
 
-def _date(value: Any, *, long: bool = False) -> str:
+def _date(value: Any) -> str:
     parsed = _dt(value)
     if parsed is None:
         return ""
-    if not long:
-        months = ["", "Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
-        return f"{parsed.day:02d} {months[parsed.month]} {parsed.year}"
     days = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
-    months = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+    months = [
+        "", "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+        "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+    ]
     return f"{days[parsed.weekday()]}, {parsed.day} {months[parsed.month]} {parsed.year}"
-
-
-def _full_date(value: Any) -> str:
-    parsed = _dt(value)
-    if parsed is None:
-        return ""
-    months = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
-    return f"{parsed.day} {months[parsed.month]} {parsed.year}"
 
 
 def _time(value: Any) -> str:
@@ -96,15 +95,6 @@ def _pct(value: Any, *, signed: bool = False, decimals: int = 1) -> str:
     return f"{prefix}{number:.{decimals}f}%".replace(".", ",")
 
 
-def _coverage(value: Any) -> str:
-    number = _number(value)
-    if number is None:
-        return ""
-    if 0 <= number <= 1:
-        number *= 100.0
-    return _pct(number, decimals=1)
-
-
 def _counts(data: Mapping[str, Any]) -> tuple[int, int, int]:
     def value(*keys: str) -> int:
         for key in keys:
@@ -120,7 +110,6 @@ def _counts(data: Mapping[str, Any]) -> tuple[int, int, int]:
 
 
 def _allocate_units(counts: tuple[int, int, int], units: int) -> tuple[int, int, int]:
-    """Allocate integer display units by largest remainder, deterministically."""
     total = sum(max(0, int(value)) for value in counts)
     if total <= 0 or units <= 0:
         return (0, 0, 0)
@@ -133,24 +122,15 @@ def _allocate_units(counts: tuple[int, int, int], units: int) -> tuple[int, int,
     return tuple(allocated)  # type: ignore[return-value]
 
 
-def _percentages(data: Mapping[str, Any]) -> tuple[int, int, int] | None:
-    counts = _counts(data)
-    if sum(counts) <= 0:
-        return None
-    return _allocate_units(counts, 100)
-
-
 def _technical_current(data: Mapping[str, Any]) -> bool:
     status = _upper(data.get("breadth_status"))
     if status in {
-        "NOT CURRENT", "STALE", "UNAVAILABLE", "NOT AVAILABLE",
-        "NOT READY", "FAILED", "INVALID", "ERROR",
+        "NOT CURRENT", "STALE", "UNAVAILABLE", "NOT AVAILABLE", "NOT READY",
+        "FAILED", "INVALID", "ERROR",
     }:
         return False
     trade_date = _iso_date(data.get("trade_date"))
     technical_date = _iso_date(data.get("technical_data_date"))
-    # The normal runtime always carries both dates.  Once a trade date is
-    # present, missing lineage is as unsafe as a mismatch and fails closed.
     return (not trade_date and not technical_date) or (
         bool(trade_date and technical_date) and trade_date == technical_date
     )
@@ -168,8 +148,8 @@ def _ihsg_current(data: Mapping[str, Any]) -> bool:
 def _candidate_current(data: Mapping[str, Any]) -> bool:
     status = _upper(data.get("candidate_status"))
     if status in {
-        "NOT CURRENT", "STALE", "UNAVAILABLE", "NOT AVAILABLE",
-        "NOT READY", "FAILED", "INVALID", "ERROR",
+        "NOT CURRENT", "STALE", "UNAVAILABLE", "NOT AVAILABLE", "NOT READY",
+        "FAILED", "INVALID", "ERROR",
     }:
         return False
     trade_date = _iso_date(data.get("trade_date"))
@@ -190,7 +170,7 @@ def _true_flag(value: Any) -> bool:
 
 
 def _broker_presentation_status(data: Mapping[str, Any]) -> str:
-    """Return a fail-closed presentation status for current broker data."""
+    """Fail closed; used only to decide whether guidance waits for broker data."""
     declared = _upper(data.get("broker_status") or data.get("stockbit_status"))
     upstream = _upper(
         data.get("broker_upstream_status")
@@ -214,15 +194,12 @@ def _broker_presentation_status(data: Mapping[str, Any]) -> str:
     if not available:
         return "NOT READY"
 
-    stale_tokens = ("STALE", "NOT CURRENT", "DATE MISMATCH", "FILE WRITING")
-    if any(token in combined for token in stale_tokens):
+    if any(token in combined for token in ("STALE", "NOT CURRENT", "DATE MISMATCH", "FILE WRITING")):
         return "WAITING"
 
     trade_date = _iso_date(data.get("trade_date"))
     broker_date = _iso_date(
-        data.get("broker_data_date")
-        or data.get("broker_date")
-        or data.get("broker_trade_date")
+        data.get("broker_data_date") or data.get("broker_date") or data.get("broker_trade_date")
     )
     if trade_date and (not broker_date or broker_date != trade_date):
         return "WAITING"
@@ -242,10 +219,7 @@ def _sector_current(data: Mapping[str, Any]) -> bool:
     if status and status not in {"VALID", "CURRENT", "READY"}:
         return False
     trade_date = _iso_date(data.get("trade_date"))
-    rotation_date = _iso_date(
-        data.get("sector_rotation_trade_date")
-        or payload.get("trade_date")
-    )
+    rotation_date = _iso_date(data.get("sector_rotation_trade_date") or payload.get("trade_date"))
     return (not trade_date and not rotation_date) or (
         bool(trade_date and rotation_date) and trade_date == rotation_date
     )
@@ -269,25 +243,18 @@ def _breadth_label(data: Mapping[str, Any]) -> str:
 
 def _market_label(data: Mapping[str, Any]) -> str:
     breadth = _breadth_label(data)
-    if breadth in {"DATA NOT CURRENT", "INSUFFICIENT DATA"}:
-        return "SELECTIVE"
-
-    # Market regime and IHSG direction share the IHSG session lineage.  A
-    # stale/missing IHSG session must not be reused to present RISK-ON/OFF.
-    if not _ihsg_current(data):
+    if breadth in {"DATA NOT CURRENT", "INSUFFICIENT DATA"} or not _ihsg_current(data):
         return "SELECTIVE"
 
     regime = _upper(data.get("market_regime"))
     ihsg = _number(data.get("ihsg_change"))
     explicit = regime.replace("-", " ")
-    if explicit in {"RISK ON", "RISK OFF", "SELECTIVE"}:
-        if explicit == "RISK ON" and breadth == "BULLISH DOMINANT":
-            return "RISK-ON"
-        if explicit == "RISK OFF" and breadth == "BEARISH DOMINANT":
-            return "RISK-OFF"
-        if explicit == "SELECTIVE":
-            return "SELECTIVE"
-
+    if explicit == "RISK ON" and breadth == "BULLISH DOMINANT":
+        return "RISK-ON"
+    if explicit == "RISK OFF" and breadth == "BEARISH DOMINANT":
+        return "RISK-OFF"
+    if explicit == "SELECTIVE":
+        return "SELECTIVE"
     if breadth == "BULLISH DOMINANT" and "BULL" in regime and (ihsg is None or ihsg >= 0):
         return "RISK-ON"
     if breadth == "BEARISH DOMINANT" and "BEAR" in regime and (ihsg is None or ihsg <= 0):
@@ -300,6 +267,13 @@ def _pulse_bar(data: Mapping[str, Any]) -> str:
     if green + yellow + red != PULSE_WIDTH:
         return ""
     return "🟩" * green + "🟨" * yellow + "🟥" * red
+
+
+def _percentages(data: Mapping[str, Any]) -> tuple[int, int, int] | None:
+    counts = _counts(data)
+    if sum(counts) <= 0:
+        return None
+    return _allocate_units(counts, 100)
 
 
 def _sector_values(data: Mapping[str, Any]) -> list[str]:
@@ -328,19 +302,7 @@ def _setup_items(data: Mapping[str, Any]) -> list[tuple[str, int]]:
     return sorted(items, key=lambda item: (-item[1], item[0]))[:5]
 
 
-def _status_icon(value: Any) -> str:
-    status = _upper(value)
-    if any(token in status for token in ("FAILED", "INVALID", "ERROR", "BLOCKED", "UNAVAILABLE", "NOT CURRENT", "NOT READY")):
-        return "🔴"
-    if any(token in status for token in ("WARNING", "WAITING", "EMPTY", "PARTIAL", "DEGRADED")):
-        return "🟡"
-    if any(token in status for token in ("READY", "VALID", "CURRENT", "SUCCESS")):
-        return "🟢"
-    return "🟡"
-
-
 def _market_breadth_sentence(data: Mapping[str, Any]) -> str:
-    """Describe IHSG direction and the already-classified breadth fact."""
     breadth = _breadth_label(data)
     ihsg = _number(data.get("ihsg_change")) if _ihsg_current(data) else None
 
@@ -373,7 +335,7 @@ def _market_breadth_sentence(data: Mapping[str, Any]) -> str:
     return f"{subject} ditutup {direction} dengan breadth campuran."
 
 
-def _guidance(data: Mapping[str, Any], setups: list[tuple[str, int]], broker: str) -> list[str]:
+def _guidance(data: Mapping[str, Any], setups: list[tuple[str, int]]) -> list[str]:
     breadth = _breadth_label(data)
     market = _market_label(data)
     lines = [_market_breadth_sentence(data)]
@@ -391,43 +353,12 @@ def _guidance(data: Mapping[str, Any], setups: list[tuple[str, int]], broker: st
     else:
         lines.append("Fokus pada saham dengan setup matang dan konfirmasi yang lengkap.")
 
-    if broker != "READY":
+    if _broker_presentation_status(data) != "READY":
         lines.append("Tunggu data broker sesi berjalan sebelum menggunakannya sebagai konfirmasi.")
-
     if not setups:
         lines.append("Setup current belum tersedia untuk sesi ini.")
     lines.extend(["", "Hindari mengejar saham yang sudah terlalu jauh dari area entry."])
     return lines
-
-
-def _health_lines(data: Mapping[str, Any], trade_date: str) -> list[str]:
-    coverage_number = _number(data.get("coverage"))
-    if coverage_number is not None and 0 <= coverage_number <= 1:
-        coverage_number *= 100.0
-    if coverage_number is None:
-        coverage_icon, coverage_text = "🔴", "DATA TIDAK TERSEDIA"
-    else:
-        coverage_icon = "🟢" if coverage_number >= 90 else "🟡"
-        coverage_text = _coverage(coverage_number)
-
-    technical_status = _upper(data.get("technical_status"))
-    if not _technical_current(data):
-        technical_status = "NOT CURRENT"
-    if not technical_status:
-        technical_status = "UNAVAILABLE"
-
-    screening_status = _upper(data.get("screening_result") or data.get("candidate_status"))
-    if not _candidate_current(data):
-        screening_status = "NOT CURRENT"
-    if not screening_status:
-        screening_status = "WAITING"
-
-    return [
-        f"{coverage_icon} Coverage  : {coverage_text or 'DATA TIDAK TERSEDIA'}",
-        f"{_status_icon(technical_status)} Technical : {escape(technical_status, quote=False)}",
-        f"{_status_icon(screening_status)} Screening : {escape(screening_status, quote=False)}",
-        f"📅 Data      : {_text(_full_date(trade_date), 'DATA TIDAK TERSEDIA')}",
-    ]
 
 
 def _ihsg_line(data: Mapping[str, Any]) -> str:
@@ -443,23 +374,17 @@ def _ihsg_line(data: Mapping[str, Any]) -> str:
 
 
 def format_post_market(data: dict[str, Any]) -> str:
-    """Render the single market-first Telegram Post Market contract.
-
-    ``CURRENT_V2`` remains accepted as a runtime/schema field, but it never
-    selects the retired UI.  This formatter is presentation-only and refuses
-    to render explicitly stale section inputs as current-session facts.
-    """
+    """Render the approved compact Post Market Telegram message exactly."""
     trade_date = _iso_date(data.get("trade_date"))
     percentages = _percentages(data) if _technical_current(data) else None
     breadth = _breadth_label(data)
     market = _market_label(data)
     sectors = _sector_values(data)
     setups = _setup_items(data)
-    broker = _broker_presentation_status(data)
 
     lines = [
         "🌆 SDE SWING — POST MARKET",
-        f"📅 {_text(_date(trade_date, long=True), 'DATA TIDAK TERSEDIA')}",
+        f"📅 {_text(_date(trade_date), 'DATA TIDAK TERSEDIA')}",
     ]
     finished = _time(data.get("finished_at") or data.get("generated_at") or data.get("completed_at"))
     if finished:
@@ -498,29 +423,8 @@ def format_post_market(data: dict[str, Any]) -> str:
     else:
         lines.append("⚠️ Data setup current tidak tersedia.")
 
-    lines += ["", "🧭 ARAHAN BESOK", *_guidance(data, setups, broker)]
-    lines += [
-        "",
-        "🏦 BROKER STATUS",
-        f"{_status_icon(broker)} Stockbit : {_text(broker)}",
-    ]
-    if broker == "READY":
-        lines.append("Broker siap digunakan sebagai konfirmasi di Final Watchlist.")
-    elif broker == "WAITING":
-        lines.append("Data broker belum terverifikasi untuk sesi berjalan.")
-    else:
-        lines.append("Data broker belum tersedia untuk konfirmasi.")
+    lines += ["", "🧭 ARAHAN BESOK", *_guidance(data, setups)]
 
-    lines += ["", "📦 SYSTEM HEALTH", *_health_lines(data, trade_date)]
-    lines += [
-        "",
-        "🎯 NEXT — FINAL WATCHLIST",
-        "Final Watchlist akan menentukan kandidat prioritas,",
-        "broker confirmation, Entry, SL, TP, serta keputusan final.",
-        "",
-        "📌 Post Market hanya menggambarkan kondisi pasar setelah penutupan.",
-        "Keputusan trading tetap ditentukan pada Final Watchlist.",
-    ]
     if _present(data.get("run_id")):
         lines += ["", _text(data.get("run_id"))]
     return "\n".join(lines).strip()
