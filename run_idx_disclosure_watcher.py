@@ -1,16 +1,19 @@
-"""One-shot runner for the isolated IDX Disclosure Watcher.
+"""Runner for the isolated IDX Disclosure Watcher.
 
-Live Telegram delivery and continuous scheduling remain disabled in this phase.
-Use --dry-run to validate IDX collection and local SQLite dedup safely.
+Supports one-shot validation and a persistent polling loop. The Playwright
+source stays alive across polls so Chrome/Edge is not reopened every minute.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import signal
+import threading
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from pathlib import Path
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 from modules.idx_disclosure.browser_client import (
@@ -19,6 +22,10 @@ from modules.idx_disclosure.browser_client import (
 )
 from modules.idx_disclosure.client import IDXAnnouncementClient, IDXClientError
 from modules.idx_disclosure.repository import SQLiteDisclosureRepository
+from modules.idx_disclosure.telegram_delivery import (
+    TelegramDeliveryError,
+    TelegramNewsDelivery,
+)
 from modules.idx_disclosure.watcher import IDXDisclosureWatcher
 
 
@@ -84,31 +91,111 @@ def _make_source(cfg: dict, request_cfg: dict, transport: str):
     if transport == "playwright":
         return _browser_source(cfg, request_cfg)
     if transport == "browser_fallback":
-        primary = _direct_source(cfg, request_cfg, "curl_cffi", retries=0)
+        primary_transport = str(request_cfg.get("fallback_primary_transport", "curl_cffi"))
+        primary = _direct_source(cfg, request_cfg, primary_transport, retries=0)
         return ResilientAnnouncementSource(primary, _browser_source(cfg, request_cfg))
-    if transport in {"auto", "curl_cffi", "requests"}:
-        return _direct_source(cfg, request_cfg, transport)
-    raise IDXClientError(f"Unknown IDX transport: {transport}")
+    return _direct_source(cfg, request_cfg, transport)
+
+
+def poll_interval_seconds(now: datetime, cfg: dict) -> int:
+    """Choose the configured interval for the current Jakarta wall clock."""
+    polling = cfg.get("polling", {})
+    market = polling.get("market_window", {})
+    evening = polling.get("evening_window", {})
+    current = now.timetz().replace(tzinfo=None)
+
+    def parse_clock(value: str, fallback: str) -> dt_time:
+        raw = str(value or fallback)
+        return datetime.strptime(raw, "%H:%M").time()
+
+    market_start = parse_clock(market.get("start"), "08:00")
+    market_end = parse_clock(market.get("end"), "17:00")
+    evening_start = parse_clock(evening.get("start"), "17:00")
+    evening_end = parse_clock(evening.get("end"), "22:00")
+
+    if market_start <= current < market_end:
+        return max(1, int(market.get("interval_seconds", 60)))
+    if evening_start <= current < evening_end:
+        return max(1, int(evening.get("interval_seconds", 180)))
+    return max(1, int(polling.get("overnight_interval_seconds", 600)))
+
+
+def _build_delivery(cfg: dict) -> TelegramNewsDelivery:
+    delivery_cfg = cfg.get("delivery", {})
+    return TelegramNewsDelivery(
+        scheduler_config_path=str(
+            delivery_cfg.get("scheduler_config_path", "config/scheduler.json")
+        ),
+        telegram_config_path=str(
+            delivery_cfg.get("telegram_config_path", "config/telegram.json")
+        ),
+        timeout_seconds=float(delivery_cfg.get("request_timeout_seconds", 30)),
+    )
+
+
+def _output(source, result, *, mode: str) -> dict:
+    return {
+        "time": datetime.now(JAKARTA).isoformat(timespec="seconds"),
+        "mode": mode,
+        "transport": str(getattr(source, "transport_name", type(source).__name__)),
+        **asdict(result),
+    }
+
+
+def _close_source(source) -> None:
+    close = getattr(source, "close", None)
+    if callable(close):
+        close()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="IDX Disclosure Watcher V1")
-    parser.add_argument("--dry-run", action="store_true", help="Collect and dedup without Telegram")
-    parser.add_argument("--date", help="Override Jakarta date as YYYYMMDD")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Collect and dedup without Telegram"
+    )
+    parser.add_argument(
+        "--watch", action="store_true", help="Keep polling using configured intervals"
+    )
+    parser.add_argument(
+        "--telegram",
+        action="store_true",
+        help="Enable Telegram delivery to the existing NEWS topic",
+    )
+    parser.add_argument("--date", help="Override Jakarta date as YYYYMMDD (one-shot only)")
     parser.add_argument(
         "--transport",
-        choices=("browser_fallback", "playwright", "auto", "curl_cffi", "requests"),
-        help="Override IDX transport for diagnostics",
+        choices=("playwright", "browser_fallback", "auto", "curl_cffi", "requests"),
+        help="Override IDX transport",
     )
     args = parser.parse_args()
 
+    if args.watch and args.date:
+        parser.error("--date cannot be used with --watch")
+    if args.dry_run and args.telegram:
+        parser.error("--dry-run and --telegram cannot be used together")
+
     cfg = _load_config()
-    if not args.dry_run and not bool(cfg.get("enabled", False)):
-        print("IDX Disclosure Watcher is disabled. Use --dry-run for safe validation.")
+    request_cfg = cfg.get("request", {})
+    transport = str(args.transport or request_cfg.get("transport", "playwright"))
+
+    explicit_live = bool(args.watch or args.telegram)
+    if not args.dry_run and not explicit_live and not bool(cfg.get("enabled", False)):
+        print("IDX Disclosure Watcher is disabled. Use --dry-run or explicit --watch/--telegram.")
         return 0
 
-    request_cfg = cfg.get("request", {})
-    transport = str(args.transport or request_cfg.get("transport", "browser_fallback"))
+    delivery_enabled = bool(
+        not args.dry_run
+        and (
+            args.telegram
+            or bool(cfg.get("delivery", {}).get("enabled", False))
+        )
+    )
+    if args.watch and not args.dry_run and not delivery_enabled:
+        parser.error(
+            "Live --watch requires --telegram (or delivery.enabled=true). "
+            "Use --dry-run --watch for log-only monitoring."
+        )
+
     try:
         source = _make_source(cfg, request_cfg, transport)
     except IDXClientError as exc:
@@ -116,28 +203,59 @@ def main() -> int:
         return 1
 
     try:
-        repo = SQLiteDisclosureRepository(cfg["state"]["sqlite_path"])
-        watcher = IDXDisclosureWatcher(
-            source,
-            repo,
-            delivery=None,
-            delivery_enabled=False,
-            page_size=int(request_cfg.get("page_size", 50)),
+        delivery = _build_delivery(cfg) if delivery_enabled else None
+    except TelegramDeliveryError as exc:
+        _close_source(source)
+        print(
+            json.dumps(
+                {"transport": getattr(source, "transport_name", transport), "error": str(exc)},
+                ensure_ascii=False,
+            )
         )
+        return 1
+
+    repo = SQLiteDisclosureRepository(cfg["state"]["sqlite_path"])
+    watcher = IDXDisclosureWatcher(
+        source,
+        repo,
+        delivery=delivery,
+        delivery_enabled=delivery_enabled,
+        page_size=int(request_cfg.get("page_size", 50)),
+    )
+
+    if not args.watch:
         result = watcher.poll_once(jakarta_date=_parse_date(args.date))
-        output = {
-            "transport": str(getattr(source, "transport_name", transport)),
-            **asdict(result),
-        }
-        primary_error = str(getattr(source, "primary_error", "") or "")
-        if primary_error:
-            output["primary_transport_error"] = primary_error
-        print(json.dumps(output, ensure_ascii=False))
+        print(json.dumps(_output(source, result, mode="dry-run" if args.dry_run else "once"), ensure_ascii=False))
+        _close_source(source)
         return 1 if result.error else 0
+
+    stop_event = threading.Event()
+
+    def request_stop(signum, frame):  # noqa: ARG001
+        stop_event.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, request_stop)
+        except (ValueError, OSError):
+            pass
+
+    mode = "watch-dry-run" if args.dry_run else "watch-live"
+    try:
+        while not stop_event.is_set():
+            started = monotonic()
+            now = datetime.now(JAKARTA)
+            result = watcher.poll_once(jakarta_date=now.date())
+            print(json.dumps(_output(source, result, mode=mode), ensure_ascii=False), flush=True)
+
+            interval = poll_interval_seconds(now, cfg)
+            elapsed = monotonic() - started
+            wait_seconds = max(1.0, interval - elapsed)
+            stop_event.wait(wait_seconds)
     finally:
-        close = getattr(source, "close", None)
-        if callable(close):
-            close()
+        _close_source(source)
+
+    return 0
 
 
 if __name__ == "__main__":
