@@ -2,6 +2,8 @@
 
 Supports one-shot validation and a persistent polling loop. The Playwright
 source stays alive across polls so Chrome/Edge is not reopened every minute.
+Optional Groq document reading is downstream and cannot block official IDX
+notification delivery.
 """
 
 from __future__ import annotations
@@ -16,6 +18,12 @@ from pathlib import Path
 from time import monotonic
 from zoneinfo import ZoneInfo
 
+from modules.idx_disclosure.ai_reader import (
+    AIReaderPermanentError,
+    GroqDisclosureAIReader,
+    load_environment_file,
+)
+from modules.idx_disclosure.ai_state import SQLiteDisclosureAIQueue
 from modules.idx_disclosure.browser_client import (
     PlaywrightAnnouncementClient,
     ResilientAnnouncementSource,
@@ -133,11 +141,45 @@ def _build_delivery(cfg: dict) -> TelegramNewsDelivery:
     )
 
 
-def _output(source, result, *, mode: str) -> dict:
+def _build_ai(
+    cfg: dict,
+    *,
+    delivery_enabled: bool,
+    dry_run: bool,
+    no_ai: bool,
+):
+    ai_cfg = cfg.get("ai_reader", {})
+    if no_ai:
+        return None, None, "disabled:cli"
+    if dry_run:
+        return None, None, "disabled:dry-run"
+    if not delivery_enabled:
+        return None, None, "disabled:no-telegram"
+    if not bool(ai_cfg.get("enabled", False)):
+        return None, None, "disabled:config"
+    if str(ai_cfg.get("provider", "groq")).lower() != "groq":
+        return None, None, "disabled:unsupported-provider"
+
+    load_environment_file(str(ai_cfg.get("env_file", ".env")))
+    dependency_ok, dependency_error = GroqDisclosureAIReader.dependency_available()
+    if not dependency_ok:
+        return None, None, f"disabled:{dependency_error.lower()}"
+
+    try:
+        reader = GroqDisclosureAIReader.from_config(ai_cfg)
+    except AIReaderPermanentError as exc:
+        return None, None, f"disabled:{str(exc).lower()}"
+
+    queue = SQLiteDisclosureAIQueue(cfg["state"]["sqlite_path"])
+    return reader, queue, f"groq:{reader.model}"
+
+
+def _output(source, result, *, mode: str, ai_status: str) -> dict:
     return {
         "time": datetime.now(JAKARTA).isoformat(timespec="seconds"),
         "mode": mode,
         "transport": str(getattr(source, "transport_name", type(source).__name__)),
+        "ai_reader": ai_status,
         **asdict(result),
     }
 
@@ -149,9 +191,9 @@ def _close_source(source) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="IDX Disclosure Watcher V1")
+    parser = argparse.ArgumentParser(description="IDX Disclosure Watcher V1 + optional Groq reader")
     parser.add_argument(
-        "--dry-run", action="store_true", help="Collect and dedup without Telegram"
+        "--dry-run", action="store_true", help="Collect and dedup without Telegram/AI"
     )
     parser.add_argument(
         "--watch", action="store_true", help="Keep polling using configured intervals"
@@ -167,12 +209,30 @@ def main() -> int:
         choices=("playwright", "browser_fallback", "auto", "curl_cffi", "requests"),
         help="Override IDX transport",
     )
+    parser.add_argument(
+        "--no-ai",
+        action="store_true",
+        help="Disable the optional Groq document reader without changing config",
+    )
+    parser.add_argument(
+        "--ai-backfill-latest",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Explicitly queue up to N latest already-delivered IDX disclosures for AI summary",
+    )
     args = parser.parse_args()
 
     if args.watch and args.date:
         parser.error("--date cannot be used with --watch")
     if args.dry_run and args.telegram:
         parser.error("--dry-run and --telegram cannot be used together")
+    if args.dry_run and args.ai_backfill_latest:
+        parser.error("--ai-backfill-latest cannot be used with --dry-run")
+    if args.no_ai and args.ai_backfill_latest:
+        parser.error("--ai-backfill-latest cannot be used with --no-ai")
+    if args.ai_backfill_latest < 0:
+        parser.error("--ai-backfill-latest must be >= 0")
 
     cfg = _load_config()
     request_cfg = cfg.get("request", {})
@@ -214,18 +274,57 @@ def main() -> int:
         )
         return 1
 
+    # Initialize the official disclosure store first; the optional AI queue has
+    # a foreign key to this isolated IDX state database.
     repo = SQLiteDisclosureRepository(cfg["state"]["sqlite_path"])
+
+    ai_processor, ai_queue, ai_status = _build_ai(
+        cfg,
+        delivery_enabled=delivery_enabled,
+        dry_run=args.dry_run,
+        no_ai=args.no_ai,
+    )
+    print(f"[IDX AI] {ai_status}", flush=True)
+
+    if args.ai_backfill_latest and ai_queue is None:
+        print("[IDX AI] backfill skipped because AI reader is not available", flush=True)
+
+    if args.ai_backfill_latest and ai_queue is not None:
+        queued = ai_queue.enqueue_latest_delivered(
+            limit=args.ai_backfill_latest,
+            queued_at=datetime.now(JAKARTA),
+        )
+        print(f"[IDX AI] backfill queued: {queued}", flush=True)
+
+    ai_cfg = cfg.get("ai_reader", {})
+    retry_cfg = ai_cfg.get("retry", {}) if isinstance(ai_cfg.get("retry", {}), dict) else {}
     watcher = IDXDisclosureWatcher(
         source,
         repo,
         delivery=delivery,
         delivery_enabled=delivery_enabled,
         page_size=int(request_cfg.get("page_size", 50)),
+        ai_processor=ai_processor,
+        ai_queue=ai_queue,
+        ai_enabled=ai_processor is not None and ai_queue is not None,
+        ai_max_attempts=int(retry_cfg.get("max_attempts", 3)),
+        ai_retry_backoff_seconds=tuple(retry_cfg.get("backoff_seconds", [60, 300, 900])),
+        ai_max_documents_per_poll=int(ai_cfg.get("max_documents_per_poll", 1)),
     )
 
     if not args.watch:
         result = watcher.poll_once(jakarta_date=_parse_date(args.date))
-        print(json.dumps(_output(source, result, mode="dry-run" if args.dry_run else "once"), ensure_ascii=False))
+        print(
+            json.dumps(
+                _output(
+                    source,
+                    result,
+                    mode="dry-run" if args.dry_run else "once",
+                    ai_status=ai_status,
+                ),
+                ensure_ascii=False,
+            )
+        )
         _close_source(source)
         return 1 if result.error else 0
 
@@ -246,7 +345,10 @@ def main() -> int:
             started = monotonic()
             now = datetime.now(JAKARTA)
             result = watcher.poll_once(jakarta_date=now.date())
-            print(json.dumps(_output(source, result, mode=mode), ensure_ascii=False), flush=True)
+            print(
+                json.dumps(_output(source, result, mode=mode, ai_status=ai_status), ensure_ascii=False),
+                flush=True,
+            )
 
             interval = poll_interval_seconds(now, cfg)
             elapsed = monotonic() - started

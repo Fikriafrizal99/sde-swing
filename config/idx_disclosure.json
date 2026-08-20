@@ -1,5 +1,5 @@
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "enabled": false,
   "timezone": "Asia/Jakarta",
   "endpoint": "https://www.idx.co.id/primary/ListedCompany/GetAnnouncement",
@@ -10,10 +10,7 @@
     "bootstrap_before_api": true,
     "bootstrap_url": "https://www.idx.co.id/id/perusahaan-tercatat/keterbukaan-informasi/",
     "browser": {
-      "channels": [
-        "chrome",
-        "msedge"
-      ],
+      "channels": ["chrome", "msedge"],
       "headless": false,
       "bootstrap_wait_ms": 2500,
       "timeout_seconds": 25,
@@ -25,23 +22,11 @@
     "keyword": "",
     "timeout_seconds": 10,
     "max_retries": 3,
-    "backoff_seconds": [
-      2,
-      4,
-      8
-    ]
+    "backoff_seconds": [2, 4, 8]
   },
   "polling": {
-    "market_window": {
-      "start": "08:00",
-      "end": "17:00",
-      "interval_seconds": 60
-    },
-    "evening_window": {
-      "start": "17:00",
-      "end": "22:00",
-      "interval_seconds": 180
-    },
+    "market_window": {"start": "08:00", "end": "17:00", "interval_seconds": 60},
+    "evening_window": {"start": "17:00", "end": "22:00", "interval_seconds": 180},
     "overnight_interval_seconds": 600
   },
   "state": {
@@ -60,9 +45,45 @@
     "non_blocking": true,
     "direct_idx_attachment_links": true
   },
+  "ai_reader": {
+    "enabled": true,
+    "provider": "groq",
+    "api_key_env": "GROQ_API_KEY",
+    "env_file": ".env",
+    "model": "llama-3.3-70b-versatile",
+    "base_url": "https://api.groq.com/openai/v1/chat/completions",
+    "request_timeout_seconds": 35,
+    "max_output_tokens": 850,
+    "temperature": 0,
+    "max_pdf_bytes": 25000000,
+    "max_main_pages": 20,
+    "max_attachment_pages": 8,
+    "max_input_chars": 50000,
+    "min_main_text_chars": 1000,
+    "read_attachments_if_main_insufficient": true,
+    "max_fallback_attachments": 2,
+    "max_documents_per_poll": 1,
+    "retry": {
+      "max_attempts": 3,
+      "backoff_seconds": [60, 300, 900]
+    },
+    "delivery_mode": "separate_message_after_official",
+    "cost_controls": {
+      "call_only_for_live_new_disclosures": true,
+      "never_call_on_poll_without_new_or_pending_ai": true,
+      "persist_ready_summary_before_telegram": true
+    },
+    "safety": {
+      "decision_engine_write_access": false,
+      "allow_scoring": false,
+      "allow_sentiment": false,
+      "allow_trade_recommendation": false,
+      "official_delivery_must_succeed_first": true
+    }
+  },
   "safety": {
     "decision_engine_write_access": false,
-    "ai_enabled": false,
+    "ai_enabled": true,
     "brave_enabled": false,
     "browser_fallback_enabled": true
   }
