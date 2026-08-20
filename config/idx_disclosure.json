@@ -1,10 +1,11 @@
 {
-  "version": "1.0.2",
+  "version": "1.1.0",
   "enabled": false,
   "timezone": "Asia/Jakarta",
   "endpoint": "https://www.idx.co.id/primary/ListedCompany/GetAnnouncement",
   "request": {
-    "transport": "browser_fallback",
+    "transport": "playwright",
+    "fallback_primary_transport": "curl_cffi",
     "browser_impersonate": "chrome",
     "bootstrap_before_api": true,
     "bootstrap_url": "https://www.idx.co.id/id/perusahaan-tercatat/keterbukaan-informasi/",
@@ -52,6 +53,10 @@
     "enabled": false,
     "topic_route": "news",
     "reuse_existing_news_topic": true,
+    "scheduler_config_path": "config/scheduler.json",
+    "telegram_config_path": "config/telegram.json",
+    "request_timeout_seconds": 30,
+    "require_news_topic": true,
     "non_blocking": true,
     "direct_idx_attachment_links": true
   },
