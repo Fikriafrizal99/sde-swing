@@ -72,7 +72,7 @@ def resolve_news_topic_id(
 
 
 class TelegramNewsDelivery:
-    """Send IDX disclosure messages to the exact existing NEWS Telegram topic."""
+    """Send and edit IDX disclosure messages in the exact existing NEWS topic."""
 
     def __init__(
         self,
@@ -114,19 +114,11 @@ class TelegramNewsDelivery:
                 "Telegram token/chat_id belum dikonfigurasi untuk IDX watcher."
             )
 
-    def send(self, disclosure: IDXDisclosure, text: str) -> None:
-        """Send exactly one factual IDX notification to the existing NEWS topic."""
-        data = {
-            "chat_id": self.chat_id,
-            "message_thread_id": self.news_topic_id,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": "true",
-        }
+    def _post(self, method: str, data: Mapping[str, Any]) -> Mapping[str, Any]:
         try:
             response = self.session.post(
-                f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
-                data=data,
+                f"https://api.telegram.org/bot{self.bot_token}/{method}",
+                data=dict(data),
                 timeout=self.timeout_seconds,
             )
         except requests.RequestException as exc:
@@ -141,3 +133,41 @@ class TelegramNewsDelivery:
 
         if not getattr(response, "ok", False) or not bool(body.get("ok")):
             raise TelegramDeliveryError(f"Telegram API gagal: {body}")
+        return body
+
+    def send(self, disclosure: IDXDisclosure, text: str) -> int:
+        """Send the official IDX message first and return its Telegram message_id."""
+        body = self._post(
+            "sendMessage",
+            {
+                "chat_id": self.chat_id,
+                "message_thread_id": self.news_topic_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": "true",
+            },
+        )
+        result = body.get("result")
+        message_id = result.get("message_id") if isinstance(result, Mapping) else None
+        try:
+            parsed = int(message_id)
+        except (TypeError, ValueError) as exc:
+            raise TelegramDeliveryError("Telegram sendMessage tidak mengembalikan message_id") from exc
+        if parsed <= 0:
+            raise TelegramDeliveryError("Telegram sendMessage mengembalikan message_id invalid")
+        return parsed
+
+    def edit(self, disclosure: IDXDisclosure, text: str, *, message_id: int) -> None:
+        """Edit the original official IDX message after the AI summary is ready."""
+        if int(message_id) <= 0:
+            raise TelegramDeliveryError("Telegram message_id invalid untuk editMessageText")
+        self._post(
+            "editMessageText",
+            {
+                "chat_id": self.chat_id,
+                "message_id": int(message_id),
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": "true",
+            },
+        )
