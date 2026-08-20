@@ -24,3 +24,4 @@ class IDXDisclosure:
     subject: str
     idx_created_at: datetime | None
     attachments: Tuple[DisclosureAttachment, ...] = ()
+    raw_source: str | None = None
