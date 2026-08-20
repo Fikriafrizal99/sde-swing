@@ -11,6 +11,7 @@ from .ai_reader import AIReaderPermanentError, AISummary, format_idx_ai_summary
 from .ai_state import SQLiteDisclosureAIQueue
 from .client import AnnouncementSource
 from .formatter import format_idx_disclosure
+from .integrated_message import format_idx_disclosure_with_ai
 from .models import IDXDisclosure
 from .normalizer import IDXPayloadError, normalize_reply
 from .repository import DisclosureRepository
@@ -20,8 +21,8 @@ JAKARTA = ZoneInfo("Asia/Jakarta")
 
 
 class DisclosureDelivery(Protocol):
-    def send(self, disclosure: IDXDisclosure, text: str) -> None:
-        """Send one disclosure or raise on failure."""
+    def send(self, disclosure: IDXDisclosure, text: str) -> int | None:
+        """Send one disclosure and optionally return its Telegram message_id."""
         ...
 
 
@@ -52,7 +53,9 @@ class IDXDisclosureWatcher:
     """Coordinates source, normalization, dedup, delivery and optional AI reading.
 
     The official IDX message is always delivered before AI work is eligible.
-    AI state has its own queue and never writes to SDE scoring/decision engines.
+    When Telegram exposes a message_id, the ready AI summary edits that same
+    message instead of sending a second notification. AI state never writes to
+    SDE scoring/decision engines.
     """
 
     def __init__(
@@ -136,11 +139,19 @@ class IDXDisclosureWatcher:
         delivered = failed = 0
         for item in self.repository.pending_delivery():
             try:
-                self.delivery.send(item, format_idx_disclosure(item))
+                message_id = self.delivery.send(item, format_idx_disclosure(item))
             except Exception:
                 failed += 1
                 continue
-            self.repository.mark_delivered(item.id2, delivered_at=self.now())
+            self.repository.mark_delivered(
+                item.id2,
+                delivered_at=self.now(),
+                telegram_message_id=(
+                    int(message_id)
+                    if isinstance(message_id, int) and message_id > 0
+                    else None
+                ),
+            )
             delivered += 1
         return delivered, failed
 
@@ -154,10 +165,22 @@ class IDXDisclosureWatcher:
         sent = failed = 0
         for work in self.ai_queue.ready_delivery(limit=10):
             try:
-                self.delivery.send(
-                    work.disclosure,
-                    format_idx_ai_summary(work.disclosure, work.summary),
-                )
+                message_id = self.repository.telegram_message_id(work.disclosure.id2)
+                edit = getattr(self.delivery, "edit", None)
+                if message_id is not None and callable(edit):
+                    edit(
+                        work.disclosure,
+                        format_idx_disclosure_with_ai(work.disclosure, work.summary),
+                        message_id=message_id,
+                    )
+                else:
+                    # Compatibility path for legacy rows/messages created before
+                    # telegram_message_id persistence existed. New production
+                    # disclosures always use editMessageText above.
+                    self.delivery.send(
+                        work.disclosure,
+                        format_idx_ai_summary(work.disclosure, work.summary),
+                    )
             except Exception as exc:
                 self.ai_queue.mark_delivery_error(work.disclosure.id2, error=str(exc))
                 failed += 1
