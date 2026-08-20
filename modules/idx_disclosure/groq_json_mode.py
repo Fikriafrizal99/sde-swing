@@ -26,7 +26,13 @@ def _structured_groq(
         "prediksi harga, rekomendasi BUY/SELL/HOLD, atau keputusan trading. "
         "Jika fakta tidak disebutkan, jangan mengarang. Balas JSON valid saja dengan keys: "
         "summary, key_points, important_dates, important_values, related_parties, document_type. "
-        "summary maksimal 3 kalimat; setiap array maksimal 5 item dan ringkas."
+        "summary maksimal 2 kalimat dan fokus pada inti kejadian. key_points maksimal 4 item, "
+        "tanpa mengulang kalimat summary. important_dates maksimal 4 item dan WAJIB prioritaskan "
+        "tanggal pelaksanaan corporate action/RUPS/event, record date/DPS, deadline/pemanggilan, "
+        "tanggal efektif atau pembayaran. Tanggal pembuatan dokumen hanya dimasukkan jika memang "
+        "material dan masih ada slot. important_values hanya nominal/rasio material. "
+        "related_parties hanya pihak yang material terhadap kejadian; jangan masukkan corporate "
+        "secretary, KSEI, IDX, atau regulator rutin kecuali mereka merupakan pihak transaksi."
     )
     user = (
         f"Emiten: {disclosure.ticker}\n"
