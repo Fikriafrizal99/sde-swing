@@ -25,7 +25,14 @@ class DisclosureRepository(Protocol):
         first_seen_at: datetime,
         suppress_delivery: bool = False,
     ) -> None: ...
-    def mark_delivered(self, disclosure_id: str, *, delivered_at: datetime) -> None: ...
+    def mark_delivered(
+        self,
+        disclosure_id: str,
+        *,
+        delivered_at: datetime,
+        telegram_message_id: int | None = None,
+    ) -> None: ...
+    def telegram_message_id(self, disclosure_id: str) -> int | None: ...
     def pending_delivery(self) -> tuple[IDXDisclosure, ...]: ...
 
 
@@ -57,6 +64,7 @@ class SQLiteDisclosureRepository:
                     idx_created_at TEXT,
                     first_seen_at TEXT NOT NULL,
                     telegram_sent_at TEXT,
+                    telegram_message_id INTEGER,
                     delivery_suppressed INTEGER NOT NULL DEFAULT 0,
                     raw_source TEXT
                 );
@@ -80,6 +88,17 @@ class SQLiteDisclosureRepository:
                     ON idx_disclosures(delivery_suppressed, telegram_sent_at, published_at);
                 """
             )
+
+            # Existing production databases predate one-message AI editing.
+            # Migrate in place without rebuilding or touching disclosure rows.
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(idx_disclosures)").fetchall()
+            }
+            if "telegram_message_id" not in columns:
+                conn.execute(
+                    "ALTER TABLE idx_disclosures ADD COLUMN telegram_message_id INTEGER"
+                )
 
     def is_initialized(self) -> bool:
         with self._connect() as conn:
@@ -120,8 +139,8 @@ class SQLiteDisclosureRepository:
                 INSERT OR IGNORE INTO idx_disclosures(
                     id2, ticker, announcement_no, published_at, title, subject,
                     idx_created_at, first_seen_at, telegram_sent_at,
-                    delivery_suppressed, raw_source
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                    telegram_message_id, delivery_suppressed, raw_source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
                 """,
                 (
                     disclosure.id2,
@@ -151,16 +170,40 @@ class SQLiteDisclosureRepository:
                     ),
                 )
 
-    def mark_delivered(self, disclosure_id: str, *, delivered_at: datetime) -> None:
+    def mark_delivered(
+        self,
+        disclosure_id: str,
+        *,
+        delivered_at: datetime,
+        telegram_message_id: int | None = None,
+    ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE idx_disclosures
-                SET telegram_sent_at=?
+                SET telegram_sent_at=?, telegram_message_id=COALESCE(?, telegram_message_id)
                 WHERE id2=? AND delivery_suppressed=0
                 """,
-                (delivered_at.isoformat(), disclosure_id),
+                (
+                    delivered_at.isoformat(),
+                    int(telegram_message_id) if telegram_message_id else None,
+                    disclosure_id,
+                ),
             )
+
+    def telegram_message_id(self, disclosure_id: str) -> int | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT telegram_message_id FROM idx_disclosures WHERE id2=?",
+                (disclosure_id,),
+            ).fetchone()
+        if row is None or row["telegram_message_id"] is None:
+            return None
+        try:
+            value = int(row["telegram_message_id"])
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
 
     def _attachments(self, conn: sqlite3.Connection, disclosure_id: str) -> tuple[DisclosureAttachment, ...]:
         rows = conn.execute(
