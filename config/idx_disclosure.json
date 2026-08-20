@@ -1,9 +1,13 @@
 {
-  "version": "1.0.0",
+  "version": "1.0.1",
   "enabled": false,
   "timezone": "Asia/Jakarta",
   "endpoint": "https://www.idx.co.id/primary/ListedCompany/GetAnnouncement",
   "request": {
+    "transport": "curl_cffi",
+    "browser_impersonate": "chrome",
+    "bootstrap_before_api": true,
+    "bootstrap_url": "https://www.idx.co.id/id/perusahaan-tercatat/keterbukaan-informasi/",
     "emiten_type": "*",
     "page_size": 50,
     "language": "id",
