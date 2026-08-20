@@ -28,7 +28,9 @@ def test_scheduled_runner_uses_canonical_entrypoints() -> None:
 
     assert market[2].endswith("run_sde_job_integrated.py")
     assert post[2].endswith("run_sde_job_integrated_market_first.py")
-    assert final[2].endswith("tools/run_final_watchlist_entrypoint.py")
+    assert Path(final[2]).resolve() == (
+        ROOT / "tools" / "run_final_watchlist_entrypoint.py"
+    ).resolve()
     assert market[-2:] == ["--job", "market_outlook"]
     assert post[-2:] == ["--job", "post_market"]
     assert final[-2:] == ["--period", "1D"]
