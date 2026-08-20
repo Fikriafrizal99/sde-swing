@@ -8,6 +8,13 @@ $Expected = @(
     [pscustomobject]@{ Name = "SDE Swing IDX Disclosure Watcher"; Launcher = "scheduler\SCHEDULE_IDX_DISCLOSURE.bat" }
 )
 
+$ExpectedNames = @($Expected | ForEach-Object { $_.Name })
+$ExpectedLaunchers = @(
+    $Expected | ForEach-Object {
+        [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot $_.Launcher))
+    }
+)
+
 $Rows = @()
 foreach ($Spec in $Expected) {
     $Task = Get-ScheduledTask -TaskName $Spec.Name -ErrorAction SilentlyContinue
@@ -64,6 +71,33 @@ $Problems = @($Rows | Where-Object {
     $_.StartWhenAvailable -eq $false
 })
 
+$LegacyDuplicates = @()
+foreach ($Task in Get-ScheduledTask) {
+    if ($ExpectedNames -contains $Task.TaskName) {
+        continue
+    }
+
+    $MatchesThisProject = $false
+    foreach ($Action in $Task.Actions) {
+        $Arguments = [string]$Action.Arguments
+        foreach ($Launcher in $ExpectedLaunchers) {
+            if ($Arguments -like "*$Launcher*") {
+                $MatchesThisProject = $true
+                break
+            }
+        }
+        if ($MatchesThisProject) { break }
+    }
+
+    if ($MatchesThisProject) {
+        $LegacyDuplicates += [pscustomobject]@{
+            Task = "$($Task.TaskPath)$($Task.TaskName)"
+            State = [string]$Task.State
+            Enabled = [bool]$Task.Settings.Enabled
+        }
+    }
+}
+
 Write-Host ""
 if ($Problems.Count -gt 0) {
     Write-Host "[WARNING] Scheduler configuration problems detected:" -ForegroundColor Yellow
@@ -71,6 +105,21 @@ if ($Problems.Count -gt 0) {
     Write-Host "Run maintenance\INSTALL_SCHEDULERS.bat to repair the managed tasks."
 } else {
     Write-Host "[OK] Managed scheduler settings look consistent." -ForegroundColor Green
+}
+
+Write-Host ""
+if ($LegacyDuplicates.Count -gt 0) {
+    Write-Host "[WARNING] Legacy scheduler duplicate(s) still reference this project:" -ForegroundColor Yellow
+    $LegacyDuplicates | Format-Table -AutoSize
+    $ActiveLegacy = @($LegacyDuplicates | Where-Object { $_.Enabled -and $_.State -ne "Disabled" })
+    if ($ActiveLegacy.Count -gt 0) {
+        Write-Host "[ACTION REQUIRED] Active legacy duplicate(s) can cause double-runs." -ForegroundColor Red
+        Write-Host "Open PowerShell as Administrator once and rerun maintenance\INSTALL_SCHEDULERS.bat."
+    } else {
+        Write-Host "[OK] Legacy duplicate(s) are already disabled; no double-run risk."
+    }
+} else {
+    Write-Host "[OK] No legacy scheduler duplicates reference this project." -ForegroundColor Green
 }
 
 Write-Host ""
