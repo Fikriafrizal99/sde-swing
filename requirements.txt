@@ -2,5 +2,6 @@ pandas>=2.0
 numpy>=1.24
 yfinance>=0.2.40
 requests>=2.31
-curl-cffi>=0.11.0
 matplotlib>=3.8
+curl_cffi>=0.7.4
+playwright>=1.54
