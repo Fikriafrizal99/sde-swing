@@ -4,6 +4,7 @@ import html
 import json
 import math
 import re
+from datetime import datetime
 from typing import Any, Mapping
 
 _SEPARATOR = "━━━━━━━━━━━━━━━━━━━━"
@@ -112,6 +113,29 @@ def _money(value: Any, *, signed: bool = True) -> str:
     return f"{sign}Rp{rendered}{unit}"
 
 
+def _compact_money(value: Any) -> str:
+    number = _num(value)
+    if number is None:
+        return ""
+    amount = abs(number)
+    if amount >= 1_000_000_000:
+        scaled, unit = amount / 1_000_000_000, "B"
+    elif amount >= 1_000_000:
+        scaled, unit = amount / 1_000_000, "M"
+    elif amount >= 1_000:
+        scaled, unit = amount / 1_000, "K"
+    else:
+        return f"{amount:,.0f}".replace(",", ".")
+    if scaled >= 100:
+        rendered = f"{scaled:.0f}"
+    elif scaled >= 10:
+        rendered = f"{scaled:.1f}"
+    else:
+        rendered = f"{scaled:.2f}"
+    rendered = rendered.rstrip("0").rstrip(".").replace(".", ",")
+    return f"{rendered}{unit}"
+
+
 def _rr(value: Any) -> str:
     number = _num(value)
     return f"{number:.2f}".replace(".", ",") if number is not None else "N/A"
@@ -155,6 +179,34 @@ def _actor_lines(value: Any) -> list[str]:
                 parts.append(f"Avg Rp{avg}")
         lines.append(" ".join(parts))
     return lines
+
+
+def _compact_actors(value: Any) -> str:
+    actors: list[str] = []
+    for item in _list(value)[:3]:
+        if not isinstance(item, Mapping):
+            continue
+        broker = _enum(item.get("broker") or item.get("code") or item.get("name"), "", upper=True)
+        if not broker:
+            continue
+        rendered = html.escape(broker, quote=False)
+        money = _compact_money(item.get("value") if item.get("value") is not None else item.get("net_value"))
+        if money:
+            rendered += f" {money}"
+        actors.append(rendered)
+    return " • ".join(actors)
+
+
+def _date_label(value: Any) -> str:
+    text = _raw(value)
+    if not text:
+        return "N/A"
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%d %b %Y")
+        except ValueError:
+            continue
+    return text
 
 
 def _period_is_multi(period: str) -> bool:
@@ -258,10 +310,31 @@ def _interpretive_reason(row: Mapping[str, Any]) -> str:
     return html.escape("\n".join([opening, broker_text, action]), quote=False)
 
 
+def _compact_action(row: Mapping[str, Any]) -> str:
+    current = _num(_pick(row, "last_price", "current_price", "Reference_Close"))
+    low = _num(_pick(row, "entry_low", "Entry_Zone_Low"))
+    high = _num(_pick(row, "entry_high", "Entry_Zone_High"))
+    resistance = _num(_pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance"))
+    phase = _enum(_pick(row, "phase", "execution_state", "Execution_Status"), "", upper=True)
+    waiting = any(token in phase for token in ("WAIT", "NOT READY", "CONDITIONAL", "MONITOR"))
+
+    if current is not None and high is not None and current > high:
+        return f"⚠️ Jangan chase. Tunggu pullback ke {_price(low)}–{_price(high)}."
+    if waiting and resistance is not None:
+        return f"⚠️ Tunggu break >{_price(resistance)}. Jangan chase."
+    if waiting:
+        return "⚠️ Tunggu trigger valid sebelum entry. Jangan chase."
+    if low is not None and high is not None:
+        return f"⚠️ Entry hanya di area {_price(low)}–{_price(high)}. Jangan chase."
+    return "⚠️ Tunggu setup tetap valid. Jangan chase."
+
+
 def format_watchlist_detail(row: Mapping[str, Any]) -> str:
     symbol = html.escape(_enum(_pick(row, "symbol", "Symbol"), "N/A", upper=True), quote=False)
+    decision = html.escape(_enum(_pick(row, "decision", "Decision_V3", "Decision"), "WATCH", upper=True), quote=False)
+    confidence = _confidence(_pick(row, "confidence", "Final_Score", "Final_Score_V3"))
     setup = html.escape(_enum(_pick(row, "setup", "Setup_Type"), "N/A", upper=True), quote=False)
-    analysis_date = html.escape(_enum(_pick(row, "analysis_date", "trade_date", "Trade_Date"), "N/A"), quote=False)
+    analysis_date = html.escape(_date_label(_pick(row, "analysis_date", "trade_date", "Trade_Date")), quote=False)
     current = _price(_pick(row, "last_price", "current_price", "Reference_Close"))
     entry_low = _price(_pick(row, "entry_low", "Entry_Zone_Low"))
     entry_high = _price(_pick(row, "entry_high", "Entry_Zone_High"))
@@ -269,55 +342,41 @@ def format_watchlist_detail(row: Mapping[str, Any]) -> str:
     tp1 = _price(_pick(row, "target_1", "Target_1"))
     tp2 = _price(_pick(row, "target_2", "Target_2"))
     rr = _rr(_pick(row, "risk_reward", "Target_2_RR", "Target_1_RR"))
-    technical = html.escape(_technical_status(row), quote=False)
-    confidence = _confidence(_pick(row, "confidence", "Final_Score", "Final_Score_V3"))
+    trend_raw = _enum(_pick(row, "trend", "Technical_Regime"), "N/A")
+    trend = html.escape(trend_raw.title(), quote=False)
+    phase = html.escape(_enum(_pick(row, "phase", "execution_state", "Execution_Status"), "N/A", upper=True), quote=False)
+    support = _price(_pick(row, "support", "Support_Level"))
+    resistance = _price(_pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance"))
     broker = html.escape(_enum(_pick(row, "broker_status", "broker_signal", "Broker_Confirmation", "broker_direction"), "INSUFFICIENT", upper=True), quote=False)
     broker_score = _score(_pick(row, "broker_score", "Broker_Score"))
     net = _money(_pick(row, "broker_net_flow", "net_flow", "cumulative_net_value"))
     buy = _days(_pick(row, "buy_days"))
     sell = _days(_pick(row, "sell_days"))
-    bconc = _pct(_pick(row, "buyer_concentration"), concentration=True)
-    sconc = _pct(_pick(row, "seller_concentration"), concentration=True)
     buy_cost = _price(_pick(row, "bandar_buy_cost", "avg_buyer_price", "weighted_broker_buy_cost"))
-    buy_avg = _pct(_pick(row, "distance_to_buy_cost", "distance_to_buyer_avg_pct", "distance_to_buy_cost_pct"))
-    trend = html.escape(_enum(_pick(row, "trend", "Technical_Regime"), "N/A", lower=True), quote=False)
-    phase = html.escape(_enum(_pick(row, "phase", "execution_state", "Execution_Status"), "N/A", upper=True), quote=False)
-    support = _price(_pick(row, "support", "Support_Level"))
-    resistance = _price(_pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance"))
+    buy_avg = _pct(_pick(row, "distance_to_buy_cost", "distance_to_buyer_avg_pct", "distance_to_buy_cost_pct")).replace(".", ",")
+    top_buy = _compact_actors(_pick(row, "top_buyers", default=[])) or "N/A"
+    top_sell = _compact_actors(_pick(row, "top_sellers", default=[])) or "N/A"
 
     lines = [
-        "<b>📈 SDE SWING — FINAL WATCHLIST</b>",
-        _SEPARATOR,
-        f"📌 <b>{symbol} | {setup}</b>",
-        f"🕒 {analysis_date}",
-        _SEPARATOR,
-        *_period_lines(row),
-        "<b>🎯 TRADE SETUP</b>",
+        f"📈 {symbol} | {decision} | {confidence}",
+        f"{setup} • {analysis_date}",
+        "",
         f"💰 {current} | Entry {entry_low}–{entry_high}",
-        f"🛑 SL {stop} | 🎯 TP1/TP2 {tp1} | {tp2}",
-        f"⚖️ RR 1:{rr} | 📊 {technical} | 🧠 {confidence}",
-        "<b>🏦 BROKER SUMMARY</b>",
-        f"📌 {broker} | Score {broker_score}/100",
-        f"💵 Net Flow {net} | 📅 Buy/Sell {buy}/{sell}",
-        f"🎯 Concentration B {bconc} | S {sconc}",
+        f"🛑 {stop} | 🎯 {tp1} / {tp2} | RR 1:{rr}",
+        "",
+        f"📊 {trend} | {phase}",
+        f"S {support} | R {resistance}",
+        "",
+        f"🏦 {broker} {broker_score}/100",
+        f"Net {net} | B/S {buy}/{sell}",
+        f"Cost {buy_cost} ({buy_avg})",
+        "",
+        f"🟢 {top_buy}",
+        f"🔴 {top_sell}",
+        "",
+        _compact_action(row),
     ]
-    top_buy = _actor_lines(_pick(row, "top_buyers", default=[]))
-    top_sell = _actor_lines(_pick(row, "top_sellers", default=[]))
-    if top_buy:
-        lines.extend(["<b>🟢 Top Buy</b>", *top_buy])
-    if top_sell:
-        lines.extend(["<b>🔴 Top Sell</b>", *top_sell])
-    if buy_cost != "N/A" or buy_avg != "N/A":
-        lines.append(f"💰 Buy Cost {buy_cost} | Buy Avg {buy_avg}")
-    lines.extend([
-        "<b>📌 SETUP CONTEXT</b>",
-        f"📈 {trend} | {phase}",
-        f"🟢 Support {support} | 🔴 Resistance {resistance}",
-        "<b>Reason:</b>",
-        _interpretive_reason(row),
-    ])
-    text = "\n".join(line for line in lines if line != "").strip()
-    return text
+    return "\n".join(lines).strip()
 
 
 __all__ = ["format_watchlist_detail"]
