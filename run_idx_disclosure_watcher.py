@@ -28,6 +28,7 @@ from modules.idx_disclosure.browser_client import (
     PlaywrightAnnouncementClient,
     ResilientAnnouncementSource,
 )
+from modules.idx_disclosure.browser_http_session import PlaywrightBackedGroqSession
 from modules.idx_disclosure.client import IDXAnnouncementClient, IDXClientError
 from modules.idx_disclosure.repository import SQLiteDisclosureRepository
 from modules.idx_disclosure.telegram_delivery import (
@@ -143,6 +144,7 @@ def _build_delivery(cfg: dict) -> TelegramNewsDelivery:
 
 def _build_ai(
     cfg: dict,
+    source,
     *,
     delivery_enabled: bool,
     dry_run: bool,
@@ -165,9 +167,14 @@ def _build_ai(
     if not dependency_ok:
         return None, None, f"disabled:{dependency_error.lower()}"
 
+    ai_session = PlaywrightBackedGroqSession(
+        source,
+        max_pdf_bytes=int(ai_cfg.get("max_pdf_bytes", 25_000_000)),
+    )
     try:
-        reader = GroqDisclosureAIReader.from_config(ai_cfg)
+        reader = GroqDisclosureAIReader.from_config(ai_cfg, session=ai_session)
     except AIReaderPermanentError as exc:
+        ai_session.close()
         return None, None, f"disabled:{str(exc).lower()}"
 
     queue = SQLiteDisclosureAIQueue(cfg["state"]["sqlite_path"])
@@ -280,6 +287,7 @@ def main() -> int:
 
     ai_processor, ai_queue, ai_status = _build_ai(
         cfg,
+        source,
         delivery_enabled=delivery_enabled,
         dry_run=args.dry_run,
         no_ai=args.no_ai,
