@@ -1,14 +1,15 @@
 """Real-browser IDX source and resilient fallback adapter.
 
-This module is deliberately isolated from the watcher.  It uses the user's
+This module is deliberately isolated from the watcher. It uses the user's
 installed Chrome/Edge via Playwright only when direct HTTP is blocked by IDX.
-The API call itself is executed with window.fetch() inside idx.co.id so it uses
-the browser network stack, cookies, and origin context.
+The API and document fetches can run inside idx.co.id so they use the browser
+network stack, cookies, and origin context.
 """
 
 from __future__ import annotations
 
 import atexit
+import base64
 import json
 from datetime import date
 from typing import Any, Mapping, Sequence
@@ -184,6 +185,90 @@ class PlaywrightAnnouncementClient:
             raise IDXClientError("IDX browser response is not a JSON object")
         return payload
 
+    def _fetch_document_once(self, url: str, *, max_bytes: int) -> bytes:
+        self._start()
+        assert self._page is not None
+        result = self._page.evaluate(
+            """async ({url, maxBytes}) => {
+                const response = await fetch(url, {
+                    method: "GET",
+                    credentials: "include",
+                    headers: {"Accept": "application/pdf,*/*;q=0.8"}
+                });
+
+                const declaredText = response.headers.get("content-length") || "";
+                const declared = Number(declaredText || 0);
+                if (Number.isFinite(declared) && declared > maxBytes) {
+                    return {status: response.status, tooLarge: true, declared};
+                }
+                if (response.status !== 200) {
+                    const text = await response.text();
+                    return {status: response.status, body: text.slice(0, 180)};
+                }
+
+                const buffer = await response.arrayBuffer();
+                if (buffer.byteLength > maxBytes) {
+                    return {status: response.status, tooLarge: true, size: buffer.byteLength};
+                }
+
+                const bytes = new Uint8Array(buffer);
+                let binary = "";
+                const chunkSize = 32768;
+                for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+                    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+                }
+                return {
+                    status: response.status,
+                    size: bytes.byteLength,
+                    base64: btoa(binary)
+                };
+            }""",
+            {"url": str(url), "maxBytes": int(max_bytes)},
+        )
+
+        status = int(result.get("status", 0) or 0)
+        if bool(result.get("tooLarge")):
+            raise IDXClientError("IDX document exceeds configured max size")
+        if status != 200:
+            body = str(result.get("body", ""))[:180].replace("\n", " ")
+            raise IDXClientError(
+                f"IDX document HTTP {status} via {self.transport_name}; body={body!r}"
+            )
+
+        encoded = str(result.get("base64", "") or "")
+        if not encoded:
+            raise IDXClientError("IDX document browser response is empty")
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except Exception as exc:
+            raise IDXClientError("IDX document browser response is invalid base64") from exc
+        if not data:
+            raise IDXClientError("IDX document browser response is empty")
+        if len(data) > max_bytes:
+            raise IDXClientError("IDX document exceeds configured max size")
+        return data
+
+    def fetch_document_bytes(self, url: str, *, max_bytes: int = 25_000_000) -> bytes:
+        """Fetch an official IDX document using the active browser origin/session."""
+        limit = max(250_000, int(max_bytes))
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                return self._fetch_document_once(str(url), max_bytes=limit)
+            except Exception as exc:
+                last_error = exc
+                if attempt >= self.max_retries:
+                    break
+                try:
+                    self.close()
+                except Exception:
+                    pass
+        if isinstance(last_error, IDXClientError):
+            raise last_error
+        raise IDXClientError(
+            f"IDX document request failed via {self.transport_name}: {last_error}"
+        ) from last_error
+
     def fetch_page(
         self,
         *,
@@ -270,6 +355,13 @@ class ResilientAnnouncementSource:
             index_from=index_from,
             page_size=page_size,
         )
+
+    def fetch_document_bytes(self, url: str, *, max_bytes: int = 25_000_000) -> bytes:
+        fetch_document = getattr(self.fallback, "fetch_document_bytes", None)
+        if not callable(fetch_document):
+            raise IDXClientError("Browser fallback does not support IDX document fetch")
+        self._fallback_active = True
+        return fetch_document(str(url), max_bytes=max_bytes)
 
     def close(self) -> None:
         close = getattr(self.fallback, "close", None)
