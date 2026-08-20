@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from modules.idx_disclosure.browser_client import PlaywrightAnnouncementClient
 from modules.idx_disclosure.normalizer import IDXPayloadError, normalize_reply
 
 
 JAKARTA = ZoneInfo("Asia/Jakarta")
-CONFIG_PATH = Path("config/idx_disclosure.json")
+CONFIG_PATH = ROOT / "config" / "idx_disclosure.json"
 
 
 def main() -> int:
