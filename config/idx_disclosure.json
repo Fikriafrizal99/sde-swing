@@ -1,0 +1,44 @@
+{
+  "version": "1.0.0",
+  "enabled": false,
+  "timezone": "Asia/Jakarta",
+  "endpoint": "https://www.idx.co.id/primary/ListedCompany/GetAnnouncement",
+  "request": {
+    "emiten_type": "*",
+    "page_size": 50,
+    "language": "id",
+    "keyword": "",
+    "timeout_seconds": 10,
+    "max_retries": 3,
+    "backoff_seconds": [2, 4, 8]
+  },
+  "polling": {
+    "market_window": {
+      "start": "08:00",
+      "end": "17:00",
+      "interval_seconds": 60
+    },
+    "evening_window": {
+      "start": "17:00",
+      "end": "22:00",
+      "interval_seconds": 180
+    },
+    "overnight_interval_seconds": 600
+  },
+  "state": {
+    "sqlite_path": "data/state/idx_disclosure/idx_disclosures.db",
+    "first_run_mode": "seed_without_delivery"
+  },
+  "delivery": {
+    "enabled": false,
+    "topic_route": "news",
+    "non_blocking": true,
+    "direct_idx_attachment_links": true
+  },
+  "safety": {
+    "decision_engine_write_access": false,
+    "ai_enabled": false,
+    "brave_enabled": false,
+    "browser_fallback_enabled": false
+  }
+}
