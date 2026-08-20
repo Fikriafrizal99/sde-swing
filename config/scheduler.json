@@ -128,6 +128,57 @@
     "global_resource_lock_enabled": true,
     "stale_lock_detection": true
   },
+  "scheduler_runtime": {
+    "state_root": "data/state/scheduler/scheduled_runs",
+    "log_path": "logs/sde_scheduler.log",
+    "late_start_warning_minutes": 10,
+    "success_equivalent_exit_codes": [
+      0,
+      10,
+      30
+    ],
+    "retry": {
+      "retryable_exit_codes": [
+        20,
+        40,
+        50
+      ],
+      "generic_failure_exit_codes": [
+        1
+      ],
+      "max_attempts": 3,
+      "generic_failure_max_attempts": 2,
+      "backoff_seconds": [
+        60,
+        180,
+        300
+      ]
+    },
+    "jobs": {
+      "market_outlook": {
+        "max_attempts": 3,
+        "execution_time_limit": "PT2H"
+      },
+      "post_market": {
+        "max_attempts": 3,
+        "execution_time_limit": "PT2H30M"
+      },
+      "final_watchlist": {
+        "max_attempts": 2,
+        "execution_time_limit": "PT3H"
+      },
+      "idx_disclosure": {
+        "execution_time_limit": "PT0S"
+      }
+    },
+    "windows_task": {
+      "restart_count": 3,
+      "restart_interval": "PT5M",
+      "multiple_instances_policy": "IgnoreNew",
+      "start_when_available": true,
+      "wake_to_run": true
+    }
+  },
   "telegram": {
     "prevent_duplicate": true,
     "main_report_idempotency_by_type": true,
