@@ -1,5 +1,5 @@
 {
-  "version": "1.2.0",
+  "version": "1.2.1",
   "enabled": false,
   "timezone": "Asia/Jakarta",
   "endpoint": "https://www.idx.co.id/primary/ListedCompany/GetAnnouncement",
@@ -50,7 +50,7 @@
     "provider": "groq",
     "api_key_env": "GROQ_API_KEY",
     "env_file": ".env",
-    "model": "llama-3.3-70b-versatile",
+    "model": "openai/gpt-oss-120b",
     "base_url": "https://api.groq.com/openai/v1/chat/completions",
     "request_timeout_seconds": 35,
     "max_output_tokens": 850,
