@@ -134,6 +134,7 @@ foreach ($Spec in $Specs) {
     Write-Host "[OK] Registered: $($Spec.Name)"
 }
 
+$LegacyCleanupWarnings = @()
 if (-not $KeepLegacyDuplicates) {
     $ExpectedNames = @($Specs | ForEach-Object { $_.Name })
     $LauncherPaths = @($Specs | ForEach-Object { Get-LauncherFullPath $_.Launcher })
@@ -156,8 +157,21 @@ if (-not $KeepLegacyDuplicates) {
         }
 
         if ($MatchesThisProject) {
-            Disable-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath | Out-Null
-            Write-Host "[DISABLED LEGACY DUPLICATE] $($Task.TaskPath)$($Task.TaskName)"
+            $TaskIdentity = "$($Task.TaskPath)$($Task.TaskName)"
+            try {
+                Disable-ScheduledTask `
+                    -TaskName $Task.TaskName `
+                    -TaskPath $Task.TaskPath `
+                    -ErrorAction Stop | Out-Null
+                Write-Host "[DISABLED LEGACY DUPLICATE] $TaskIdentity"
+            } catch {
+                $LegacyCleanupWarnings += $TaskIdentity
+                Write-Warning (
+                    "Legacy duplicate could not be disabled without additional permission: " +
+                    "$TaskIdentity. Managed SDE tasks were installed successfully; " +
+                    "run CHECK_SCHEDULERS to verify whether this duplicate is still active."
+                )
+            }
         }
     }
 }
@@ -167,6 +181,10 @@ Write-Host "Scheduler registration complete."
 Write-Host "Account mode: InteractiveToken ($UserId)"
 Write-Host "Tasks continue while Windows is locked, but not after sign-out/shutdown."
 Write-Host "WakeToRun and StartWhenAvailable are enabled."
+if ($LegacyCleanupWarnings.Count -gt 0) {
+    Write-Host "[WARNING] $($LegacyCleanupWarnings.Count) legacy duplicate(s) require elevated permission to disable." -ForegroundColor Yellow
+    Write-Host "Run maintenance\CHECK_SCHEDULERS.bat; only use Administrator if the duplicate is reported active."
+}
 Write-Host ""
 
 if ($StartIdxNow) {
