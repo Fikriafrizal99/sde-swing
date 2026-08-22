@@ -16,7 +16,7 @@
       "timeout_seconds": 25,
       "max_retries": 1
     },
-    "emiten_type": "*",
+    "emiten_type": "s",
     "page_size": 50,
     "language": "id",
     "keyword": "",
@@ -48,7 +48,7 @@
   "ai_reader": {
     "enabled": true,
     "provider": "groq",
-    "api_key_env": "GROQ_API_KEY",
+    "api_key_env": "GROQ_IDX_API_KEY",
     "env_file": ".env",
     "model": "openai/gpt-oss-120b",
     "base_url": "https://api.groq.com/openai/v1/chat/completions",

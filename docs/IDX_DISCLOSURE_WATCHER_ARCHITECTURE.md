@@ -10,7 +10,7 @@ Primary endpoint:
 
 Expected query parameters:
 - `kodeEmiten=` (empty = all issuers)
-- `emitenType=*`
+- `emitenType=s` (`"s"` = Saham hanya; `"*"` = semua jenis)
 - `indexFrom=0`
 - `pageSize=50`
 - `dateFrom=YYYYMMDD`
