@@ -3,7 +3,7 @@ name: SDE Swing CI
 on:
   pull_request:
   push:
-    branches: [main, "agent/**", "audit/**"]
+    branches: [main, testing, "agent/**", "audit/**"]
 
 permissions:
   contents: read
