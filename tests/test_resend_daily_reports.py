@@ -37,6 +37,25 @@ def test_market_outlook_resend_reads_dated_existing_artifacts(tmp_path: Path, mo
     assert Path(sources["source_market_regime"]).resolve() == regime_path.resolve()
 
 
+def test_market_outlook_artifact_only_mode_fails_when_historical_snapshot_is_missing(tmp_path: Path, monkeypatch) -> None:
+    output_root = tmp_path / "data" / "output"
+    monkeypatch.setattr(
+        resend,
+        "resolve",
+        lambda value: output_root / "global_market" if str(value) == "data/output/global_market" else Path(value),
+    )
+    ctx = SimpleNamespace(
+        trade_date=date(2026, 8, 7),
+        previews_root=output_root / "telegram_preview",
+    )
+    try:
+        resend._market_outlook_payloads(ctx)
+    except resend.ResendArtifactNotFound as exc:
+        assert "MARKET_OUTLOOK_ARTIFACT_NOT_FOUND" in str(exc)
+    else:
+        raise AssertionError("missing Market Outlook artifact must not trigger a live rebuild")
+
+
 def test_post_market_resend_selects_successful_manifest_for_requested_date(tmp_path: Path, monkeypatch) -> None:
     manifest_dir = tmp_path / "manifests"
     manifest_dir.mkdir()
@@ -77,3 +96,12 @@ def test_market_and_post_market_mode_three_use_delivery_only_resend() -> None:
         assert "!RESEND_DATE!" not in text
         resend_block = text.split(":RESEND", 1)[1].split(":RESEND_DATE_FAILED", 1)[0]
         assert "run_sde_job.py" not in resend_block
+
+
+def test_preview_only_flag_is_supported_for_daily_reports() -> None:
+    source = Path("tools/resend_daily_report.py").read_text(encoding="utf-8")
+    assert '"--preview-only"' in source
+    assert "PREVIEW_EXISTING_ARTIFACT_ONLY" in source
+    assert "delivery = deliver(ctx, payloads)" in source
+    preview_branch = source.split("if args.preview_only:", 1)[1].split("delivery = deliver(ctx, payloads)", 1)[0]
+    assert "deliver(ctx" not in preview_branch
