@@ -112,5 +112,26 @@ def test_provider_receives_only_presentation_context(monkeypatch, tmp_path):
 
     assert "facts" not in captured
     assert "presentation_context" not in captured
+    assert "prompt_contract" not in captured
     assert "trade plan" in captured
     assert captured["trade plan"]["area entry"] == "3.690–3.750"
+
+
+def test_narrative_contract_prioritizes_conflict_and_ai_judgment():
+    instruction = PresentationWatchlistAIService._instruction()
+
+    assert "konflik utama antar-data" in instruction
+    assert "technical kuat tetapi broker lemah" in instruction
+    assert "Konflik material harus memengaruhi tingkat kehati-hatian" in instruction
+    assert "Mulai langsung dengan pandangan terhadap emitennya" in instruction
+    assert "Menurut saya TINS" in instruction
+    assert "Conclusion harus menjadi pendapat singkat AI" in instruction
+    assert "jangan sekadar menulis ulang status SDE" in instruction
+
+
+def test_prompt_contract_is_hashed_but_not_exposed_as_prompt_fact():
+    service = PresentationWatchlistAIService({"watchlist_ai": {"enabled": True}})
+    enriched = service._with_presentation_context(_bbni_context())
+
+    assert enriched["prompt_contract"] == "WATCHLIST_AI_NARRATIVE_CONFLICT_AWARE"
+    assert "prompt_contract" not in enriched["presentation_context"]
