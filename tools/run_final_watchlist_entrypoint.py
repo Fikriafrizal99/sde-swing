@@ -7,6 +7,10 @@ This entrypoint restores the lifecycle contract for manual Final Watchlist runs:
 calendar dates are resolved to the latest completed IDX session, while failures
 that happen before the final_watchlist engine can write status are terminalized
 instead of leaving an older SUCCESS status looking current.
+
+After the official Final Watchlist child has completed successfully, an isolated
+non-blocking Watchlist AI runner is invoked. Its exit status never replaces the
+official Final Watchlist exit status.
 """
 
 import json
@@ -176,6 +180,40 @@ def write_orchestration_failure(
     atomic_write_json(STATUS_PATH, payload)
 
 
+def _run_watchlist_ai(forwarded: list[str], trade_date: str) -> None:
+    """Run the optional AI lane after official Final Watchlist success.
+
+    This function deliberately swallows every AI-side failure. The child Final
+    Watchlist return code has already been established and remains authoritative.
+    """
+    command = [
+        sys.executable,
+        "-u",
+        str(ROOT / "tools/run_watchlist_ai.py"),
+        "--trade-date",
+        trade_date,
+    ]
+    for option in ("--config", "--scheduler-config"):
+        value = _arg_value(forwarded, option)
+        if value:
+            command.extend([option, value])
+    for flag in ("--dry-run", "--no-telegram", "--force"):
+        if flag in forwarded:
+            command.append(flag)
+    try:
+        completed = subprocess.run(command, cwd=ROOT)
+        if int(completed.returncode) != 0:
+            print(
+                f"[WATCHLIST AI] Non-blocking runner returned {completed.returncode}; Final Watchlist tetap sukses.",
+                file=sys.stderr,
+            )
+    except Exception as exc:
+        print(
+            f"[WATCHLIST AI] Non-blocking launcher failure: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     forwarded = list(sys.argv[1:] if argv is None else argv)
     started_at = datetime.now(ZoneInfo("Asia/Jakarta"))
@@ -216,6 +254,11 @@ def main(argv: list[str] | None = None) -> int:
             previous_status=previous_status,
             observed_status=read_json(STATUS_PATH),
         )
+        return rc
+
+    # Official Final Watchlist is already complete at this point. Watchlist AI
+    # is a separate, best-effort, downstream-only lane.
+    _run_watchlist_ai(forwarded, trade_date)
     return rc
 
 
