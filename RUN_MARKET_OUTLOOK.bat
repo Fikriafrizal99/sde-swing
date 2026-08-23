@@ -10,8 +10,8 @@ echo ================================================================
 echo                 SDE SWING - MARKET OUTLOOK
 echo ================================================================
 echo.
-echo [1] Normal - refresh dan kirim Telegram
-echo [2] Preview existing - tidak kirim Telegram
+echo [1] Normal - refresh dan kirim Telegram ^(hari trading^)
+echo [2] Preview existing - sesi trading terakhir, read-only
 echo [3] Kirim ulang - delivery-only hasil hari trading terakhir
 echo [4] Cek status Market Outlook
 echo [5] Normal + Morning News - satu kali jalan
@@ -19,6 +19,9 @@ echo [6] Morning News Only
 echo [7] Preview Morning News existing
 echo [8] Force Send Morning News existing
 echo [0] Kembali
+echo.
+echo Catatan: Market Outlook historis yang tidak pernah dibuat tidak direkonstruksi
+echo          setelah sesi berakhir untuk mencegah look-ahead bias.
 echo.
 set "MODE="
 set /p "MODE=Pilih mode: "
@@ -28,16 +31,25 @@ if not defined SDE_PYTHON_CMD goto PYTHON_MISSING
 
 if "%MODE%"=="4" goto STATUS_ONLY
 if "%MODE%"=="3" goto RESEND
+if "%MODE%"=="2" goto PREVIEW_EXISTING
 if "%MODE%"=="5" goto NORMAL_WITH_NEWS
 if "%MODE%"=="6" goto NEWS_ONLY
 if "%MODE%"=="7" goto NEWS_PREVIEW
 if "%MODE%"=="8" goto NEWS_FORCE_SEND
+if not "%MODE%"=="1" goto MENU
 
-set "ARGS="
-if "%MODE%"=="1" set "ARGS=--job market_outlook"
-if "%MODE%"=="2" set "ARGS=--job market_outlook --preview-existing --no-telegram"
-if not defined ARGS goto MENU
-%SDE_PYTHON_CMD% -u run_sde_job_integrated.py %ARGS%
+%SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job market_outlook
+set "RC=!ERRORLEVEL!"
+goto STATUS
+
+:PREVIEW_EXISTING
+set "PREVIEW_DATE="
+for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py" 2^>nul`) do set "PREVIEW_DATE=%%D"
+if not defined PREVIEW_DATE goto PREVIEW_DATE_FAILED
+
+echo.
+echo Membuka preview Market Outlook trade date !PREVIEW_DATE! dari artifact existing...
+%SDE_PYTHON_CMD% -u tools\resend_daily_report.py --job market_outlook --trade-date !PREVIEW_DATE! --preview-only
 set "RC=!ERRORLEVEL!"
 goto STATUS
 
@@ -89,6 +101,11 @@ goto STATUS
 
 :STATUS_ONLY
 %SDE_PYTHON_CMD% tools\print_job_status.py --job market_outlook
+pause
+goto MENU
+
+:PREVIEW_DATE_FAILED
+echo Gagal menentukan hari trading terakhir untuk Preview Existing.
 pause
 goto MENU
 
