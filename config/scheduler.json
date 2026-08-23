@@ -109,7 +109,7 @@
       {
         "provider": "OPENAI",
         "model": "gpt-5.6-luna",
-        "api_key_env": "OPENAI_API_KEY",
+        "api_key_env": "WATCHLIST_AI_OPENAI_API_KEY",
         "priority": 1,
         "enabled": true,
         "vision": true
@@ -117,7 +117,7 @@
       {
         "provider": "GEMINI",
         "model": "gemini-2.5-flash",
-        "api_key_env": "GEMINI_API_KEY",
+        "api_key_env": "WATCHLIST_AI_GEMINI_API_KEY",
         "priority": 2,
         "enabled": true,
         "vision": true
@@ -125,7 +125,7 @@
       {
         "provider": "GROQ",
         "model": "llama-3.3-70b-versatile",
-        "api_key_env": "GROQ_API_KEY",
+        "api_key_env": "WATCHLIST_AI_GROQ_API_KEY",
         "priority": 3,
         "enabled": true,
         "vision": false
