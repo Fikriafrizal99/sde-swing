@@ -52,13 +52,33 @@ class UnifiedSdeLauncherTests(unittest.TestCase):
         ):
             self.assertTrue((ROOT / relative).exists(), relative)
 
-    def test_preview_existing_uses_canonical_flag_and_disables_delivery(self) -> None:
+    def test_preview_existing_is_artifact_only_and_weekend_safe(self) -> None:
         market = (ROOT / "RUN_MARKET_OUTLOOK.bat").read_text(encoding="utf-8-sig").lower()
         post = (ROOT / "RUN_POST_MARKET.bat").read_text(encoding="utf-8-sig").lower()
         final = (ROOT / "RUN_FINAL_WATCHLIST.bat").read_text(encoding="utf-8-sig").lower()
+
         for source in (market, post, final):
-            self.assertIn("--preview-existing", source)
-            self.assertIn("--no-telegram", source)
+            self.assertIn("tools\\resolve_last_trading_day.py", source)
+            self.assertIn("--preview-only", source)
+
+        market_preview = market.split(":preview_existing", 1)[1].split(":normal_with_news", 1)[0]
+        post_preview = post.split(":preview_existing", 1)[1].split(":recover_last_session", 1)[0]
+        final_preview = final.split(":preview_existing", 1)[1].split(":resend", 1)[0]
+        for block in (market_preview, post_preview, final_preview):
+            self.assertNotIn("run_sde_job_integrated", block)
+            self.assertNotIn("run_sde_job.py", block)
+
+        self.assertIn("tools\\resend_daily_report.py --job market_outlook", market_preview)
+        self.assertIn("tools\\resend_daily_report.py --job post_market", post_preview)
+        self.assertIn("tools\\resend_final_watchlist.py", final_preview)
+
+    def test_post_market_recovery_targets_last_completed_session_without_telegram(self) -> None:
+        source = (ROOT / "RUN_POST_MARKET.bat").read_text(encoding="utf-8-sig").lower()
+        recovery = source.split(":recover_last_session", 1)[1].split(":normal_with_news", 1)[0]
+        self.assertIn("tools\\resolve_last_trading_day.py", recovery)
+        self.assertIn("run_sde_job_integrated_market_first.py --job post_market", recovery)
+        self.assertIn("--trade-date !recovery_date!", recovery)
+        self.assertIn("--no-telegram", recovery)
 
     def test_telegram_test_is_separate_from_engine(self) -> None:
         source = (ROOT / "maintenance" / "TEST_TELEGRAM.bat").read_text(encoding="utf-8-sig")
