@@ -2,8 +2,8 @@ from __future__ import annotations
 
 """Point-in-time global-market snapshot builder for missed Market Outlook runs.
 
-This module is intentionally separate from the live snapshot path.  It does not
-change normal Market Outlook acquisition or any scoring formula.  Recovery
+This module is intentionally separate from the live snapshot path. It does not
+change normal Market Outlook acquisition or any scoring formula. Recovery
 requests Yahoo history only through the last market session that was knowable at
 the historical Market Outlook timestamp, then reuses the existing validator and
 global-sentiment scorer.
@@ -15,6 +15,8 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+import pandas as pd
 
 from swing_utils import PACKAGE_VERSION
 from modules.job_runner.runtime import RunnerContext, now_wib, read_json, resolve, write_json
@@ -67,7 +69,7 @@ def _safe_existing_snapshot(path: Path, trade_date: date, as_of_at: datetime) ->
         return {}
 
     # A live snapshot actually created on the target trading day is more
-    # authentic than a reconstruction.  A later-created LIVE snapshot is not
+    # authentic than a reconstruction. A later-created LIVE snapshot is not
     # reused because it may have been generated with future information.
     if source_mode == "LIVE" and created_local.date() == trade_date:
         clone = dict(payload)
@@ -111,9 +113,9 @@ def build_historical_global_market_snapshot(
     """Build an auditable global-market snapshot as it was knowable at ``as_of_at``.
 
     The existing validator remains authoritative for expected-session and
-    freshness logic.  Instruments are grouped by that expected session before
+    freshness logic. Instruments are grouped by that expected session before
     download, and each Yahoo request is bounded to an exclusive end date of
-    ``expected + 1 day``.  Thus neither the transport nor the validator needs a
+    ``expected + 1 day``. Thus neither the transport nor the validator needs a
     post-as-of daily row to reconstruct the snapshot.
     """
     if as_of_at.tzinfo is None:
@@ -174,7 +176,7 @@ def build_historical_global_market_snapshot(
         symbol = str(instrument["symbol"])
         result = results.get(
             symbol,
-            YahooFetchResult(symbol, __import__("pandas").DataFrame(), "FETCH_FAILED", "missing historical fetch result"),
+            YahooFetchResult(symbol, pd.DataFrame(), "FETCH_FAILED", "missing historical fetch result"),
         )
         row = validate_instrument(
             instrument,
