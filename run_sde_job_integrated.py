@@ -16,10 +16,6 @@ from modules.job_runner.enhanced_runtime_bridge import (
     market_outlook_payloads,
     post_market_payloads,
 )
-from modules.job_runner.final_watchlist_delivery_policy import (
-    apply_final_watchlist_delivery_policy,
-    prepare_final_watchlist_detail_generation,
-)
 from modules.job_runner.reports import write_payloads
 from modules.job_runner.report_validation import ReportSourceValidationError, record_validation_error
 from modules.job_runner.runtime import (
@@ -256,11 +252,7 @@ def _run_integrated(args: argparse.Namespace, ctx) -> int:
         })
         return 1
     try:
-        if args.job in {"final_watchlist", "full_manual"}:
-            prepare_final_watchlist_detail_generation(ctx)
         payloads = _enhanced_payloads(ctx, args.job)
-        if args.job in {"final_watchlist", "full_manual"}:
-            payloads = apply_final_watchlist_delivery_policy(ctx, payloads)
         preview_paths = write_payloads(ctx, payloads)
     except ReportSourceValidationError as exc:
         record_validation_error(ctx, exc)
