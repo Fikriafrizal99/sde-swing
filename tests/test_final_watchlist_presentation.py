@@ -65,29 +65,20 @@ def full_row():
     }
 
 
-def test_final_watchlist_format_is_exact_and_bold():
+def test_final_watchlist_format_is_compact_and_bounded():
     text = format_watchlist_detail(full_row())
-    assert text.startswith("<b>📈 SDE SWING — FINAL WATCHLIST</b>\n━━━━━━━━━━━━━━━━━━━━")
-    assert "<b>🎯 TRADE SETUP</b>" in text
-    assert "💰 3.390 | Entry 3.350–3.400" in text
-    assert "🛑 SL 3.220 | 🎯 TP1/TP2 3.600 | 3.850" in text
-    assert "<b>🏦 BROKER SUMMARY</b>" in text
-    assert "<b>🟢 Top Buy</b>" in text
-    assert "1. XL — Rp20,44B | Avg Rp3.370" in text
-    assert "2. CC — Rp3,70B | Avg Rp3.350" in text
-    assert "3. YP — Rp3,99B | Avg Rp3.380" in text
-    assert "<b>🔴 Top Sell</b>" in text
-    assert "1. AK — Rp16,14B | Avg Rp3.430" in text
-    assert "2. LG — Rp5,74B | Avg Rp3.410" in text
-    assert "3. PD — Rp1,05B | Avg Rp3.400" in text
-    assert "📅 Buy/Sell 4/1" in text
-    assert "🎯 Concentration B 72.00% | S 51.00%" in text
-    assert "💰 Buy Cost 3.370 | Buy Avg +0.74%" in text
-    assert "<b>📌 SETUP CONTEXT</b>" in text
-    assert "<b>Reason:</b>" in text
-    assert "Broker mendukung (BROKER CONFIRM)" in text
+    assert text.startswith("📈 ANTM | WATCH | 84%")
+    assert "BREAKOUT RETEST" in text
+    assert "Entry 3.350" in text
+    assert "3.220 |" in text and "3.600 / 3.850" in text
+    assert "BROKER CONFIRM 78/100" in text
+    assert "XL 20,4B" in text
+    assert "AK 16,1B" in text
+    assert "B/S 4/1" in text
+    assert "Cost 3.370 (+0,74%)" in text
+    assert "Tunggu break >3.600. Jangan chase." in text
     assert "ENGINE_DATA_NOT_AVAILABLE" not in text
-    assert "📊 Pattern" not in text
+    assert "Pattern" not in text
     assert "Persistence" not in text
     assert len(text) <= 1024
 
@@ -121,12 +112,11 @@ def test_idx_tick_rounding_for_final_watchlist_display():
         "top_sellers": [{"broker": "LG", "avg_price": 3866.12}],
     })
     text = format_watchlist_detail(row)
-    assert "💰 3.860 | Entry 3.820–3.900" in text
-    assert "🛑 SL 3.640 | 🎯 TP1/TP2 4.070 | 4.190" in text
-    assert "1. AK — Avg Rp3.880" in text
-    assert "1. LG — Avg Rp3.870" in text
-    assert "💰 Buy Cost 3.800 | Buy Avg +0.74%" in text
-    assert "🟢 Support 3.370 | 🔴 Resistance 3.980" in text
+    assert "3.860 | Entry 3.820–3.900" in text
+    assert "3.640 |" in text and "4.070 / 4.190" in text
+    assert "AK" in text and "LG" in text
+    assert "Cost 3.800 (+0,74%)" in text
+    assert "S 3.370 | R 3.980" in text
 
 
 def test_long_final_watchlist_is_compacted_to_single_photo_caption():
@@ -228,8 +218,7 @@ def test_final_watchlist_separator_is_configurable_without_indent():
     assert IDX_SEPARATOR == IDX_SEPARATOR.strip()
     text = format_watchlist_detail(full_row())
     separator_lines = [line for line in text.splitlines() if line and set(line) == {"━"}]
-    assert separator_lines
-    assert all(line == line.strip() for line in separator_lines)
+    assert not separator_lines
 
 
 def test_chart_uses_same_historical_candle_directory(tmp_path: Path):

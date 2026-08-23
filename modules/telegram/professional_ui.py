@@ -405,20 +405,6 @@ def trend_state(row: pd.Series) -> str:
 
 
 def momentum_state(row: pd.Series) -> str:
-    rsi = to_float(row_value(row, "RSI_14"))
-    macd = to_float(row_value(row, "MACD_Hist"))
-    if rsi is None and macd is None:
-        return MISSING
-    if rsi is not None and rsi >= 70:
-        return f"kuat tetapi overbought — RSI {rsi:.1f}"
-    if rsi is not None and rsi < 40:
-        return f"lemah — RSI {rsi:.1f}"
-    if macd is not None and macd > 0:
-        return f"positif — RSI {rsi:.1f}" if rsi is not None else "positif"
-    return f"netral — RSI {rsi:.1f}" if rsi is not None else "netral"
-
-
-def momentum_state(row: pd.Series) -> str:
     """Return the shared user-facing RSI/MACD momentum label."""
     rsi = to_float(row_value(row, "RSI_14"))
     macd = row_value(row, "MACD_Hist", "MACD_Histogram", "MACD")
@@ -914,14 +900,6 @@ def plan_for_symbol(entry_plans: pd.DataFrame, symbol: str) -> pd.Series:
     return found.iloc[0] if not found.empty else pd.Series(dtype=object)
 
 
-def valid_plan(plan: pd.Series) -> bool:
-    if plan.empty:
-        return False
-    status = normalize_text(row_value(plan, "Plan_Status"), "").upper()
-    levels = [row_value(plan, "Entry_Zone_Low"), row_value(plan, "Entry_Zone_High"), row_value(plan, "Initial_Stop"), row_value(plan, "Target_1")]
-    return status in {"ACCEPT", "ACCEPTED", "APPROVED", "VALID", "READY", "ACTIVE"} and all(to_float(value) is not None for value in levels)
-
-
 def plan_risk_reward(plan: pd.Series) -> tuple[str, bool]:
     if plan.empty:
         return "R:R belum valid", False
@@ -977,31 +955,6 @@ def plan_readiness(plan: pd.Series) -> tuple[str, str]:
     if valid_plan(plan):
         return "READY", "rencana entry valid"
     return "WAITING", "menunggu validasi rencana entry"
-
-
-def entry_setup_lines(plan: pd.Series) -> tuple[str, str, str]:
-    if plan.empty:
-        return "menunggu konfirmasi", "belum ditetapkan", "berdasarkan invalidation setup"
-    status = normalize_text(row_value(plan, "Plan_Status"), "").upper()
-    reason = normalize_text(row_value(plan, "Rejection_Reason"), "").upper()
-    if status == "CONDITIONAL":
-        if reason == "MINOR_RESISTANCE_NEAR":
-            trigger = fmt_number(row_value(plan, "Minor_Resistance", "Nearest_Resistance"), 0)
-            entry = f"tunggu close > {trigger}" if trigger != MISSING else "tunggu breakout valid"
-        else:
-            low = fmt_number(row_value(plan, "Entry_Zone_Low"), 0)
-            high = fmt_number(row_value(plan, "Entry_Zone_High"), 0)
-            entry = f"pantau area {low}–{high}" if MISSING not in {low, high} else "menunggu trigger entry"
-        return entry, "ditetapkan setelah trigger", "ditetapkan setelah trigger"
-    if not valid_plan(plan):
-        return "menunggu konfirmasi", "belum ditetapkan", "berdasarkan invalidation setup"
-    low = fmt_number(row_value(plan, "Entry_Zone_Low"), 0)
-    high = fmt_number(row_value(plan, "Entry_Zone_High"), 0)
-    tp1 = fmt_number(row_value(plan, "Target_1"), 0)
-    tp2 = fmt_number(row_value(plan, "Target_2"), 0)
-    stop = fmt_number(row_value(plan, "Initial_Stop"), 0)
-    targets = tp1 if tp2 == MISSING else f"{tp1} / {tp2}"
-    return f"{low}–{high}", targets, stop
 
 
 def entry_setup_lines(plan: pd.Series) -> tuple[str, str, str]:

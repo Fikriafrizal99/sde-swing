@@ -23,10 +23,15 @@ def test_run_sde_is_the_single_top_level_control_center() -> None:
     assert "maintenance\\MAINTENANCE_MENU.bat" in source
 
 
-def test_primary_job_submenus_keep_integrated_runner_and_existing_controls() -> None:
-    for filename in ("RUN_MARKET_OUTLOOK.bat", "RUN_POST_MARKET.bat", "RUN_FINAL_WATCHLIST.bat"):
+def test_primary_job_submenus_keep_current_runtime_wrappers_and_existing_controls() -> None:
+    expected_runners = {
+        "RUN_MARKET_OUTLOOK.bat": "run_sde_job_integrated.py",
+        "RUN_POST_MARKET.bat": "run_sde_job_integrated_market_first.py",
+        "RUN_FINAL_WATCHLIST.bat": "run_final_watchlist_entrypoint.py",
+    }
+    for filename, runner in expected_runners.items():
         source = (ROOT / filename).read_text(encoding="utf-8")
-        assert "run_sde_job_integrated.py" in source
+        assert runner in source
         assert "run_sde_job.py" not in source
 
     market = (ROOT / "RUN_MARKET_OUTLOOK.bat").read_text(encoding="utf-8")
@@ -39,7 +44,7 @@ def test_primary_job_submenus_keep_integrated_runner_and_existing_controls() -> 
 
     daily = (ROOT / "maintenance/DAILY_OPERATIONS_MENU.bat").read_text(encoding="utf-8")
     broker = (ROOT / "maintenance/BROKER_MENU.bat").read_text(encoding="utf-8")
-    assert "run_sde_job_integrated.py" in daily
+    assert "run_full_daily_broker_period.py" in daily
     assert "run_sde_job_integrated.py" in broker
 
 

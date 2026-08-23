@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import html
-import json
 import math
 import sys
 from pathlib import Path
@@ -120,52 +119,6 @@ def _compact_zone(low: Any, high: Any, *, anchor_price: Any) -> str:
         .replace(".", "")
         .replace("–", "-")
     )
-
-
-def _source_plan(row: pd.Series) -> dict[str, Any]:
-    raw = row.get("source_json")
-    if raw is None:
-        return {}
-    try:
-        payload = json.loads(str(raw))
-    except Exception:
-        return {}
-    plan = payload.get("plan")
-    return plan if isinstance(plan, dict) else {}
-
-
-def _risk_reward(row: pd.Series) -> str:
-    plan = _source_plan(row)
-    candidates = (
-        "Risk_Reward",
-        "Risk_Reward_Ratio",
-        "Risk_Reward_Final",
-        "RiskReward",
-        "RiskRewardRatio",
-        "RR_Ratio",
-        "RR",
-        "R_R",
-    )
-    value: Any = None
-    for key in candidates:
-        if key in plan and str(plan.get(key) or "").strip():
-            value = plan.get(key)
-            break
-    if value is None:
-        return "-"
-    text = str(value).strip()
-    if ":" in text:
-        _, right = text.split(":", 1)
-        try:
-            number = float(right.replace(",", "."))
-            return f"1:{number:.2f}"
-        except Exception:
-            return text
-    try:
-        number = float(text.replace(",", "."))
-        return f"1:{number:.2f}"
-    except Exception:
-        return text
 
 
 def _gap_text(current: Any, low: Any, high: Any) -> str:

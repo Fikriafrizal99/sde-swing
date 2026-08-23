@@ -9,7 +9,11 @@ def test_idx_disclosure_config_is_safe_by_default() -> None:
     assert cfg["delivery"]["topic_route"] == "news"
     assert cfg["delivery"]["reuse_existing_news_topic"] is True
     assert cfg["safety"]["decision_engine_write_access"] is False
-    assert cfg["safety"]["ai_enabled"] is False
+    # The optional document reader is enabled in configuration, but remains
+    # isolated from scoring/trading and cannot write to the decision engine.
+    assert cfg["safety"]["ai_enabled"] is True
+    assert cfg["ai_reader"]["enabled"] is True
+    assert cfg["ai_reader"]["safety"]["decision_engine_write_access"] is False
     assert cfg["safety"]["brave_enabled"] is False
 
 

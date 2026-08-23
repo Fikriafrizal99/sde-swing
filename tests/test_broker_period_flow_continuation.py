@@ -277,9 +277,13 @@ def test_final_watchlist_primary_contract_distinguishes_1d_and_multiday():
 
     multi_text = format_watchlist_detail(multi)
     one_day_text = format_watchlist_detail(one_day)
-    assert "Primary 3D" in multi_text
-    assert "TODAY PULSE AVAILABLE" in multi_text
-    assert "ALIGNED POSITIVE" in multi_text
+    # Period and pulse provenance stays in the engine/artifact contract; the
+    # Telegram card is intentionally compact and does not expose those fields.
+    assert "Primary" not in multi_text
+    assert "TODAY PULSE" not in multi_text
+    assert "ALIGNED_POSITIVE" not in multi_text
     assert "TODAY PULSE" not in one_day_text
     assert "ALIGNED_POSITIVE" not in one_day_text
-    assert len(multi_text) <= 3500
+    assert "Net +Rp1,00K" in multi_text
+    assert "Net +Rp1,00K" in one_day_text
+    assert len(multi_text) <= 1024

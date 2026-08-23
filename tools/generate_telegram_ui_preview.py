@@ -25,11 +25,6 @@ from modules.job_runner.runtime import load_context
 from modules.telegram.professional_ui import UiConfig, format_data_warning
 
 
-def latest_file(pattern: str) -> Path | None:
-    files = [path for path in ROOT.glob(pattern) if path.is_file()]
-    return max(files, key=lambda path: path.stat().st_mtime) if files else None
-
-
 def read_json(path: Path | None) -> dict:
     if not path or not path.exists():
         return {}

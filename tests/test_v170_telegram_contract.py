@@ -52,13 +52,11 @@ def test_detail_reports_escape_dynamic_values_and_do_not_expose_raw_arrays() -> 
     assert "WAIT_FOR_ENTRY_TRIGGER" not in text
     assert "['should not render" not in text
     assert "should not render as a Python list" not in text
-    assert "<b>Reason:</b>" in text
-    assert "Broker mendukung (ACCUMULATION)" in text
-    assert "<b>🎯 TRADE SETUP</b>" in text
-    assert "<b>🏦 BROKER SUMMARY</b>" in text
-    assert "<b>🟢 Top Buy</b>" in text
-    assert "<b>🔴 Top Sell</b>" in text
-    assert "<b>📌 SETUP CONTEXT</b>" in text
+    assert "ACCUMULATION" in text
+    assert "Net +Rp1,20B" in text
+    assert "AB 100M" in text
+    assert "CD 80M" in text
+    assert "Reason:" not in text
 
 
 def test_professional_signal_downgrades_ready_when_rr_is_not_valid() -> None:

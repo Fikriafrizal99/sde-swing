@@ -9,7 +9,7 @@ from modules.runtime.context import RuntimeContext
 from modules.runtime.data_source_manager import DataSourceManager
 from modules.runtime.jobs import JOB_DEPENDENCIES, validate_dependency_status
 from modules.runtime.status import ALLOWED_JOB_STATUSES, StatusWriter, build_status_payload
-from modules.snapshots.builder import SnapshotBuilder
+from modules.runtime.artifacts import write_artifact
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,11 +77,11 @@ def test_candidate_requires_provenance_and_restricts_final_actions() -> None:
 def test_snapshot_builder_adds_metadata_and_hash(tmp_path: Path) -> None:
     context = RuntimeContext.create("technical_snapshot", date(2026, 8, 3), root=tmp_path, mode="MOCK", run_id="RUN-5", config_path=ROOT / "config/pipeline.json", scheduler_config_path=ROOT / "config/scheduler.json", data_sources_path=ROOT / "config/data_sources.json")
     context.data_sources_path = ROOT / "config/data_sources.json"
-    builder = SnapshotBuilder(context, "technical")
-    document = builder.build([], snapshot_id="T-1", symbols_requested=2, symbols_loaded=1, symbols_valid=1, symbols_failed=1)
+    path = write_artifact(context, "technical", "T-1", [], snapshot_id="T-1")
+    document = json.loads(path.read_text(encoding="utf-8"))
     assert document["config_version"] == "1.7.1"
     assert document["content_hash"]
-    path = builder.write(document)
+    assert document["payload"] == []
     assert path.parts[-3:] == ("technical", "2026-08-03", "T-1.json")
 
 

@@ -5,7 +5,16 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from generate_task_scheduler_xml import NS, TASKS, build_task, validate_generated_xml
+from generate_task_scheduler_xml import NS, build_task, task_specs, validate_generated_xml
+
+
+SPECS = task_specs(
+    {
+        "market_outlook": {"time": "07:30"},
+        "post_market": {"time": "16:30"},
+        "final_watchlist": {"start_time": "18:00"},
+    }
+)
 
 
 class TaskSchedulerXmlImportHotfixTests(unittest.TestCase):
@@ -13,24 +22,34 @@ class TaskSchedulerXmlImportHotfixTests(unittest.TestCase):
         root_dir = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as td:
             project = Path(td) / "SDE Project With Spaces"
-            for _, _, _, _, launcher in TASKS:
-                path = project / launcher
+            for spec in SPECS:
+                path = project / spec.launcher
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("@echo off\n", encoding="utf-8")
 
-            for filename, description, start_time, limit, launcher in TASKS:
-                path = project / filename
-                tree = build_task(project, description, start_time, limit, launcher)
+            for spec in SPECS:
+                path = project / spec.filename
+                tree = build_task(
+                    project,
+                    spec,
+                    restart_count=3,
+                    restart_interval="PT5M",
+                    multiple_instances_policy="IgnoreNew",
+                    start_when_available=True,
+                    wake_to_run=True,
+                )
                 tree.write(path, encoding="utf-16", xml_declaration=True)
-                validate_generated_xml(path, project)
+                validate_generated_xml(path, project, spec)
 
                 parsed = ET.parse(path)
                 root = parsed.getroot()
                 ns = {"t": NS}
-                trigger = root.find("t:Triggers/t:CalendarTrigger", ns)
+                trigger_name = "CalendarTrigger" if spec.trigger_type == "daily" else "LogonTrigger"
+                trigger = root.find(f"t:Triggers/t:{trigger_name}", ns)
                 self.assertIsNotNone(trigger)
-                names = [child.tag.rsplit("}", 1)[-1] for child in list(trigger)]
-                self.assertEqual(names[:3], ["Enabled", "StartBoundary", "ScheduleByDay"])
+                if spec.trigger_type == "daily":
+                    names = [child.tag.rsplit("}", 1)[-1] for child in list(trigger)]
+                    self.assertEqual(names[:3], ["Enabled", "StartBoundary", "ScheduleByDay"])
                 actions = root.find("t:Actions", ns)
                 self.assertIsNotNone(actions)
                 self.assertIsNone(actions.get("Context"))

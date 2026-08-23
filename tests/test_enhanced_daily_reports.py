@@ -127,22 +127,22 @@ def test_final_watchlist_uses_agreed_format_and_exports_active_rows(tmp_path: Pa
 
     assert len(detail) == 5
     text = detail[0].text
+    # FINAL WATCHLIST is the compact, one-card Telegram contract. The
+    # verbose bold section layout belongs to the retired formatter.
     required_sections = [
-        "<b>📈 SDE SWING — FINAL WATCHLIST</b>",
-        "<b>🎯 TRADE SETUP</b>",
-        "<b>🏦 BROKER SUMMARY</b>",
-        "<b>🟢 Top Buy</b>",
-        "<b>🔴 Top Sell</b>",
-        "<b>📌 SETUP CONTEXT</b>",
-        "<b>Reason:</b>",
+        "S1 | BUY | 89%",
+        "BREAKOUT RETEST",
+        "Entry 100",
+        "Net +Rp1,50B",
+        "Cost 102 (+0,98%)",
+        "Tunggu",
     ]
     for section in required_sections:
         assert section in text
-    assert "S1 | BREAKOUT RETEST" in text
-    assert "💰 103 | Entry 100–105" in text
-    assert "🛑 SL 95 | 🎯 TP1/TP2 115 | 120" in text
-    assert "1. AK — Rp1,00B | Avg Rp103" in text
-    assert "Buy Avg +0.98%" in text
+    assert "103 | Entry 100" in text
+    assert "95 |" in text and "115 / 120" in text
+    assert "AK 1B" in text
+    assert "TP 500M" in text
     assert "Yahoo: VALID" not in text
     assert "ZAPI IDX:" not in text
 

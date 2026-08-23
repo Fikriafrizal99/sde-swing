@@ -24,20 +24,6 @@
     "reports": "data/output/reports",
     "audits": "data/output/audits"
   },
-  "source_validation": {
-    "enabled": true,
-    "execution_source": "YAHOO_HISTORICAL",
-    "validation_source": "ZAPI_IDX",
-    "output_dir": "data/output/source_validation",
-    "price_tolerance_pct": 0.005,
-    "volume_tolerance_pct": 0.2,
-    "maximum_stale_days": 1,
-    "minimum_coverage_ratio": 0.9,
-    "max_symbols": 0,
-    "bulk_page_size": 100,
-    "block_on_price_mismatch": false,
-    "non_blocking": false
-  },
   "enhanced_reporting": {
     "enabled": true,
     "output_root": "data/output",

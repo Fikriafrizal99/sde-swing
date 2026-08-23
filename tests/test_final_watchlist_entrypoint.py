@@ -160,17 +160,17 @@ def test_full_daily_final_watchlist_routes_through_lifecycle_entrypoint():
     assert command[index + 1] == "2026-08-14"
 
 
-def test_scheduler_final_watchlist_routes_through_lifecycle_entrypoint():
+def test_scheduler_final_watchlist_routes_through_scheduled_job_entrypoint():
     source = (ROOT / "scheduler" / "SCHEDULE_FINAL_WATCHLIST.bat").read_text(encoding="utf-8")
     normalized = source.replace("\\", "/")
 
-    assert "tools/run_final_watchlist_entrypoint.py --period 1D" in normalized
+    assert "tools/run_scheduled_job.py --job final_watchlist" in normalized
     assert "tools/run_final_watchlist_broker_period.py --period 1D" not in normalized
 
 
-def test_preview_existing_resolves_completed_trade_date_before_integrated_runner():
+def test_preview_existing_resolves_completed_trade_date_before_artifact_resend():
     source = (ROOT / "RUN_FINAL_WATCHLIST.bat").read_text(encoding="utf-8")
     normalized = source.replace("\\", "/")
 
     assert "tools/resolve_last_trading_day.py" in normalized
-    assert "--job final_watchlist --trade-date !PREVIEW_DATE! --preview-existing --no-telegram" in normalized
+    assert "tools/resend_final_watchlist.py --trade-date !PREVIEW_DATE! --preview-only" in normalized

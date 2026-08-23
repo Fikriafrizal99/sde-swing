@@ -201,56 +201,6 @@ def _broker_period_metadata(
     return {key: value for key, value in normalized.items() if value not in ("", [], {})}
 
 
-def _artifact_payload(artifact: DailyReportArtifact) -> ReportPayload:
-    suffix = f"_{artifact.symbol}" if artifact.symbol else ""
-    filename = f"{artifact.report_type}{suffix}.txt"
-    payload = ReportPayload(
-        report_type=artifact.report_type,
-        filename=filename,
-        text=artifact.text,
-        topic="report",
-        symbol=artifact.symbol,
-    )
-    if artifact.attachment_path is not None:
-        setattr(payload, "attachment_path", artifact.attachment_path)
-        setattr(payload, "caption", artifact.caption)
-    setattr(payload, "input_paths", tuple(artifact.input_paths))
-    setattr(payload, "source_of_truth", tuple(artifact.source_of_truth))
-    setattr(payload, "row_count", artifact.row_count)
-    setattr(payload, "validation_details", dict(artifact.validation_details or {}))
-    return payload
-
-
-def _artifact_with_lineage(
-    artifact: DailyReportArtifact,
-    *,
-    input_paths: Iterable[str | Path],
-    source_of_truth: Iterable[str | Path],
-    row_count: int | None = None,
-    validation_details: dict[str, Any] | None = None,
-) -> DailyReportArtifact:
-    return DailyReportArtifact(
-        report_type=artifact.report_type,
-        text=artifact.text,
-        topic=artifact.topic,
-        symbol=artifact.symbol,
-        attachment_path=artifact.attachment_path,
-        caption=artifact.caption,
-        input_paths=tuple(str(path) for path in input_paths),
-        source_of_truth=tuple(str(path) for path in source_of_truth),
-        row_count=row_count,
-        validation_details=dict(validation_details or {}),
-    )
-
-
-def _builder(ctx: RunnerContext) -> EnhancedDailyReportBuilder:
-    cfg = ctx.scheduler_config.get("enhanced_reporting", {})
-    return EnhancedDailyReportBuilder(
-        output_root=resolve(cfg.get("output_root", "data/output")),
-        max_watchlist_messages=int(cfg.get("max_watchlist_messages", 5)),
-    )
-
-
 def _zapi_lineage(ctx: RunnerContext) -> tuple[dict[str, Any], dict[str, dict[str, Any]], list[str]]:
     latest = resolve("data/output/snapshots") / ctx.trade_date.isoformat() / "latest_snapshot.json"
     snapshot = read_json(latest) if latest.exists() else {}
@@ -1030,31 +980,39 @@ def complete_daily_payloads(
     return payloads
 
 # FINAL_WATCHLIST_RUNTIME_BRIDGE_V2
-_fw_original_builder = _builder
-
-
 def _builder(ctx: RunnerContext) -> EnhancedDailyReportBuilder:
-    builder = _fw_original_builder(ctx)
     cfg = ctx.scheduler_config.get("enhanced_reporting", {})
+    builder = EnhancedDailyReportBuilder(
+        output_root=resolve(cfg.get("output_root", "data/output")),
+        max_watchlist_messages=int(cfg.get("max_watchlist_messages", 5)),
+    )
     builder.historical_dir = ctx.path("historical_dir", "data/output/historical/by_symbol")
     builder.chart_output_root = resolve(cfg.get("final_watchlist_chart_output_root", "output/final_watchlist"))
     return builder
 
 
-_fw_original_artifact_payload = _artifact_payload
-
-
 def _artifact_payload(artifact: DailyReportArtifact) -> ReportPayload:
-    payload = _fw_original_artifact_payload(artifact)
+    suffix = f"_{artifact.symbol}" if artifact.symbol else ""
+    payload = ReportPayload(
+        report_type=artifact.report_type,
+        filename=f"{artifact.report_type}{suffix}.txt",
+        text=artifact.text,
+        topic="report",
+        symbol=artifact.symbol,
+    )
+    if artifact.attachment_path is not None:
+        setattr(payload, "attachment_path", artifact.attachment_path)
+        setattr(payload, "caption", artifact.caption)
+    setattr(payload, "input_paths", tuple(artifact.input_paths))
+    setattr(payload, "source_of_truth", tuple(artifact.source_of_truth))
+    setattr(payload, "row_count", artifact.row_count)
     details = dict(artifact.validation_details or {})
+    setattr(payload, "validation_details", details)
     material = str(details.get("material_signature") or "").strip()
     if material:
         payload.material_signature = material
         payload.signal_version = material
     return payload
-
-
-_fw_original_artifact_with_lineage = _artifact_with_lineage
 
 
 def _artifact_with_lineage(

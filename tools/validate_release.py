@@ -315,9 +315,9 @@ def main() -> int:
             "--decision", str(work / "decision/FINAL_DECISION_V3.csv"), "--exit-dir", str(work / "exit"),
             "--data-quality-status", "VALID", "--summary-output", str(work / "manifests/DATABASE_ARCHIVE.json"),
         ], ROOT, logs))
-        stages.append(run_stage("Telegram dry run", [
-            sys.executable, "-u", "modules/telegram/telegram_bot.py", "--config", "config/telegram.json", "--dry-run",
-            "swing", "--run-id", run_id, "--run-manifest", str(run_manifest),
+        stages.append(run_stage("Current Telegram presentation", [
+            sys.executable, "-u", "tools/validate_current_telegram_presentation.py",
+            "--run-id", run_id, "--run-manifest", str(run_manifest),
             "--decisions", str(work / "decision/FINAL_DECISION_V3.csv"),
             "--entry-plans", str(work / "exit/ENTRY_PLANS.csv"),
             "--market-status", str(work / "decision/MARKET_STATUS.json"),

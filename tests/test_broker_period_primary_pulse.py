@@ -340,7 +340,8 @@ def test_final_watchlist_primary_1d_has_no_pulse_and_multiday_has_pulse_and_reas
     multi = format_watchlist_detail(dict(base, broker_period_type="3D"))
     assert "TODAY PULSE" not in one_day
     assert "Alignment" not in one_day
-    assert "TODAY PULSE AVAILABLE" in multi
-    assert "STOCKBIT 1D" in multi
-    assert "ALIGNED POSITIVE" in multi
-    assert "Primary 3D" in multi
+    assert "TODAY PULSE" not in multi
+    assert "STOCKBIT 1D" not in multi
+    assert "ALIGNED_POSITIVE" not in multi
+    assert "Net +Rp1,00K" in multi
+    assert len(multi) <= 1024

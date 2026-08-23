@@ -790,7 +790,11 @@ def test_optional_dependency_and_local_auth_artifacts_are_explicitly_isolated() 
     core_requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
     ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "playwright" in requirements.lower()
-    assert "playwright" not in core_requirements.lower()
+    # Playwright is a core dependency now because IDX disclosure uses the
+    # browser fallback; the portfolio collector still keeps its install hint
+    # and authenticated artifacts isolated.
+    assert "playwright" in core_requirements.lower()
+    assert "requirements-playwright.txt" in (ROOT / "modules/portfolio/stockbit_playwright_collector.py").read_text(encoding="utf-8")
     assert "data/state/broker_playwright.json" in ignore
     assert "data/state/playwright/stockbit/" in ignore
     assert "data/logs/broker_playwright/" in ignore

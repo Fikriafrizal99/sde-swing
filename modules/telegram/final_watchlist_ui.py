@@ -129,10 +129,10 @@ def _compact_money(value: Any) -> str:
     if scaled >= 100:
         rendered = f"{scaled:.0f}"
     elif scaled >= 10:
-        rendered = f"{scaled:.1f}"
+        rendered = f"{scaled:.1f}".rstrip("0").rstrip(".")
     else:
-        rendered = f"{scaled:.2f}"
-    rendered = rendered.rstrip("0").rstrip(".").replace(".", ",")
+        rendered = f"{scaled:.2f}".rstrip("0").rstrip(".")
+    rendered = rendered.replace(".", ",")
     return f"{rendered}{unit}"
 
 
@@ -157,28 +157,6 @@ def _list(value: Any) -> list[Any]:
         else:
             return []
     return list(value or []) if isinstance(value, (list, tuple)) else []
-
-
-def _actor_lines(value: Any) -> list[str]:
-    lines: list[str] = []
-    for index, item in enumerate(_list(value)[:3], start=1):
-        if not isinstance(item, Mapping):
-            continue
-        broker = _enum(item.get("broker") or item.get("code") or item.get("name"), "", upper=True)
-        if not broker:
-            continue
-        parts = [f"{index}. {html.escape(broker, quote=False)} —"]
-        money = _money(item.get("value") if item.get("value") is not None else item.get("net_value"), signed=False)
-        avg = _price(item.get("avg_price") if item.get("avg_price") is not None else item.get("average_price"))
-        if money != "N/A":
-            parts.append(money)
-        if avg != "N/A":
-            if money != "N/A":
-                parts.append(f"| Avg Rp{avg}")
-            else:
-                parts.append(f"Avg Rp{avg}")
-        lines.append(" ".join(parts))
-    return lines
 
 
 def _compact_actors(value: Any) -> str:
@@ -211,103 +189,6 @@ def _date_label(value: Any) -> str:
 
 def _period_is_multi(period: str) -> bool:
     return bool(period) and period.upper() not in {"1D", "1DAY", "DAY"}
-
-
-def _period_lines(row: Mapping[str, Any]) -> list[str]:
-    period = _enum(_pick(row, "broker_period_type", "Broker_Period_Type", "primary_window"), "", upper=True)
-    if not period:
-        return []
-    coverage = _raw(_pick(row, "broker_coverage_text", "Broker_Coverage_Text"))
-    line = f"🏦 Primary {period}"
-    if coverage:
-        line += f" | Coverage {html.escape(coverage, quote=False)}"
-    lines = [line]
-    if _period_is_multi(period):
-        pulse = _enum(_pick(row, "today_pulse_status"), "NOT AVAILABLE", upper=True)
-        source = _enum(_pick(row, "today_pulse_source"), "STOCKBIT 1D", upper=True)
-        alignment = _enum(_pick(row, "broker_alignment", "Broker_Period_Alignment"), "INSUFFICIENT", upper=True)
-        lines.append(f"📍 TODAY PULSE {pulse} | {source} | {alignment}")
-    return lines
-
-
-def _technical_status(row: Mapping[str, Any]) -> str:
-    direct = _pick(row, "technical_status", "technical_state", "Plan_Status")
-    if _raw(direct):
-        return _enum(direct, lower=True)
-    decision = _pick(row, "decision")
-    if _raw(decision):
-        return _enum(decision, upper=True)
-    return _enum(_pick(row, "trend"), lower=True)
-
-
-def _interpretive_reason(row: Mapping[str, Any]) -> str:
-    symbol = _enum(_pick(row, "symbol", "Symbol"), "Saham", upper=True)
-    trend = _enum(_pick(row, "trend", "Technical_Regime", "technical_status", "technical_state"), "", lower=True)
-    phase = _enum(_pick(row, "phase", "execution_state", "Execution_Status"), "", upper=True)
-    current = _num(_pick(row, "last_price", "current_price", "Reference_Close"))
-    low = _num(_pick(row, "entry_low", "Entry_Zone_Low"))
-    high = _num(_pick(row, "entry_high", "Entry_Zone_High"))
-    current_text = _price(current)
-    entry_text = f"{_price(low)}–{_price(high)}"
-    opening = f"{symbol} {trend}" if trend else symbol
-    if current is not None and low is not None and high is not None and low <= current <= high:
-        opening += f"; harga {current_text} masih di entry {entry_text}."
-    elif current is not None and high is not None and current > high:
-        opening += f"; harga {current_text} sudah di atas entry {entry_text}."
-    elif current is not None and low is not None and current < low:
-        opening += f"; harga {current_text} masih di bawah entry {entry_text}."
-    else:
-        opening += "."
-
-    broker = _enum(_pick(row, "broker_status", "broker_signal", "Broker_Confirmation", "broker_direction"), "INSUFFICIENT", upper=True)
-    net = _pick(row, "broker_net_flow", "net_flow", "cumulative_net_value")
-    buy = _num(_pick(row, "buy_days"))
-    sell = _num(_pick(row, "sell_days"))
-    evidence: list[str] = []
-    if _num(net) is not None:
-        evidence.append(f"net {_money(net)}")
-    if buy is not None and sell is not None:
-        evidence.append(f"Buy/Sell {_days(buy)}/{_days(sell)}")
-    evidence_text = " dan ".join(evidence)
-
-    if any(token in broker for token in ("INSUFFICIENT", "NO DATA", "UNKNOWN", "MISSING")):
-        broker_text = "Broker INSUFFICIENT: Score 0 = data belum cukup, bukan distribusi."
-        if evidence_text:
-            broker_text += f" {evidence_text} baru indikasi awal."
-    elif "ACCUM" in broker or broker in {"BUY", "BROKER CONFIRM"}:
-        broker_text = f"Broker mendukung ({broker})"
-        if evidence_text:
-            broker_text += f": {evidence_text}"
-        if buy is not None and sell is not None and buy > sell:
-            broker_text += ", buying konsisten."
-        else:
-            broker_text += "."
-    elif "DISTR" in broker or broker == "SELL":
-        broker_text = f"Broker belum mendukung ({broker})"
-        if evidence_text:
-            broker_text += f": {evidence_text}"
-        broker_text += "."
-    else:
-        broker_text = f"Broker masih {broker}"
-        if evidence_text:
-            broker_text += f": {evidence_text}"
-        broker_text += "."
-
-    resistance = _num(_pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance"))
-    resistance_text = _price(resistance)
-    waiting = any(token in phase for token in ("WAIT", "NOT READY", "CONDITIONAL", "MONITOR"))
-    if current is not None and high is not None and current > high:
-        action = f"Jangan kejar; tunggu pullback ke {entry_text} atau trigger baru."
-    elif waiting and resistance is not None and (current is None or current < resistance):
-        action = f"{phase}; resistance {resistance_text} belum lewat. Tunggu break dan bertahan >{resistance_text} sebelum entry."
-    elif waiting and resistance is not None:
-        action = f"{phase}; tunggu harga bertahan di atas resistance {resistance_text} sebagai konfirmasi."
-    elif waiting:
-        action = f"{phase}; tunggu trigger harga valid sebelum entry."
-    else:
-        action = "Eksekusi tetap hanya di area entry sesuai plan."
-
-    return html.escape("\n".join([opening, broker_text, action]), quote=False)
 
 
 def _compact_action(row: Mapping[str, Any]) -> str:

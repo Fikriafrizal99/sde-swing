@@ -10,9 +10,18 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 
-from generate_task_scheduler_xml import NS, TASKS, build_task
+from generate_task_scheduler_xml import NS, build_task, task_specs
 from modules.job_runner.reports import load_broker_raw
 from modules.job_runner.runtime import RunnerContext
+
+
+SPECS = task_specs(
+    {
+        "market_outlook": {"time": "07:30"},
+        "post_market": {"time": "16:30"},
+        "final_watchlist": {"start_time": "18:00"},
+    }
+)
 
 
 def make_ctx(tmp: Path, downloads: Path, *, dry_run: bool = False) -> RunnerContext:
@@ -105,6 +114,7 @@ class V161ReportAndBatStructureTests(unittest.TestCase):
             "RUN_MARKET_OUTLOOK.bat",
             "RUN_POST_MARKET.bat",
             "RUN_FINAL_WATCHLIST.bat",
+            "RUN_IDX_DISCLOSURE_WATCHER.bat",
             "CHECK_SDE_STATUS.bat",
         }
         actual = {path.name for path in ROOT.glob("*.bat")}
@@ -120,8 +130,16 @@ class V161ReportAndBatStructureTests(unittest.TestCase):
 
     def test_scheduler_xml_targets_noninteractive_scheduler_launchers(self) -> None:
         project = Path(r"C:\\SDE_SWING")
-        for _filename, description, start, limit, bat_name in TASKS:
-            tree = build_task(project, description, start, limit, bat_name)
+        for spec in SPECS:
+            tree = build_task(
+                project,
+                spec,
+                restart_count=3,
+                restart_interval="PT5M",
+                multiple_instances_policy="IgnoreNew",
+                start_when_available=True,
+                wake_to_run=True,
+            )
             command = tree.getroot().find(f".//{{{NS}}}Command")
             arguments = tree.getroot().find(f".//{{{NS}}}Arguments")
             workdir = tree.getroot().find(f".//{{{NS}}}WorkingDirectory")
@@ -132,10 +150,10 @@ class V161ReportAndBatStructureTests(unittest.TestCase):
             self.assertIn("SCHEDULE_", action_text)
             self.assertEqual(workdir.text, str(project))
 
-    def test_final_watchlist_scheduler_uses_noninteractive_lifecycle_entrypoint(self) -> None:
+    def test_final_watchlist_scheduler_uses_noninteractive_scheduled_job_entrypoint(self) -> None:
         scheduler = (ROOT / "scheduler" / "SCHEDULE_FINAL_WATCHLIST.bat").read_text(encoding="utf-8-sig")
-        self.assertIn("tools\\run_final_watchlist_entrypoint.py", scheduler)
-        self.assertIn("--period 1D", scheduler)
+        self.assertIn("tools\\run_scheduled_job.py", scheduler)
+        self.assertIn("--job final_watchlist", scheduler)
         self.assertNotIn("tools\\run_final_watchlist_broker_period.py", scheduler)
         self.assertNotIn("run_sde_job.py --job final_watchlist", scheduler)
 
