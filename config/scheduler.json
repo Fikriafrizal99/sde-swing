@@ -82,13 +82,8 @@
     "broker_retry_seconds": 300,
     "cutoff_time": "18:30",
     "broker_cutoff_time": "18:30",
-    "max_detail_symbols": 0,
     "missing_broker_policy": "skip_final_watchlist",
-    "strict_trade_date_match": true,
-    "detail_statuses": [
-      "BUY ON TRIGGER",
-      "BUY CANDIDATE"
-    ]
+    "strict_trade_date_match": true
   },
   "watchlist_ai": {
     "enabled": true,
