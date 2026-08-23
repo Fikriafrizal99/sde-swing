@@ -5,10 +5,6 @@ import argparse
 import sys
 from pathlib import Path
 
-# When this file is executed directly as ``python tools/resend_final_watchlist.py``,
-# Python puts ``tools`` on sys.path instead of the repository root.  Bootstrap
-# the root before importing the project packages so ``modules.*`` resolves on
-# Windows and other direct-script environments.
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -26,7 +22,6 @@ from modules.job_runner.runtime import (
     ResourceLocked,
     load_context,
     read_json,
-    resolve,
     write_status,
 )
 
@@ -83,9 +78,14 @@ def _delivery_status(delivery: list[dict]) -> tuple[str, int]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Kirim ulang FINAL WATCHLIST dari artifact engine yang sudah ada tanpa menjalankan engine/dependency graph"
+        description="Preview/kirim ulang FINAL WATCHLIST dari artifact existing tanpa menjalankan engine/dependency graph"
     )
     parser.add_argument("--trade-date", required=True, help="Tanggal analisis YYYY-MM-DD")
+    parser.add_argument(
+        "--preview-only",
+        action="store_true",
+        help="Bangun preview existing tanpa Telegram dan tanpa menjalankan engine",
+    )
     parser.add_argument("--config", default="config/pipeline.json")
     parser.add_argument("--scheduler-config", default="config/scheduler.json")
     return parser.parse_args()
@@ -99,26 +99,29 @@ def main() -> int:
         scheduler_config_path=args.scheduler_config,
         trade_date=args.trade_date,
         dry_run=False,
-        preview_existing=False,
-        no_telegram=False,
-        force=True,
+        preview_existing=bool(args.preview_only),
+        no_telegram=bool(args.preview_only),
+        force=not bool(args.preview_only),
         debug=False,
         interactive_broker=False,
     )
+    setattr(ctx, "delivery_only", True)
 
     manifest_dir = ctx.path("manifest_dir", "data/output/manifests")
     manifest_path, manifest = find_existing_run_manifest(manifest_dir, ctx.trade_date.isoformat())
+    mode = "PREVIEW_EXISTING" if args.preview_only else "RESEND_EXISTING"
     if manifest_path is None:
-        write_status(ctx, "FAILED", "RESEND_ARTIFACT_DISCOVERY", EXIT_FAILED, {
+        write_status(ctx, "FAILED", f"{mode}_ARTIFACT_DISCOVERY", EXIT_FAILED, {
             "engine_status": "NOT_RUN",
             "report_status": "NOT_RUN",
             "delivery_status": "NOT_RUN",
             "errors": [f"FINAL_WATCHLIST_ARTIFACT_NOT_FOUND:{ctx.trade_date.isoformat()}"],
-            "warnings": ["Resend tidak menjalankan ulang engine."],
+            "warnings": ["Artifact-only mode tidak menjalankan ulang engine."],
         })
+        print(f"FINAL_WATCHLIST_ARTIFACT_NOT_FOUND:{ctx.trade_date.isoformat()}", file=sys.stderr)
         return EXIT_FAILED
 
-    write_status(ctx, "RUNNING", "RESEND_EXISTING", EXIT_SUCCESS, {
+    write_status(ctx, "RUNNING", mode, EXIT_SUCCESS, {
         "engine_status": "NOT_RUN",
         "report_status": "RUNNING",
         "delivery_status": "NOT_RUN",
@@ -131,7 +134,7 @@ def main() -> int:
             payloads = enhanced_final_watchlist_payloads(ctx, manifest)
             payloads = _csv_last(payloads)
             if not payloads:
-                write_status(ctx, "FAILED", "RESEND_REPORT_BUILD", EXIT_FAILED, {
+                write_status(ctx, "FAILED", f"{mode}_REPORT_BUILD", EXIT_FAILED, {
                     "engine_status": "NOT_RUN",
                     "report_status": "FAILED",
                     "delivery_status": "NOT_RUN",
@@ -142,6 +145,21 @@ def main() -> int:
                 return EXIT_FAILED
 
             preview_paths = write_payloads(ctx, payloads)
+            if args.preview_only:
+                write_status(ctx, "SUCCESS", "FINAL_WATCHLIST_PREVIEW_EXISTING", EXIT_SUCCESS, {
+                    "engine_status": "NOT_RUN",
+                    "report_status": "SUCCESS",
+                    "delivery_status": "SKIPPED_PREVIEW_ONLY",
+                    "telegram_status": "SKIPPED",
+                    "source_run_id": manifest.get("Run_ID", ""),
+                    "source_manifest": str(manifest_path),
+                    "preview_paths": [str(path) for path in preview_paths],
+                    "warnings": ["PREVIEW_EXISTING_ARTIFACT_ONLY; tidak ada engine, dependency rerun, atau Telegram."],
+                })
+                for path in preview_paths:
+                    print(path)
+                return EXIT_SUCCESS
+
             delivery = deliver(ctx, payloads)
             overall, code = _delivery_status(delivery)
             telegram_status = (
@@ -172,7 +190,7 @@ def main() -> int:
             })
             return code
     except ReportSourceValidationError as exc:
-        write_status(ctx, "FAILED", "RESEND_SOURCE_VALIDATION", EXIT_FAILED, {
+        write_status(ctx, "FAILED", f"{mode}_SOURCE_VALIDATION", EXIT_FAILED, {
             "engine_status": "NOT_RUN",
             "report_status": "FAILED",
             "delivery_status": "NOT_RUN",
@@ -183,7 +201,7 @@ def main() -> int:
         })
         return EXIT_FAILED
     except (JobAlreadyRunning, ResourceLocked) as exc:
-        write_status(ctx, "SKIPPED", "RESEND_LOCK", EXIT_FAILED, {
+        write_status(ctx, "SKIPPED", f"{mode}_LOCK", EXIT_FAILED, {
             "engine_status": "NOT_RUN",
             "report_status": "NOT_RUN",
             "delivery_status": "NOT_RUN",
@@ -191,7 +209,7 @@ def main() -> int:
         })
         return EXIT_FAILED
     except Exception as exc:
-        write_status(ctx, "FAILED", "RESEND_EXCEPTION", EXIT_FAILED, {
+        write_status(ctx, "FAILED", f"{mode}_EXCEPTION", EXIT_FAILED, {
             "engine_status": "NOT_RUN",
             "report_status": "FAILED",
             "delivery_status": "NOT_RUN",
