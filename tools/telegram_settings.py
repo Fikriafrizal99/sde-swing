@@ -40,7 +40,12 @@ TOPIC_KEYS: dict[str, tuple[str, ...]] = {
         "broker_multiday",
         "broker_multiday_csv",
     ),
-    "final_watchlist": ("final_watchlist", "final_watchlist_detail", "final_watchlist_csv"),
+    "final_watchlist": (
+        "final_watchlist",
+        "final_watchlist_summary",
+        "final_watchlist_detail",
+        "final_watchlist_csv",
+    ),
     "signal_detail": ("signal_detail",),
     "report": ("report", "evaluation", "position_management"),
     "system": ("system", "data_warning", "startup", "source_health", "config_error", "dependency_failure"),
@@ -352,7 +357,10 @@ def status() -> int:
     generic_signal = runtime_value("TELEGRAM_THREAD_SIGNAL_ID")
     if generic_signal:
         print("")
-        print(f"[INFO] TELEGRAM_THREAD_SIGNAL_ID={generic_signal} masih aktif dan dapat meng-override route SIGNAL spesifik.")
+        print(
+            f"[INFO] TELEGRAM_THREAD_SIGNAL_ID={generic_signal} dipertahankan sebagai compatibility fallback; "
+            "route SIGNAL spesifik tetap memiliki prioritas."
+        )
     return 0
 
 
