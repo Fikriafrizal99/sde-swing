@@ -82,6 +82,15 @@ class YahooGlobalMarketProvider:
     def __init__(self, yf_module: Any | None = None):
         self.yf = yf_module if yf_module is not None else yf
 
+    def _result_map(self, raw: pd.DataFrame, symbols: list[str]) -> dict[str, YahooFetchResult]:
+        results: dict[str, YahooFetchResult] = {}
+        for symbol in symbols:
+            frame = normalize_history(_extract_symbol(raw, symbol), symbol)
+            status = "SUCCESS" if not frame.empty else "FETCH_FAILED"
+            error = "" if status == "SUCCESS" else "Yahoo mengembalikan data kosong"
+            results[symbol] = YahooFetchResult(symbol, frame, status, error)
+        return results
+
     def download_batch(
         self,
         symbols: list[str],
@@ -119,11 +128,55 @@ class YahooGlobalMarketProvider:
             )
         except Exception as exc:
             return {symbol: YahooFetchResult(symbol, pd.DataFrame(), "FETCH_FAILED", str(exc)) for symbol in symbols}
-        results: dict[str, YahooFetchResult] = {}
-        for symbol in symbols:
-            frame = normalize_history(_extract_symbol(raw, symbol), symbol)
-            status = "SUCCESS" if not frame.empty else "FETCH_FAILED"
-            error = "" if status == "SUCCESS" else "Yahoo mengembalikan data kosong"
-            results[symbol] = YahooFetchResult(symbol, frame, status, error)
-        return results
+        return self._result_map(raw, symbols)
 
+    def download_batch_range(
+        self,
+        symbols: list[str],
+        *,
+        start: str,
+        end: str,
+        interval: str,
+        timeout: int,
+        threads: bool = True,
+    ) -> dict[str, YahooFetchResult]:
+        """Download a bounded historical range for point-in-time recovery.
+
+        ``end`` follows Yahoo/yfinance's exclusive end-date contract.  The
+        recovery layer groups instruments by their expected last completed
+        session, so this method never needs to request a later market session
+        than the one that was knowable at the historical Market Outlook time.
+        Normal/live ``download_batch`` behavior is intentionally unchanged.
+        """
+        if not symbols:
+            return {}
+        if self.yf is None:
+            message = "Dependency yfinance belum terpasang. Jalankan: pip install -r requirements.txt"
+            return {symbol: YahooFetchResult(symbol, pd.DataFrame(), "FETCH_FAILED", message) for symbol in symbols}
+        try:
+            raw = self.yf.download(
+                tickers=symbols if len(symbols) > 1 else symbols[0],
+                start=start,
+                end=end,
+                interval=interval,
+                auto_adjust=False,
+                progress=False,
+                group_by="ticker",
+                threads=threads,
+                timeout=timeout,
+            )
+        except TypeError:
+            raw = self.yf.download(
+                symbols if len(symbols) > 1 else symbols[0],
+                start=start,
+                end=end,
+                interval=interval,
+                auto_adjust=False,
+                progress=False,
+                group_by="ticker",
+                threads=threads,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            return {symbol: YahooFetchResult(symbol, pd.DataFrame(), "FETCH_FAILED", str(exc)) for symbol in symbols}
+        return self._result_map(raw, symbols)
