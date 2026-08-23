@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate generated Telegram UI previews for length, HTML, and placeholders."""
+"""Validate current Telegram UI previews for length, HTML, and contract drift."""
 from __future__ import annotations
 
 import argparse
@@ -16,6 +16,7 @@ FORBIDDEN_PATTERNS = [
     re.compile(r"\bNaN\b", re.I),
     re.compile(r"\\n|\\t"),
 ]
+SUPERSEDED_REPORT_TYPES = {"daily_signal_recap", "closing_bell"}
 
 
 class TelegramHtmlValidator(HTMLParser):
@@ -44,6 +45,17 @@ class TelegramHtmlValidator(HTMLParser):
             self.errors.append("unclosed tags: " + ", ".join(self.stack))
 
 
+def read_manifest(folder: Path) -> dict:
+    path = folder / "PREVIEW_MANIFEST.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--preview-dir", default="data/output/telegram_ui_preview/scheduled")
@@ -52,8 +64,10 @@ def main() -> int:
 
     folder = (ROOT / args.preview_dir).resolve()
     files = sorted(folder.glob("*.txt"))
+    manifest = read_manifest(folder)
     results = []
     errors: list[str] = []
+
     for path in files:
         text = path.read_text(encoding="utf-8")
         validator = TelegramHtmlValidator()
@@ -69,14 +83,40 @@ def main() -> int:
             file_errors.append("missing SDE SWING header")
         if "━━━━━━━━━━━━━━━━━━━━━━━━━━" not in text:
             file_errors.append("missing standard separator")
-        results.append({"file": path.name, "chars": len(text), "status": "PASS" if not file_errors else "FAIL", "errors": file_errors})
+        results.append({
+            "file": path.name,
+            "chars": len(text),
+            "status": "PASS" if not file_errors else "FAIL",
+            "errors": file_errors,
+        })
         errors.extend(f"{path.name}: {item}" for item in file_errors)
+
+    expected_count = manifest.get("report_count")
+    if not isinstance(expected_count, int):
+        errors.append("PREVIEW_MANIFEST.json missing integer report_count")
+    elif len(files) != expected_count:
+        errors.append(f"preview file count mismatch: {len(files)} != manifest {expected_count}")
+
+    contract = str(manifest.get("presentation_contract") or "")
+    if contract != "CURRENT_ENHANCED_RUNTIME_ONLY":
+        errors.append(f"unexpected presentation contract: {contract or 'MISSING'}")
+
+    manifest_types = {
+        str(item.get("report_type") or "")
+        for item in manifest.get("reports", [])
+        if isinstance(item, dict)
+    }
+    stale = sorted(SUPERSEDED_REPORT_TYPES & manifest_types)
+    if stale:
+        errors.append("superseded report types present: " + ", ".join(stale))
 
     report = {
         "preview_dir": str(folder),
         "file_count": len(files),
+        "expected_count": expected_count,
         "max_length": args.max_length,
-        "status": "PASS" if not errors and len(files) == 7 else "FAIL",
+        "presentation_contract": contract,
+        "status": "PASS" if not errors else "FAIL",
         "results": results,
         "errors": errors,
     }
