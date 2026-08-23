@@ -62,7 +62,10 @@ class UnifiedSdeLauncherTests(unittest.TestCase):
 
     def test_telegram_test_is_separate_from_engine(self) -> None:
         source = (ROOT / "maintenance" / "TEST_TELEGRAM.bat").read_text(encoding="utf-8-sig")
-        self.assertIn("telegram_bot.py", source)
+        self.assertIn("tools\\telegram_settings.py", source)
+        self.assertIn("validate-credentials", source)
+        self.assertIn("test-all", source)
+        self.assertNotIn("telegram_bot.py", source)
         self.assertNotIn("run_sde_job_integrated.py", source)
 
     def test_status_helper_keeps_split_engine_report_delivery_states(self) -> None:
