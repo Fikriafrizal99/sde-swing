@@ -18,7 +18,7 @@ IDX -> Playwright -> normalize/dedup -> official Telegram NEWS -> mark official 
                                                         |
                                                     Groq summary
                                                         |
-                                             separate Telegram NEWS message
+                                             edit official Telegram NEWS message
 ```
 
 The official IDX message is always the first delivery. AI generation is eligible only
@@ -50,11 +50,14 @@ and AI-reader safety layers.
 
 ## Configuration
 
-AI is enabled in `config/idx_disclosure.json`, but it becomes active only when both conditions
+AI is enabled in `config/idx_disclosure.json`, but it becomes active only when all conditions
 are met:
 
 1. `pypdf` is installed (`pip install -r requirements.txt`).
-2. `GROQ_API_KEY` is available in the process environment or local `.env` file.
+2. `GROQ_IDX_API_KEY` is available in the process environment or local `.env` file. This is
+  the key named by `ai_reader.api_key_env`; do not assume `GROQ_API_KEY` is read.
+3. The watcher is running in live delivery mode with `--telegram` (or
+  `delivery.enabled=true`). Dry-run mode and `--no-ai` deliberately disable AI.
 
 Optional model override:
 
@@ -85,6 +88,35 @@ python run_idx_disclosure_watcher.py --telegram --transport playwright --ai-back
 ```
 
 Backfill is opt-in. Normal startup does not summarize historical disclosures.
+
+## Why AI Can Appear Intermittent
+
+AI is downstream of the official IDX notification. A new disclosure is queued only after it
+is stored, and generation is eligible only after the official Telegram delivery succeeds.
+The first poll on an empty database seeds a baseline without delivery or AI, so existing
+announcements are not summarized automatically.
+
+The default limit is one document per poll. Pending work is retried after 60, 300, and 900
+seconds, with a maximum of three generation attempts. Overnight polling can therefore make
+the queue appear idle for up to 600 seconds even when the process is healthy.
+
+Use the queue state command to distinguish the cases:
+
+```powershell
+python tools/check_idx_ai_state.py --limit 20
+```
+
+| Queue state or error | Meaning |
+| --- | --- |
+| No queue row | AI was disabled, the row was baseline-seeded, or official delivery has not succeeded. |
+| `PENDING` / `RETRY` | Work is waiting for its next poll or retry time. |
+| `SENT` | Summary was generated and delivered successfully. |
+| `PERMANENT_FAILED` with `GROQ_HTTP_413` | Extracted document text exceeded the model/service token limit; reduce `max_input_chars` or use a model/tier with a higher limit. |
+| `PERMANENT_FAILED` with `PDF_PARSE_FAILED` | The IDX file is malformed, scanned, or not a parseable PDF. |
+| `PERMANENT_FAILED` with `IDX document HTTP 404` | The IDX attachment link was unavailable or rejected by the browser session. |
+
+AI failures do not block the official IDX message. A permanent failure must be re-queued
+explicitly after correcting the document, model, or configuration; it will not retry forever.
 
 ## Runtime telemetry
 

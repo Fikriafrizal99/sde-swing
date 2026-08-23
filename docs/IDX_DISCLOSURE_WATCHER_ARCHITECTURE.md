@@ -1,7 +1,9 @@
 # IDX Disclosure Watcher V1 — Architecture
 
 ## Objective
-Provide near-real-time notification of new IDX listed-company announcements to Telegram, without scoring, sentiment, trade recommendations, AI interpretation, Brave Search, or writes to SDE decision engines.
+Provide near-real-time notification of new IDX listed-company announcements to Telegram, with
+an optional downstream factual AI document summary. The watcher never performs scoring,
+sentiment, trade recommendations, Brave Search, or writes to SDE decision engines.
 
 ## Source Contract
 Primary endpoint:
@@ -56,6 +58,15 @@ SQLite repository / dedup
       +-- seen -> skip
       |
       +-- new -> Telegram formatter -> existing Telegram delivery -> mark delivered
+                                      |
+                                      v
+                             optional durable AI queue
+                                      |
+                                      v
+                             PDF extraction -> Groq
+                                      |
+                                      v
+                             edit original Telegram message
 ```
 
 ## Module Boundary
@@ -69,6 +80,8 @@ modules/idx_disclosure/
   repository.py    # SQLite state/dedup only
   formatter.py     # Telegram message contract only
   watcher.py       # orchestration; no SDE decision writes
+      ai_reader.py     # optional local PDF extraction and Groq summary
+      ai_state.py      # durable AI generation/delivery queue
 
 run_idx_disclosure_watcher.py
 config/idx_disclosure.json
@@ -76,7 +89,9 @@ data/state/idx_disclosure/idx_disclosures.db
 logs/idx_disclosure.log
 ```
 
-The watcher is an information service and must not import or mutate `decision_engine`, `broker_fusion`, technical scoring, entry plans, or AI interpretation.
+The watcher is an information service and must not import or mutate `decision_engine`,
+`broker_fusion`, technical scoring, entry plans, or trading decisions. Its optional AI reader
+may summarize document facts only, and writes only to the isolated IDX AI queue.
 
 ## Polling Strategy
 
@@ -182,7 +197,7 @@ Rules:
 7. Multiple attachments are listed in deterministic order.
 8. Failed delivery remains retryable.
 9. IDX failure does not affect existing SDE jobs.
-10. No Brave/AI call is made by this module.
+10. Optional AI calls are downstream of successful official delivery and cannot block it.
 
 ## Rollout Plan
 Phase 1: architecture + contracts + disabled scaffolding.
