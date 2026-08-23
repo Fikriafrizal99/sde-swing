@@ -1,247 +1,155 @@
 # Watchlist AI Interpretation Architecture
 
-Status: **TARGET ARCHITECTURE — implementation not yet applied**  
-Branch: `testing`  
+Status: **ACTIVE ON `testing`**  
 Scope: **Final Watchlist AI interpretation only**
 
-## 1. Purpose
+## Purpose
 
-SDE Swing will expose a dedicated AI interpretation path for Final Watchlist symbols.
-The AI explains how it reads the already-final SDE facts as a swing-trading setup.
+Watchlist AI is a dedicated downstream interpretation lane for the completed
+Final Watchlist. It explains how an AI reads the already-final SDE facts as a
+swing-trading setup.
 
-The AI is an **interpreter, not a decision engine**.
+It is an **interpreter, not a decision engine**.
 
-It may connect technical structure, chart context, broker evidence, multi-day flow,
-execution plan, market regime, and risk into a natural-language opinion. It must
-not change any SDE-owned result.
+It may connect technical structure, the generated chart, execution plan, broker
+summary/multi-day evidence, market context and risk into a natural Indonesian
+narrative. It may quote official SDE numbers in equivalent presentation forms,
+but it may not change or replace any SDE-owned result.
 
-The official Final Watchlist path and its approved Telegram presentation remain
-independent from this subsystem.
+## Runtime boundary
 
-## 2. Isolation from other AI systems
-
-This subsystem is intentionally isolated from every existing non-watchlist AI path.
-In particular it must **not modify, route through, replace, or share runtime state**
-with:
-
-- News Monitor AI / market-news interpretation;
-- IDX Disclosure watcher AI document reader;
-- IDX Disclosure queue, PDF reader, summary formatter, message-edit flow, or state;
-- portfolio AI interpretation;
-- any future AI consumer outside Final Watchlist.
-
-The existing IDX Disclosure AI reader remains downstream of official IDX delivery,
-keeps its own configuration and failure policy, and is not part of this architecture.
-
-Watchlist AI must have its own namespace for config, cache/artifacts, status, provider
-routing, Telegram report type, and tests. Provider credentials may reference the same
-environment secret names where operationally desired, but the service instances,
-budgets, retry state, cache keys, prompts, and delivery behavior remain independent.
-
-## 3. Core architecture
+The official Final Watchlist finishes first and remains authoritative:
 
 ```text
-SDE ENGINE / FINAL WATCHLIST
+SDE engine / broker / decision / exit-plan stages
         |
         v
-Validated Final Watchlist Facts
+validated Final Watchlist facts
         |
-        +-------------------------------+
-        |                               |
-        v                               v
-OFFICIAL SDE PATH                 WATCHLIST AI PATH
-Final Watchlist builder           WatchlistAIService
-        |                               |
-final_watchlist_ui.py             WatchlistAIContextBuilder
-        |                               |
-ReportPayload                     WatchlistAIProviderRouter
-        |                               |
-delivery.py                       AI #1 -> AI #2 -> AI #3
-        |                               |
-TelegramRouter                    WatchlistAIResponseValidator
-        |                               |
-        v                               v
-Topic 9                           Watchlist AI artifact
-SDE OFFICIAL                            |
-                                      watchlist_ai_ui.py
-                                            |
-                                      ReportPayload
-                                            |
-                                      delivery.py
-                                            |
-                                      TelegramRouter
-                                            |
-                                            v
-                                      dedicated AI topic
+        v
+final_watchlist_ui.py
+        |
+        v
+ReportPayload -> delivery.py -> Telegram Topic 9
+        |
+        | official child returns SUCCESS
+        v
+---------------- WATCHLIST AI BOUNDARY ----------------
+        |
+        v
+tools/run_watchlist_ai.py
+        |
+        v
+WatchlistAIService
+        |
+        v
+provider #1 -> provider #2 -> provider #3
+        |
+        v
+Watchlist AI numeric/fact validator
+        |
+        v
+isolated JSON artifact + manifest
+        |
+        v
+watchlist_ai_ui.py
+        |
+        v
+ReportPayload -> delivery.py -> dedicated AI topic
 ```
 
-Turning off the complete Watchlist AI subsystem must leave the official Final
-Watchlist result, artifacts, Telegram output, lifecycle, database/archive, and engine
-behavior unchanged.
+`tools/run_final_watchlist_entrypoint.py` invokes the AI child only after the
+canonical Final Watchlist child exits successfully. The AI child is explicitly
+non-blocking and its return value never replaces the official Final Watchlist
+return code.
 
-## 4. Runtime ordering
+If Final Watchlist fails, Watchlist AI is not launched.
 
-The required order is:
+If Watchlist AI fails, Final Watchlist remains successful.
+
+## Isolation from News and IDX Disclosure AI
+
+Watchlist AI is not an extension of the News or IDX Disclosure AI path.
+
+It must not modify or reuse their runtime state, queue, cache, prompt, retry
+budget, delivery semantics, document/PDF reader, message-edit flow, or report
+artifact.
+
+The following existing paths remain outside this subsystem:
+
+- News Monitor / market-news processing;
+- `modules/idx_disclosure/`;
+- IDX Disclosure PDF/document AI reader;
+- IDX Disclosure queue/state/message-edit flow;
+- portfolio AI interpretation.
+
+Watchlist AI owns:
 
 ```text
-1. SDE engine stages finish
-2. Final Decision and Entry/Exit Plan finish
-3. Final Watchlist facts are validated
-4. Official Final Watchlist artifacts are built
-5. Official Final Watchlist is delivered to Topic 9
-6. Official Final Watchlist is considered successful
-
----------------- OFFICIAL SDE BOUNDARY ----------------
-
-7. Watchlist AI starts
-8. Build one AI context package per selected symbol
-9. Optionally attach the already-generated Final Watchlist chart
-10. Try AI provider #1
-11. On provider failure, try provider #2
-12. On provider failure, try provider #3
-13. Validate the AI response against SDE facts
-14. Persist the separate Watchlist AI artifact/status
-15. Format the Watchlist AI Telegram message
-16. Deliver only to the dedicated Watchlist AI topic
+modules/ai_interpretation/watchlist/
+data/state/ai_cache/watchlist/
+data/output/ai_interpretation/watchlist/
+tools/run_watchlist_ai.py
+modules/telegram/watchlist_ai_ui.py
+Telegram category: AI
 ```
 
-Steps 7-16 are **non-blocking** relative to steps 1-6.
+Production Watchlist AI provider credentials also use dedicated environment
+names so they are not implicitly coupled to credentials used by another AI
+consumer.
 
-If every AI provider fails:
+## Official facts consumed
+
+The primary source is the completed official Final Watchlist CSV for the exact
+trade date:
 
 ```text
-Final Watchlist: SUCCESS
-Watchlist AI: ALL_PROVIDERS_FAILED / SKIPPED
+data/output/final_watchlist/sde-final-watchlist-<trade_date>.csv
 ```
 
-No failure in Watchlist AI may downgrade, roll back, or retry the official Final
-Watchlist delivery.
+The context builder exposes only approved Final Watchlist facts such as:
 
-## 5. Read-only context package
+- ticker and trade date;
+- SDE decision and final score;
+- current/reference price;
+- entry zone, stop loss, TP1, TP2 and RR;
+- trend, technical state/score/quality, momentum, RSI and volume facts;
+- support/resistance and phase when present in the official artifact;
+- broker state/score/net flow;
+- buyer/seller days and concentration;
+- bandar/buyer cost and distance to cost;
+- top buyers/sellers;
+- multi-day broker flow, persistence and alignment;
+- broker period/coverage metadata;
+- market regime and sector state;
+- exchange status/veto/risk flags;
+- source/data-quality metadata.
 
-The AI context is assembled only from validated/current SDE artifacts for the same
-trade date and symbol.
+No independent web search or second market-data lookup is performed by
+Watchlist AI.
 
-Expected context groups:
+## Chart contract
+
+When an existing Final Watchlist chart is available at the configured chart
+output root, a vision-capable provider may receive it as additional context.
+
+The chart is visual context only:
 
 ```text
-identity
-  symbol
-  trade_date
-
-final_result
-  decision
-  final_score
-
-technical
-  trend
-  technical_state
-  technical_score / quality
-  momentum
-  RSI
-  volume facts
-  support
-  resistance
-  chart reference when available
-
-plan
-  current/reference price
-  entry_low
-  entry_high
-  stop_loss
-  target_1
-  target_2
-  risk_reward
-
-broker
-  broker_state
-  broker_score
-  net_flow
-  buy_days / sell_days
-  buyer/seller concentration
-  bandar_buy_cost
-  distance_to_buy_cost
-  top_buyers
-  top_sellers
-  multi_day_flow
-  persistence / alignment
-  period/coverage metadata
-
-market_context
-  market_regime
-  sector_state
-  exchange_status
-  exchange_veto
-  risk_flags
-  data_quality / source status
+chart interpretation        -> visual/structural context
+structured SDE facts        -> numeric authority
 ```
 
-No web search or independent market-data lookup is required by Watchlist AI. The
-model explains the SDE package supplied to it.
+An AI may discuss what it sees in the chart, but an official numeric level must
+come from the structured context. It may not manufacture a new Entry, SL, TP,
+support, resistance or other SDE level from the picture.
 
-## 6. Chart rule
+Providers without vision support still receive the same structured facts.
 
-The Final Watchlist chart may be provided to a vision-capable AI provider as
-additional visual context.
+## Provider failover
 
-The chart is **not an independent source of official numeric levels**.
-
-- visual chart reading may help the model discuss structure, momentum, compression,
-  rejection, trend shape, or price behavior;
-- official numbers such as Entry, Stop Loss, TP, support, resistance, scores, and
-  broker values come from the SDE context package;
-- the AI may quote those official numbers in its narrative;
-- the AI may not create a replacement official level from visual estimation.
-
-Providers without vision support receive the same structured facts without the image.
-
-## 7. AI permissions and immutable facts
-
-AI may:
-
-- explain and connect the supplied facts;
-- express a perspective such as attractive, cautious, not comfortable chasing,
-  waiting for confirmation, or liking/disliking the risk placement;
-- quote official SDE numbers exactly as supplied;
-- discuss why technical and broker evidence agree or conflict;
-- explain what confirmation it would prefer to see next.
-
-AI must never:
-
-- modify Decision, Final Score, Entry, Stop Loss, TP1, TP2, Risk/Reward, technical
-  score, broker score, market regime, or other engine-owned fields;
-- create an AI Decision, AI Score, probability of success, or replacement signal;
-- invent a new official Entry/SL/TP/support/resistance value;
-- write into engine artifacts, lifecycle state, portfolio state, canonical data, or
-  the official Final Watchlist artifact;
-- affect News or IDX Disclosure AI output/state.
-
-The existing immutable-field and unsupported-number validation concept should be
-retained and adapted to this dedicated subsystem.
-
-## 8. Provider failover
-
-Watchlist AI supports exactly the configured ordered provider chain. Provider names
-and models are configuration, not hard-coded runtime assumptions.
-
-Example target configuration shape:
-
-```json
-{
-  "watchlist_ai": {
-    "enabled": true,
-    "non_blocking": true,
-    "max_symbols": 5,
-    "providers": [
-      {"provider": "OPENAI", "model": "<model>", "priority": 1},
-      {"provider": "GEMINI", "model": "<model>", "priority": 2},
-      {"provider": "GROQ", "model": "<model>", "priority": 3}
-    ]
-  }
-}
-```
-
-Execution:
+The active provider chain is configuration-driven and sequential. At most three
+configured providers are used:
 
 ```text
 provider #1 SUCCESS -> stop
@@ -252,89 +160,102 @@ provider #3 SUCCESS -> stop
 provider #3 FAIL    -> ALL_PROVIDERS_FAILED
 ```
 
-Failures include timeout, quota/rate limit, transport error, invalid/malformed
-response, validation rejection, missing key, or unavailable model.
+Current repository defaults are:
 
-Failover state belongs only to Watchlist AI. It must not consume or modify retry
-budgets/state used by News or IDX Disclosure AI.
+1. OpenAI — vision enabled.
+2. Gemini — vision enabled.
+3. Groq — structured-facts fallback, vision disabled by default.
 
-## 9. AI response contract
+Provider/model order can be changed in `config/scheduler.json: watchlist_ai`
+without changing engine code.
 
-Telegram output should be natural explanation, not a checklist-style second SDE
-report.
+A provider attempt is considered failed on conditions such as:
 
-The provider response can remain structurally small:
+- missing Watchlist-AI-specific API key;
+- rate limit/quota error;
+- timeout/transport/server error;
+- empty/malformed response;
+- unsupported response fields;
+- response rejected by the numeric/fact validator.
+
+Provider attempt history is persisted in the Watchlist AI artifact/manifest.
+
+## Dedicated credentials
+
+The active configuration expects these local environment variables:
+
+```text
+WATCHLIST_AI_OPENAI_API_KEY=
+WATCHLIST_AI_GEMINI_API_KEY=
+WATCHLIST_AI_GROQ_API_KEY=
+TELEGRAM_THREAD_AI_ID=
+```
+
+These values belong in the local environment/`.env`, never in Git-tracked
+configuration.
+
+Using dedicated variable names prevents Watchlist AI from automatically
+consuming another subsystem's API-key configuration. An operator may still
+choose to place the same provider credential value in more than one variable,
+but that is an explicit deployment choice rather than runtime coupling.
+
+## AI response contract
+
+Provider output is deliberately small structurally:
 
 ```json
 {
-  "analysis": "2-4 natural paragraphs explaining the AI perspective",
-  "conclusion": "one concise concluding sentence"
+  "analysis": "natural explanation based on supplied SDE facts",
+  "conclusion": "concise closing view"
 }
 ```
 
-The analysis may mention any relevant supplied SDE numbers, but every numeric claim
-must be traceable to the Watchlist AI context package.
-
-## 10. Telegram presentation
-
-Dedicated report type:
-
-```text
-watchlist_ai_interpretation
-```
-
-Dedicated topic label/category:
-
-```text
-ai_watchlist / AI
-```
-
-Target message shape:
+The Telegram formatter does not turn this into a second checklist-style SDE
+report. The intended presentation is:
 
 ```text
 🤖 AI VIEW — ANTM
 📅 21 Agustus 2026 | SDE: WATCH
 
-<2-4 natural explanatory paragraphs based on chart + technical + plan + broker +
-market context. Relevant official numbers may be quoted.>
+<natural AI explanation based on chart + SDE facts>
 
-Kesimpulan: <short AI perspective>
+Kesimpulan: <short AI view>
 ```
 
-The Telegram report intentionally does not repeat issuer full name, provider audit
-metadata, source paths, generated timestamp, or the complete official Final Watchlist
-card. Those belong in artifacts/logs, not the reader-facing message.
+Ticker, Final Watchlist trade date and official SDE decision are displayed
+explicitly. Full company names are intentionally omitted.
 
-The displayed date is the Final Watchlist **trade_date**, not the wall-clock time at
-which AI generation happened. This keeps historical recovery/resend unambiguous.
+## Numeric policy
 
-## 11. Telegram routing
+AI is allowed to write numbers when they come from the supplied SDE context.
+This includes price, Entry/SL/TP, RR, scores, RSI, broker values, net flow,
+concentration, support/resistance and other factual numeric fields.
 
-Official routing remains unchanged:
+The value may be presented naturally without changing its meaning. For example:
 
 ```text
-final_watchlist_summary -> Topic 9
-final_watchlist_detail  -> Topic 9
-final_watchlist_csv     -> Topic 9
+42600000000       -> Rp42,6 miliar
+0.7502             -> 75,02%
+3120               -> 3.120
 ```
 
-Watchlist AI receives its own route:
+The Watchlist-AI-only validator permits those equivalent transformations while
+rejecting unsupported new numbers. Unit scaling is accepted only when the
+corresponding magnitude unit is present, preventing a broker nominal from
+silently authorizing an unrelated price level.
 
-```text
-watchlist_ai_interpretation -> dedicated Watchlist AI topic
-```
+AI may not:
 
-The current centralized `ReportPayload -> delivery.py -> TelegramRouter` delivery
-boundary should be reused. A second Telegram sender must not be introduced.
+- change an official number;
+- invent a new price/level;
+- create AI Entry/SL/TP;
+- create AI Score or success probability;
+- replace the SDE decision;
+- write back into SDE artifacts.
 
-News and IDX Disclosure routes remain untouched.
+## Artifact and cache
 
-## 12. Artifact and audit boundary
-
-Watchlist AI artifacts are separate from official SDE artifacts and from every other
-AI subsystem.
-
-Target namespace:
+Per-symbol results are stored separately from all official SDE artifacts:
 
 ```text
 data/output/ai_interpretation/watchlist/<trade_date>/
@@ -342,153 +263,127 @@ data/output/ai_interpretation/watchlist/<trade_date>/
   manifest.json
 ```
 
-Target state/cache namespace:
+Each symbol artifact records:
+
+- symbol and trade date;
+- official SDE decision;
+- AI status;
+- provider/model actually used;
+- analysis and conclusion;
+- ordered provider attempts and failure reason summaries;
+- context hash;
+- read-only source context;
+- generation timestamp.
+
+Cache is isolated at:
 
 ```text
 data/state/ai_cache/watchlist/
-data/state/watchlist_ai/
 ```
 
-They must not share cache directories, queue state, or manifests with IDX Disclosure
-AI or News AI.
+A cache key includes provider, model and context hash.
 
-Per-symbol artifact should include at least:
+## Telegram routing
+
+Watchlist AI has category `AI` in `TelegramRouter`.
+
+Its dedicated topic is resolved from:
 
 ```text
-symbol
-trade_date
-sde_decision
-source/context signature
-provider_used
-model_used
-analysis
-conclusion
-generated_at
-validation_status
+TELEGRAM_THREAD_AI_ID
 ```
 
-The manifest may retain provider attempts and sanitized failure reasons for audit.
-Provider attempt details are not required in the Telegram message.
-
-## 13. Proposed module ownership
-
-Target modules:
+`tools/run_watchlist_ai.py` refuses main-chat fallback. If the AI topic ID is
+missing, no AI message is allowed to leak into Topic 9, News/IDX, Signal,
+System, or generic Report topics. The result is recorded as:
 
 ```text
-modules/ai_interpretation/watchlist/
-  __init__.py
-  service.py
-  context.py
-  provider_router.py
-  validator.py
-  providers/
-    base.py
-    openai_provider.py
-    gemini_provider.py
-    groq_provider.py
-
-modules/telegram/watchlist_ai_ui.py
-modules/job_runner/watchlist_ai.py
+SKIPPED_AI_TOPIC_NOT_CONFIGURED
 ```
 
-Existing general/legacy `gemini_interpreter.py` and `groq_interpreter.py` must not be
-deleted during the first implementation. They may still serve existing report or
-compatibility contracts. Migration/retirement is a separate cleanup decision.
+Official Final Watchlist continues to use Topic 9 unchanged.
 
-Existing IDX Disclosure modules under `modules/idx_disclosure/` are explicitly out
-of scope and must not be changed for Watchlist AI implementation.
+## AI failure notification
 
-## 14. Configuration ownership
+`watchlist_ai.notify_on_failure=true` enables informational Telegram output when
+all three providers fail for one or more symbols or the isolated AI subsystem
+cannot consume its official source artifact.
 
-New Watchlist AI configuration must use a dedicated top-level/subtree namespace such
-as `watchlist_ai`.
+Example semantics:
 
-Do not repurpose:
+```text
+⚠️ WATCHLIST AI — INFORMASI
+📅 21 Agustus 2026
 
-- `idx_disclosure.ai_reader`;
-- News Monitor configuration;
-- disclosure queue/state settings;
-- unrelated portfolio AI settings;
-- generic legacy AI settings in a way that changes existing callers.
+Interpretasi AI gagal untuk: BBCA, ANTM.
+Semua provider gagal atau responsnya ditolak validator.
 
-Existing configuration may remain in place until the Watchlist AI path is migrated
-and verified.
+Final Watchlist resmi tetap berhasil dan tidak ada keputusan/level SDE yang diubah.
+```
 
-## 15. Regression and acceptance requirements
+This notification uses the same dedicated AI topic. It is informational only.
+It must not trigger a Final Watchlist rollback, recalculation or scheduler
+failure.
 
-Implementation is acceptable only if all of the following are proven:
+## Legacy embedded Final Watchlist AI
 
-1. Engine/quant/canonical/lifecycle protected files are unchanged.
-2. Official Final Watchlist facts are identical before and after the change.
-3. Official Final Watchlist Topic 9 text/artifacts remain unchanged.
-4. Disabling Watchlist AI produces exactly the normal official runtime behavior.
-5. One failed AI provider falls through only to the next Watchlist AI provider.
-6. Three failed AI providers do not fail Final Watchlist.
-7. Unsupported/new numeric values in AI output are rejected.
-8. Official SDE numeric values may be quoted unchanged.
-9. Watchlist AI routes only to its dedicated Telegram topic.
-10. News Monitor behavior/routing is unchanged.
-11. IDX Disclosure watcher, AI reader, queue, PDF processing, message edit flow,
-    routing, and state are unchanged.
-12. No Watchlist AI artifact/cache/status file is written into a News/IDX namespace.
-13. Historical trade_date remains the displayed analysis date even when generated on
-    a later wall-clock date.
+The old presentation interpreter remains available for unrelated legacy report
+behavior, but its Final Watchlist call budget is now zero:
 
-## 16. Implementation phases
+```text
+enhanced_reporting.ai_interpretation.max_watchlist_calls = 0
+```
 
-### Phase A — architecture and contracts
+The compatibility `GeminiInterpreter()` facade returns the existing Groq
+interpreter with a zero Final Watchlist budget. This prevents the official
+Final Watchlist builder from making its old embedded Final Watchlist AI calls.
 
-- this document;
-- architecture boundary reference;
-- no runtime behavior change.
+The dedicated downstream `WatchlistAIService` is now the only intended AI path
+for Final Watchlist interpretation.
 
-### Phase B — isolated Watchlist AI core
+## Operational sequence
 
-- dedicated context model;
-- provider interface/router;
-- validator;
-- artifact/status writer;
-- unit tests;
-- no Telegram integration yet.
+Normal canonical Final Watchlist execution is now:
 
-### Phase C — provider adapters
+```text
+1. Run official Final Watchlist as before.
+2. Build official report/chart/CSV as before.
+3. Deliver official Final Watchlist as before.
+4. Official child returns success.
+5. Launch tools/run_watchlist_ai.py for the same trade date.
+6. Read official Final Watchlist CSV and existing chart.
+7. Interpret Top N (default 5) through sequential provider failover.
+8. Validate the response against SDE facts.
+9. Persist AI artifact/manifest.
+10. Deliver natural AI narrative to the dedicated AI topic.
+11. If all providers fail, send informational AI failure notice instead.
+```
 
-- OpenAI adapter;
-- Gemini adapter;
-- Groq adapter;
-- ordered failover tests;
-- independent Watchlist AI budgets/cache.
+Turning `watchlist_ai.enabled` off leaves the official Final Watchlist flow
+unchanged.
 
-### Phase D — presentation and routing
+## Regression requirements
 
-- `watchlist_ai_ui.py`;
-- dedicated `watchlist_ai_interpretation` ReportPayload;
-- dedicated Telegram route/topic;
-- official Topic 9 regression proof.
+Changes to Watchlist AI must preserve all of the following:
 
-### Phase E — runtime integration
+- no engine/quant/canonical/lifecycle modifications;
+- no change to Final Watchlist decision/score/price/plan outputs;
+- no change to approved Topic 9 Final Watchlist presentation;
+- no change to News Monitor behavior;
+- no change under `modules/idx_disclosure/`;
+- no Watchlist AI main-chat fallback;
+- AI starts only after official Final Watchlist success;
+- official Final Watchlist failure prevents AI launch;
+- all-provider failure returns an AI status/artifact instead of raising into SDE;
+- supported numeric presentation transforms are accepted;
+- invented numeric levels are rejected.
 
-- invoke Watchlist AI only after successful official Final Watchlist construction/
-  delivery boundary;
-- non-blocking status handling;
-- end-to-end regression including News and IDX Disclosure isolation.
+Dedicated regression coverage lives in:
 
-## 17. Non-goals
+- `tests/test_watchlist_ai_isolation.py`
+- `tests/test_watchlist_ai_service.py`
+- `tests/test_watchlist_ai_runner.py`
+- `tests/test_watchlist_ai_numeric_validator.py`
 
-This project does not redesign or modify:
-
-- Decision Engine;
-- Technical Feature Engine;
-- Candidate Selector;
-- Broker Fusion or Broker Multi-Day calculations;
-- Entry/Exit Engine;
-- lifecycle/portfolio logic;
-- canonical/source ownership;
-- database archive semantics;
-- Market Outlook AI in the first implementation;
-- News Monitor AI;
-- IDX Disclosure watcher or its AI document reader.
-
-Any future reuse of the Watchlist provider router by another AI subsystem requires a
-separate architecture decision and regression scope. It is not implicit in this
-implementation.
+The full repository CI/release validators remain authoritative for proving that
+frozen engine and runtime contracts were not changed.
