@@ -18,7 +18,7 @@ echo [0] Kembali
 echo.
 echo Catatan: Final Watchlist tidak akan dibuat ulang dengan melewati dependency.
 echo          Recovery hanya valid jika Market Outlook, Post Market, dan broker
-necho          context untuk trade date yang sama memang tersedia dan valid.
+echo          context untuk trade date yang sama memang tersedia dan valid.
 echo.
 set "MODE="
 set /p "MODE=Pilih mode: "
