@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import math
-from datetime import date, datetime
+import re
+from datetime import date
 from typing import Any, Mapping
 
 
@@ -15,7 +16,7 @@ _MONEY_FIELDS = {
 }
 _PERCENT_RATIO_FIELDS = {
     "broker_buy_ratio", "broker_sell_ratio", "buyer_concentration", "seller_concentration",
-    "broker_coverage", "broker_period_coverage", "coverage",
+    "broker_coverage", "coverage",
 }
 _PERCENT_VALUE_FIELDS = {
     "entry_distance_pct", "distance_to_buy_cost", "distance_to_buyer_avg_pct",
@@ -47,6 +48,17 @@ _ENUMS = {
     "NOT_AVAILABLE": "data belum tersedia",
     "AVAILABLE": "tersedia",
     "NORMAL": "normal",
+}
+_FIELD_TOKENS = {
+    "target_1": "TP1",
+    "target_2": "TP2",
+    "stop_loss": "stop loss",
+    "active_stop_loss": "stop loss aktif",
+    "entry_low": "batas bawah entry",
+    "entry_high": "batas atas entry",
+    "broker_net_flow": "net flow broker",
+    "broker_alignment": "keselarasan broker",
+    "risk_reward": "risk-reward",
 }
 
 
@@ -91,9 +103,7 @@ def _id_number(value: float, decimals: int = 2) -> str:
 
 def _price(value: Any) -> str:
     rounded = _round_idx_price(value)
-    if rounded is None:
-        return ""
-    return _id_number(rounded, 0)
+    return _id_number(rounded, 0) if rounded is not None else ""
 
 
 def _money(value: Any) -> str:
@@ -122,16 +132,12 @@ def _percent(value: Any, *, ratio: bool) -> str:
 
 def _score(value: Any) -> str:
     number = _number(value)
-    if number is None:
-        return ""
-    return f"{_id_number(number, 1)}/100"
+    return f"{_id_number(number, 1)}/100" if number is not None else ""
 
 
 def _rr(value: Any) -> str:
     number = _number(value)
-    if number is None:
-        return ""
-    return f"1:{_id_number(number, 2)}"
+    return f"1:{_id_number(number, 2)}" if number is not None else ""
 
 
 def _date_label(value: Any) -> str:
@@ -157,18 +163,11 @@ def _human_enum(value: Any) -> Any:
     if isinstance(value, Mapping):
         result: dict[str, Any] = {}
         key_aliases = {
-            "broker": "broker",
-            "code": "broker",
-            "name": "broker",
-            "value": "nilai",
-            "net_value": "nilai",
-            "amount": "nilai",
-            "avg_price": "harga rata-rata",
-            "average_price": "harga rata-rata",
-            "classification": "klasifikasi",
-            "broker_type": "klasifikasi",
-            "type": "klasifikasi",
-            "origin": "klasifikasi",
+            "broker": "broker", "code": "broker", "name": "broker",
+            "value": "nilai", "net_value": "nilai", "amount": "nilai",
+            "avg_price": "harga rata-rata", "average_price": "harga rata-rata",
+            "classification": "klasifikasi", "broker_type": "klasifikasi",
+            "type": "klasifikasi", "origin": "klasifikasi",
         }
         for key, item in value.items():
             label = key_aliases.get(str(key), str(key).replace("_", " "))
@@ -192,17 +191,74 @@ def _human_enum(value: Any) -> Any:
     return text
 
 
+def _formatted_fact(field: str, value: Any) -> str:
+    if field in _PRICE_FIELDS:
+        return _price(value)
+    if field in _MONEY_FIELDS:
+        return _money(value)
+    if field in _PERCENT_RATIO_FIELDS:
+        return _percent(value, ratio=True)
+    if field in _PERCENT_VALUE_FIELDS:
+        return _percent(value, ratio=False)
+    if field in _SCORE_FIELDS:
+        return _score(value)
+    if field == "risk_reward":
+        return _rr(value)
+    if field == "rsi":
+        number = _number(value)
+        return _id_number(number, 2) if number is not None else ""
+    if field == "volume_ratio_ma20":
+        number = _number(value)
+        return f"{_id_number(number, 2)}x" if number is not None else ""
+    return ""
+
+
+def _human_note(value: Any, facts: Mapping[str, Any]) -> Any:
+    if value in (None, "", [], {}):
+        return value
+    if isinstance(value, list):
+        return [_human_note(item, facts) for item in value]
+    if not isinstance(value, str):
+        return _human_enum(value)
+
+    text = value.strip()
+    if not text:
+        return text
+
+    replacements: list[tuple[str, str]] = []
+    for field, raw in facts.items():
+        rendered = _formatted_fact(str(field), raw)
+        raw_text = str(raw).strip()
+        if rendered and raw_text:
+            replacements.append((raw_text, rendered))
+    replacements.sort(key=lambda item: len(item[0]), reverse=True)
+    for raw, rendered in replacements:
+        text = text.replace(raw, rendered)
+
+    for token, rendered in _FIELD_TOKENS.items():
+        text = re.sub(rf"\b{re.escape(token)}\b", rendered, text, flags=re.IGNORECASE)
+    for token, rendered in _ENUMS.items():
+        text = re.sub(rf"\b{re.escape(token)}\b", rendered, text, flags=re.IGNORECASE)
+
+    text = re.sub(
+        r"\b([A-Z][A-Z0-9]+(?:_[A-Z0-9]+)+)\b",
+        lambda match: match.group(1).replace("_", " ").lower(),
+        text,
+    )
+    return text
+
+
 def _put(section: dict[str, Any], label: str, value: Any) -> None:
     if value not in (None, "", [], {}):
         section[label] = value
 
 
 def build_presentation_context(context: Mapping[str, Any]) -> dict[str, Any]:
-    """Return a human-readable prompt context while preserving raw facts elsewhere.
+    """Build provider-facing facts while keeping the original context authoritative.
 
-    The caller should retain the original context for validation/audit. This
-    representation is presentation-only and may use executable IDX tick rounding,
-    percent/money abbreviations, and translated enum labels.
+    Raw facts stay outside this object for audit and response validation. This
+    layer uses the same presentation principles as the Telegram watchlist: IDX
+    executable tick display, compact money/percent notation, and human status text.
     """
     facts = dict(context.get("facts") or {})
     identity = dict(context.get("identity") or {})
@@ -210,8 +266,8 @@ def build_presentation_context(context: Mapping[str, Any]) -> dict[str, Any]:
 
     presentation: dict[str, Any] = {
         "aturan": (
-            "Semua angka di bawah adalah representasi presentation dari fakta SDE resmi. "
-            "Gunakan nilainya apa adanya; jangan membuat level atau angka baru dan jangan menyebut nama field internal."
+            "Semua angka berikut adalah representasi presentation dari fakta SDE resmi. "
+            "Gunakan apa adanya; jangan membuat level/angka baru dan jangan menyebut nama field internal."
         ),
         "identitas": {
             "emiten": str(identity.get("symbol") or facts.get("symbol") or "").upper(),
@@ -228,12 +284,12 @@ def build_presentation_context(context: Mapping[str, Any]) -> dict[str, Any]:
     _put(technical, "setup", _human_enum(facts.get("setup")))
     _put(technical, "tren", _human_enum(facts.get("trend")))
     _put(technical, "kondisi teknikal", _human_enum(facts.get("technical_state") or facts.get("technical_status")))
-    _put(technical, "technical score", _score(facts.get("technical_score") or facts.get("technical_quality")))
+    _put(technical, "skor teknikal", _score(facts.get("technical_score") or facts.get("technical_quality")))
     rsi = _number(facts.get("rsi"))
     _put(technical, "RSI", _id_number(rsi, 2) if rsi is not None else "")
     _put(technical, "momentum", _human_enum(facts.get("momentum_status")))
     volume_ratio = _number(facts.get("volume_ratio_ma20"))
-    _put(technical, "volume vs MA20", f"{_id_number(volume_ratio, 2)}x" if volume_ratio is not None else "")
+    _put(technical, "volume dibanding MA20", f"{_id_number(volume_ratio, 2)}x" if volume_ratio is not None else "")
     _put(technical, "fase", _human_enum(facts.get("phase")))
     _put(technical, "support", _price(facts.get("support")))
     _put(technical, "resistance", _price(facts.get("resistance")))
@@ -249,47 +305,47 @@ def build_presentation_context(context: Mapping[str, Any]) -> dict[str, Any]:
     _put(plan, "TP2", _price(facts.get("target_2")))
     _put(plan, "risk-reward", _rr(facts.get("risk_reward")))
     _put(plan, "jarak ke entry", _percent(facts.get("entry_distance_pct"), ratio=False))
-    _put(plan, "trigger", _human_enum(facts.get("trigger_description")))
-    _put(plan, "trigger yang masih ditunggu", _human_enum(facts.get("waiting_triggers")))
-    _put(plan, "invalidation", _human_enum(facts.get("invalidation")))
+    _put(plan, "trigger", _human_note(facts.get("trigger_description"), facts))
+    _put(plan, "trigger yang masih ditunggu", _human_note(facts.get("waiting_triggers"), facts))
+    _put(plan, "invalidation", _human_note(facts.get("invalidation"), facts))
     presentation["trade plan"] = plan
 
     broker: dict[str, Any] = {}
     _put(broker, "arah", _human_enum(facts.get("broker_direction") or facts.get("broker_state")))
     _put(broker, "status", _human_enum(facts.get("broker_status")))
-    _put(broker, "broker score", _score(facts.get("broker_score") or facts.get("broker_confidence")))
+    _put(broker, "skor broker", _score(facts.get("broker_score") or facts.get("broker_confidence")))
     _put(broker, "net flow", _money(facts.get("broker_net_flow")))
-    _put(broker, "buyer concentration", _percent(facts.get("buyer_concentration"), ratio=True))
-    _put(broker, "seller concentration", _percent(facts.get("seller_concentration"), ratio=True))
+    _put(broker, "konsentrasi buyer", _percent(facts.get("buyer_concentration"), ratio=True))
+    _put(broker, "konsentrasi seller", _percent(facts.get("seller_concentration"), ratio=True))
     _put(broker, "buy ratio", _percent(facts.get("broker_buy_ratio"), ratio=True))
     _put(broker, "sell ratio", _percent(facts.get("broker_sell_ratio"), ratio=True))
-    _put(broker, "bandar buy cost", _price(facts.get("bandar_buy_cost") or facts.get("avg_buyer_price")))
-    _put(broker, "jarak ke buy cost", _percent(facts.get("distance_to_buy_cost") or facts.get("distance_to_buyer_avg_pct"), ratio=False))
-    _put(broker, "alignment", _human_enum(facts.get("broker_alignment")))
-    _put(broker, "multi-day flow", _human_enum(facts.get("multi_day_flow")))
-    _put(broker, "persistence", _human_enum(facts.get("flow_persistence")))
-    _put(broker, "buy days", _human_enum(facts.get("buy_days")))
-    _put(broker, "sell days", _human_enum(facts.get("sell_days")))
+    _put(broker, "rata-rata biaya buyer", _price(facts.get("bandar_buy_cost") or facts.get("avg_buyer_price")))
+    _put(broker, "jarak harga ke biaya buyer", _percent(facts.get("distance_to_buy_cost") or facts.get("distance_to_buyer_avg_pct"), ratio=False))
+    _put(broker, "keselarasan", _human_enum(facts.get("broker_alignment")))
+    _put(broker, "flow multi-hari", _human_enum(facts.get("multi_day_flow")))
+    _put(broker, "konsistensi flow", _human_enum(facts.get("flow_persistence")))
+    _put(broker, "hari beli", _human_enum(facts.get("buy_days")))
+    _put(broker, "hari jual", _human_enum(facts.get("sell_days")))
     _put(broker, "periode", _human_enum(facts.get("broker_period_type")))
     _put(broker, "cakupan periode", _human_enum(facts.get("broker_period_coverage") or facts.get("broker_coverage_text")))
     _put(broker, "status cakupan", _human_enum(facts.get("broker_coverage_status")))
-    _put(broker, "today pulse", _human_enum(facts.get("today_pulse_status")))
+    _put(broker, "data broker hari ini", _human_enum(facts.get("today_pulse_status")))
     _put(broker, "top buyers", _human_enum(facts.get("top_buyers")))
     _put(broker, "top sellers", _human_enum(facts.get("top_sellers")))
     presentation["broker"] = broker
 
     market: dict[str, Any] = {}
-    _put(market, "market regime", _human_enum(facts.get("market_regime")))
-    _put(market, "sector", _human_enum(facts.get("sector_state")))
-    _put(market, "risk flags", _human_enum(facts.get("risk_flags")))
-    _put(market, "exchange status", _human_enum(facts.get("exchange_status")))
-    _put(market, "alasan utama", _human_enum(facts.get("engine_final_reason") or facts.get("main_reason")))
-    _put(market, "risiko utama", _human_enum(facts.get("main_risk") or facts.get("risk_items")))
+    _put(market, "kondisi pasar", _human_enum(facts.get("market_regime")))
+    _put(market, "sektor", _human_enum(facts.get("sector_state")))
+    _put(market, "risk flags", _human_note(facts.get("risk_flags"), facts))
+    _put(market, "status bursa", _human_enum(facts.get("exchange_status")))
+    _put(market, "alasan utama SDE", _human_note(facts.get("engine_final_reason") or facts.get("main_reason"), facts))
+    _put(market, "risiko utama SDE", _human_note(facts.get("main_risk") or facts.get("risk_items"), facts))
     presentation["konteks pasar dan risiko"] = market
 
     presentation["chart"] = {
         "tersedia": bool(context.get("chart")),
-        "fungsi": "konteks visual; angka resmi tetap berasal dari fakta SDE presentation di atas",
+        "fungsi": "konteks visual; angka resmi tetap berasal dari fakta presentation di atas",
     }
     return presentation
 
