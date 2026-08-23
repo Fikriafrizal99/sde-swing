@@ -2,15 +2,17 @@ from __future__ import annotations
 
 """Incremental historical-price archive for the SDE Swing SQLite history DB.
 
-The historical CSV remains the auditable source file.  A changed file is still
+The historical CSV remains the auditable source file. A changed file is still
 read in full so an old candle correction cannot be missed, but rows whose
 canonical OHLCV values are identical to the current SQLite projection are not
 re-appended as revisions just because the whole-file SHA changed.
 
-This module is database-only.  It does not feed or modify Technical, Candidate,
+This module is database-only. It does not feed or modify Technical, Candidate,
 Broker, Decision, Entry/Exit, Lifecycle, or Portfolio calculations.
 """
 
+import hashlib
+import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -32,10 +34,58 @@ _CURRENT_COLUMNS = (
     "volume",
     "source",
 )
+_NUMERIC_COLUMNS = (
+    "open",
+    "high",
+    "low",
+    "close",
+    "adjusted_close",
+    "volume",
+)
 
 
 def _chunks(values: list[str], size: int = 200) -> list[list[str]]:
     return [values[index : index + size] for index in range(0, len(values), size)]
+
+
+def _canonical_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        if bool(pd.isna(value)):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return 0.0 if number == 0 else number
+
+
+def _comparison_row_hash(row: dict[str, Any]) -> str:
+    """Hash market values with stable Python/SQLite numeric representation.
+
+    SQLite REAL values are returned as floats, while pandas may keep integer-looking
+    CSV columns as ints.  The comparison hash therefore normalizes all numeric
+    fields to float before hashing so 9000 and 9000.0 are treated as the same
+    market fact.  This hash is only an incremental comparison key; baseline's
+    append-only revision identity remains unchanged.
+    """
+    payload: dict[str, Any] = {
+        "symbol": str(row.get("symbol") or ""),
+        "price_date": str(row.get("price_date") or ""),
+        "source": str(row.get("source") or ""),
+    }
+    for column in _NUMERIC_COLUMNS:
+        payload[column] = _canonical_number(row.get(column))
+    rendered = json.dumps(
+        payload,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
 
 def _current_row_hashes(
@@ -45,7 +95,7 @@ def _current_row_hashes(
     """Load current row hashes with one query per small symbol chunk.
 
     The previous archiver performed INSERT + SELECT + UPSERT for every historical
-    candle whenever a CSV file SHA changed.  This projection lets us compare the
+    candle whenever a CSV file SHA changed. This projection lets us compare the
     incoming rows first and reserve revision writes for genuinely new/corrected
     candles only.
     """
@@ -73,7 +123,7 @@ def _current_row_hashes(
                     str(current.get("price_date") or ""),
                     str(current.get("source") or ""),
                 )
-                result[key] = baseline._market_price_row_hash(current)
+                result[key] = _comparison_row_hash(current)
     return result
 
 
@@ -141,11 +191,11 @@ def archive_prices(
 ) -> int:
     """Archive only new/corrected market-price rows.
 
-    File SHA remains the first-level audit/idempotency key.  When the file SHA
-    changes, every row is compared to the current DB projection using the
-    canonical value hash that intentionally excludes source_revision and
-    created/updated timestamps.  Unchanged rows therefore cause no revision
-    INSERT, revision-sequence SELECT, or current-row UPSERT.
+    File SHA remains the first-level audit/idempotency key. When the file SHA
+    changes, every row is compared to the current DB projection using a stable
+    canonical value hash that excludes source_revision and created/updated
+    timestamps. Unchanged rows therefore cause no revision INSERT,
+    revision-sequence SELECT, or current-row UPSERT.
 
     The return value is the number of *newly appended revisions*, rather than
     the number of rows merely scanned from changed files.
@@ -197,7 +247,7 @@ def archive_prices(
                         str(row.get("price_date") or ""),
                         str(row.get("source") or ""),
                     )
-                    incoming_hash = baseline._market_price_row_hash(row)
+                    incoming_hash = _comparison_row_hash(row)
                     if current_hashes.get(key) == incoming_hash:
                         file_unchanged_rows += 1
                         continue
