@@ -99,7 +99,7 @@ def _post_market_payloads(ctx):
     if manifest_path is None:
         raise ResendArtifactNotFound(f"POST_MARKET_ARTIFACT_NOT_FOUND:{trade_date}")
 
-    # Preserve the original manifest lineage; the resend run itself is delivery-only.
+    # Preserve the original manifest lineage; preview/resend is artifact-only.
     manifest = dict(manifest)
     manifest.setdefault("Manifest_Path", str(manifest_path))
     payloads = enhanced_post_market_payloads(ctx, manifest)
@@ -138,10 +138,15 @@ def _message_ids(delivery: list[dict[str, Any]]) -> list[Any]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Kirim ulang Market Outlook/Post Market dari artifact existing tanpa menjalankan engine"
+        description="Preview/kirim ulang Market Outlook atau Post Market dari artifact existing tanpa menjalankan engine"
     )
     parser.add_argument("--job", required=True, choices=sorted(SUPPORTED_JOBS))
     parser.add_argument("--trade-date", required=True, help="Tanggal trading YYYY-MM-DD")
+    parser.add_argument(
+        "--preview-only",
+        action="store_true",
+        help="Bangun preview dari artifact existing tanpa Telegram dan tanpa menjalankan engine",
+    )
     parser.add_argument("--config", default="config/pipeline.json")
     parser.add_argument("--scheduler-config", default="config/scheduler.json")
     return parser.parse_args()
@@ -155,29 +160,32 @@ def main() -> int:
         scheduler_config_path=args.scheduler_config,
         trade_date=args.trade_date,
         dry_run=False,
-        preview_existing=False,
-        no_telegram=False,
-        force=True,
+        preview_existing=bool(args.preview_only),
+        no_telegram=bool(args.preview_only),
+        force=not bool(args.preview_only),
         debug=False,
         interactive_broker=False,
     )
-    # Resend is delivery-only: the canonical Post Market builder still
-    # validates the requested-date pulse, but it must not trigger a new data
-    # refresh or rerun the engine.
+    # Both modes are artifact-only. They must never trigger a refresh or engine run.
     setattr(ctx, "delivery_only", True)
 
-    write_status(ctx, "RUNNING", "RESEND_EXISTING", EXIT_SUCCESS, {
+    mode = "PREVIEW_EXISTING" if args.preview_only else "RESEND_EXISTING"
+    write_status(ctx, "RUNNING", mode, EXIT_SUCCESS, {
         "engine_status": "NOT_RUN",
         "report_status": "RUNNING",
         "delivery_status": "NOT_RUN",
-        "warnings": ["DELIVERY_ONLY_RESEND; engine dan dependency graph tidak dijalankan."],
+        "warnings": [
+            "PREVIEW_EXISTING_ARTIFACT_ONLY; engine dan dependency graph tidak dijalankan."
+            if args.preview_only
+            else "DELIVERY_ONLY_RESEND; engine dan dependency graph tidak dijalankan."
+        ],
     })
 
     try:
         with FileLock(ctx):
             payloads, source_details = build_existing_payloads(ctx)
             if not payloads:
-                write_status(ctx, "FAILED", "RESEND_REPORT_BUILD", EXIT_FAILED, {
+                write_status(ctx, "FAILED", f"{mode}_REPORT_BUILD", EXIT_FAILED, {
                     "engine_status": "NOT_RUN",
                     "report_status": "FAILED",
                     "delivery_status": "NOT_RUN",
@@ -187,6 +195,20 @@ def main() -> int:
                 return EXIT_FAILED
 
             preview_paths = write_payloads(ctx, payloads)
+            if args.preview_only:
+                write_status(ctx, "SUCCESS", f"{ctx.job.upper()}_PREVIEW_EXISTING", EXIT_SUCCESS, {
+                    "engine_status": "NOT_RUN",
+                    "report_status": "SUCCESS",
+                    "delivery_status": "SKIPPED_PREVIEW_ONLY",
+                    "telegram_status": "SKIPPED",
+                    "preview_paths": [str(path) for path in preview_paths],
+                    "warnings": ["PREVIEW_EXISTING_ARTIFACT_ONLY; tidak ada refresh, engine, atau Telegram."],
+                    **source_details,
+                })
+                for path in preview_paths:
+                    print(path)
+                return EXIT_SUCCESS
+
             delivery = deliver(ctx, payloads)
             overall, telegram_status, code = _delivery_result(delivery)
             stage = f"{ctx.job.upper()}_RESEND"
@@ -204,16 +226,17 @@ def main() -> int:
             })
             return code
     except ResendArtifactNotFound as exc:
-        write_status(ctx, "FAILED", "RESEND_ARTIFACT_DISCOVERY", EXIT_FAILED, {
+        write_status(ctx, "FAILED", f"{mode}_ARTIFACT_DISCOVERY", EXIT_FAILED, {
             "engine_status": "NOT_RUN",
             "report_status": "NOT_RUN",
             "delivery_status": "NOT_RUN",
             "errors": [str(exc)],
-            "warnings": ["Resend tidak menjalankan ulang engine."],
+            "warnings": ["Artifact-only mode tidak menjalankan ulang engine."],
         })
+        print(str(exc), file=sys.stderr)
         return EXIT_FAILED
     except ReportSourceValidationError as exc:
-        write_status(ctx, "FAILED", "RESEND_SOURCE_VALIDATION", EXIT_FAILED, {
+        write_status(ctx, "FAILED", f"{mode}_SOURCE_VALIDATION", EXIT_FAILED, {
             "engine_status": "NOT_RUN",
             "report_status": "FAILED",
             "delivery_status": "NOT_RUN",
@@ -222,7 +245,7 @@ def main() -> int:
         })
         return EXIT_FAILED
     except (JobAlreadyRunning, ResourceLocked) as exc:
-        write_status(ctx, "SKIPPED", "RESEND_LOCK", EXIT_FAILED, {
+        write_status(ctx, "SKIPPED", f"{mode}_LOCK", EXIT_FAILED, {
             "engine_status": "NOT_RUN",
             "report_status": "NOT_RUN",
             "delivery_status": "NOT_RUN",
@@ -230,7 +253,7 @@ def main() -> int:
         })
         return EXIT_FAILED
     except Exception as exc:
-        write_status(ctx, "FAILED", "RESEND_EXCEPTION", EXIT_FAILED, {
+        write_status(ctx, "FAILED", f"{mode}_EXCEPTION", EXIT_FAILED, {
             "engine_status": "NOT_RUN",
             "report_status": "FAILED",
             "delivery_status": "NOT_RUN",
