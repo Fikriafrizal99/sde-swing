@@ -51,30 +51,53 @@ still used by active reports.
 
 ## Watchlist AI interpretation boundary
 
-The target Final Watchlist AI architecture is a separate downstream subsystem.
-The official Final Watchlist must be built and delivered independently before
-Watchlist AI interpretation is invoked.
+Final Watchlist AI is an active separate downstream subsystem. The official
+Final Watchlist is built and delivered independently before Watchlist AI
+interpretation is invoked by the canonical Final Watchlist entrypoint.
 
 ```text
 validated Final Watchlist facts
   |-> official builder -> final_watchlist_ui.py -> ReportPayload -> delivery -> Topic 9
-  `-> Watchlist AI (non-blocking) -> provider failover -> validator
+  `-> after official success: tools/run_watchlist_ai.py
+      -> modules/ai_interpretation/watchlist/WatchlistAIService
+      -> provider #1 -> provider #2 -> provider #3
+      -> numeric/fact validator -> isolated AI artifact
       -> watchlist_ai_ui.py -> ReportPayload -> delivery -> dedicated AI topic
 ```
+
+The legacy embedded Final Watchlist AI budget is disabled. This keeps AI network
+calls out of the official Final Watchlist builder while leaving unrelated legacy
+report-AI behavior available where still required.
 
 Watchlist AI may read chart, technical, plan, broker, multi-day, market, and
 validated engine facts and may quote official numbers unchanged. It may not
 create replacement engine levels, mutate official artifacts, create an AI
 Decision/Score, or write back into engine/lifecycle/canonical state.
 
-This path is also isolated from existing AI consumers. It must not change or
-share runtime state, cache, queue, prompts, retry budgets, or delivery behavior
-with News Monitor AI, the IDX Disclosure AI document reader, disclosure PDF
+Watchlist AI uses its own config, cache and artifact namespaces:
+
+- `config/scheduler.json: watchlist_ai`
+- `data/state/ai_cache/watchlist/`
+- `data/output/ai_interpretation/watchlist/<trade_date>/`
+
+Its Telegram category is `AI` and the dedicated runtime topic is resolved from
+`TELEGRAM_THREAD_AI_ID`. If that topic is not configured, the Watchlist AI
+caller refuses main-chat fallback and records `SKIPPED_AI_TOPIC_NOT_CONFIGURED`.
+
+If all configured providers fail for one or more symbols, an informational
+`watchlist_ai_status` message is sent to the same dedicated AI topic when
+`watchlist_ai.notify_on_failure=true`. This never changes the official Final
+Watchlist status, exit code, lifecycle state, or engine artifacts.
+
+This path is isolated from existing AI consumers. It does not change or share
+runtime state, cache, queue, prompts, retry budgets, or delivery behavior with
+News Monitor AI, the IDX Disclosure AI document reader, disclosure PDF
 processing/queue/message-edit flow, or portfolio AI. Existing modules under
 `modules/idx_disclosure/` remain outside the Watchlist AI implementation scope.
 
 See `WATCHLIST_AI_ARCHITECTURE.md` for provider failover, context, routing,
-artifact namespaces, output contract, and regression requirements.
+artifact namespaces, output contract, and regression requirements. See
+`TELEGRAM_ROUTING.md` for the active dedicated AI topic contract.
 
 ## Historical report access boundary
 
