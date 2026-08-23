@@ -49,6 +49,33 @@ Current dedicated presentation modules are:
 Shared operational presentation can remain in `daily_report_ui.py` where it is
 still used by active reports.
 
+## Watchlist AI interpretation boundary
+
+The target Final Watchlist AI architecture is a separate downstream subsystem.
+The official Final Watchlist must be built and delivered independently before
+Watchlist AI interpretation is invoked.
+
+```text
+validated Final Watchlist facts
+  |-> official builder -> final_watchlist_ui.py -> ReportPayload -> delivery -> Topic 9
+  `-> Watchlist AI (non-blocking) -> provider failover -> validator
+      -> watchlist_ai_ui.py -> ReportPayload -> delivery -> dedicated AI topic
+```
+
+Watchlist AI may read chart, technical, plan, broker, multi-day, market, and
+validated engine facts and may quote official numbers unchanged. It may not
+create replacement engine levels, mutate official artifacts, create an AI
+Decision/Score, or write back into engine/lifecycle/canonical state.
+
+This path is also isolated from existing AI consumers. It must not change or
+share runtime state, cache, queue, prompts, retry budgets, or delivery behavior
+with News Monitor AI, the IDX Disclosure AI document reader, disclosure PDF
+processing/queue/message-edit flow, or portfolio AI. Existing modules under
+`modules/idx_disclosure/` remain outside the Watchlist AI implementation scope.
+
+See `WATCHLIST_AI_ARCHITECTURE.md` for provider failover, context, routing,
+artifact namespaces, output contract, and regression requirements.
+
 ## Historical report access boundary
 
 Weekend/holiday access is intentionally split from normal engine execution:
