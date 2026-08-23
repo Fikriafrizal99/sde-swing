@@ -1,7 +1,8 @@
 """AI interpretation helpers for SDE Swing.
 
-AI is presentation-only: it may summarize validated engine facts but must never
-change decisions, prices, scores, regime, or source status.
+Legacy report AI remains presentation-only. Final Watchlist AI now owns a
+separate downstream subsystem under ``modules.ai_interpretation.watchlist`` and
+must not be executed through this compatibility facade.
 """
 
 from .gemini_interpreter import GeminiInterpreter as _LegacyGeminiInterpreter, InterpretationResult
@@ -13,14 +14,14 @@ class GeminiInterpreter(_LegacyGeminiInterpreter):
 
     Existing tests/tools that explicitly configure Gemini keep the legacy
     implementation. A bare ``GeminiInterpreter()`` call, which is what the
-    production report builder uses, now returns ``GroqInterpreter`` instead.
-    This avoids changing engine/report code while the provider migration is
-    rolled out safely.
+    shared report builder uses, returns Groq for the remaining legacy report-AI
+    use cases but disables its Final Watchlist call budget. Final Watchlist AI
+    is executed only by the isolated downstream watchlist subsystem.
     """
 
     def __new__(cls, *args, **kwargs):
         if cls is GeminiInterpreter and not args and not kwargs:
-            return GroqInterpreter()
+            return GroqInterpreter(max_watchlist_calls=0)
         return super().__new__(cls)
 
 
