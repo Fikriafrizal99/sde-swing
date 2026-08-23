@@ -159,18 +159,27 @@ def run(ctx: RunnerContext) -> dict[str, Any]:
         }
 
     csv_path = _final_watchlist_path(ctx.trade_date.isoformat(), ctx.scheduler_config)
-    rows = _read_csv(csv_path)
-    if not rows:
+    if not csv_path.exists() or not csv_path.is_file() or csv_path.stat().st_size <= 0:
         payloads = []
         if notify_failure:
             payloads.append(_failure_payload(
                 ctx.trade_date.isoformat(),
                 [],
-                "Artifact Final Watchlist resmi tidak tersedia atau kosong; jalur SDE resmi tidak diubah.",
+                "Artifact Final Watchlist resmi tidak tersedia; jalur SDE resmi tidak diubah.",
             ))
         return {
             "status": "SOURCE_ARTIFACT_MISSING",
             "payloads": payloads,
+            "results": [],
+            "source": str(csv_path),
+        }
+
+    rows = _read_csv(csv_path)
+    if not rows or service.max_symbols <= 0:
+        return {
+            "status": "NO_SYMBOLS",
+            "official_status": official_status,
+            "payloads": [],
             "results": [],
             "source": str(csv_path),
         }
