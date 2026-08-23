@@ -37,7 +37,7 @@
       "model": "llama-3.3-70b-versatile",
       "fallback_to_deterministic": true,
       "immutable_engine_fields": true,
-      "max_watchlist_calls": 5
+      "max_watchlist_calls": 0
     }
   },
   "market_outlook": {
