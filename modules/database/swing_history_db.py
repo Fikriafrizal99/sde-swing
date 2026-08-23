@@ -5,7 +5,9 @@ from __future__ import annotations
 
 Database schema/archival behavior remains baseline-owned. Only watchlist outcome
 evaluation is replaced so it uses actual trigger entry and the canonical
-lifecycle contract instead of a D7 TP1 shortcut.
+lifecycle contract instead of a D7 TP1 shortcut. Historical market-price
+archival is also wrapped with a row-incremental implementation that preserves
+the append-only revision contract while skipping unchanged OHLCV rows.
 """
 
 import sys
@@ -21,6 +23,9 @@ import json
 import pandas as pd
 
 from modules.database import swing_history_db_baseline as _baseline
+from modules.database.market_price_archive_incremental import (
+    archive_prices as _incremental_archive_prices,
+)
 from modules.analytics.execution_integrity import validate_plan_geometry
 from modules.analytics.lifecycle_contract import (
     evaluate_trade_path,
@@ -33,6 +38,10 @@ from modules.analytics.lifecycle_contract import (
 for _name in dir(_baseline):
     if not _name.startswith("__"):
         globals()[_name] = getattr(_baseline, _name)
+
+# The active DB facade owns the optimized archive path.  All other schema and
+# archive functions remain baseline-owned and unchanged.
+archive_prices = _incremental_archive_prices
 
 
 def load_price_map(
@@ -204,6 +213,10 @@ def archive_watchlist_outcomes(
     return count
 
 
+# Baseline main() resolves these functions from its module globals at runtime,
+# so patch only the two facade-owned behaviors before invoking that unchanged
+# orchestration entrypoint.
+_baseline.archive_prices = archive_prices
 _baseline.load_price_map = load_price_map
 _baseline.archive_watchlist_outcomes = archive_watchlist_outcomes
 
