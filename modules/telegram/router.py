@@ -96,6 +96,12 @@ class TelegramRouter:
             # Post Market, broker reports, etc. If no dedicated route exists,
             # delivery.py may still apply the scheduler fallback for topic=report.
             thread = specific_config
+        elif category == "SIGNAL" and report_lower not in {"signal", "signals"}:
+            # Concrete signal reports own their explicit per-report route.
+            # TELEGRAM_THREAD_SIGNAL_ID is retained only as a compatibility
+            # fallback and must never override Final Watchlist/Signal Detail
+            # routes configured by the current application.
+            thread = specific_config or env_thread or category_config
         elif category == "NEWS":
             # NEWS is intentionally isolated. Its caller must refuse main-chat
             # fallback when no numeric News topic exists.
