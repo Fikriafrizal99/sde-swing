@@ -92,6 +92,46 @@
       "WATCH"
     ]
   },
+  "watchlist_ai": {
+    "enabled": true,
+    "non_blocking": true,
+    "notify_on_failure": true,
+    "telegram_topic_env": "TELEGRAM_THREAD_AI_ID",
+    "max_symbols": 5,
+    "timeout_seconds": 30,
+    "max_output_tokens": 900,
+    "temperature": 0.25,
+    "cache_enabled": true,
+    "cache_root": "data/state/ai_cache/watchlist",
+    "output_root": "data/output/ai_interpretation/watchlist",
+    "max_chart_bytes": 4000000,
+    "providers": [
+      {
+        "provider": "OPENAI",
+        "model": "gpt-5.6-luna",
+        "api_key_env": "OPENAI_API_KEY",
+        "priority": 1,
+        "enabled": true,
+        "vision": true
+      },
+      {
+        "provider": "GEMINI",
+        "model": "gemini-2.5-flash",
+        "api_key_env": "GEMINI_API_KEY",
+        "priority": 2,
+        "enabled": true,
+        "vision": true
+      },
+      {
+        "provider": "GROQ",
+        "model": "llama-3.3-70b-versatile",
+        "api_key_env": "GROQ_API_KEY",
+        "priority": 3,
+        "enabled": true,
+        "vision": false
+      }
+    ]
+  },
   "broker_readiness": {
     "minimum_broker_records": 1,
     "minimum_broker_coverage_ratio": 0.8,
