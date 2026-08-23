@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Telegram routing with category defaults and explicit report/news isolation."""
+"""Telegram routing with category defaults and explicit report/news/AI isolation."""
 
 from dataclasses import dataclass
 import os
@@ -46,6 +46,7 @@ class TelegramRouter:
     }
     SYSTEM_TYPES = {"system", "data_warning", "startup", "source_health", "config_error", "dependency_failure"}
     NEWS_TYPES = {"news", "morning_news", "post_market_news"}
+    AI_TYPES = {"watchlist_ai", "watchlist_ai_status", "watchlist_ai_interpretation"}
 
     def __init__(self, config: Mapping[str, Any] | None = None, environ: Mapping[str, str] | None = None) -> None:
         self.config = dict(config or {})
@@ -54,6 +55,13 @@ class TelegramRouter:
     def category_for(self, report_type: str, topic: str = "") -> str:
         report = str(report_type or "").strip().lower()
         label = str(topic or "").strip().lower()
+        if (
+            report in self.AI_TYPES
+            or label in self.AI_TYPES
+            or label == "watchlist_ai"
+            or report.startswith("watchlist_ai_interpretation_")
+        ):
+            return "AI"
         if report in self.NEWS_TYPES or label in self.NEWS_TYPES or label == "news":
             return "NEWS"
         if report in self.SIGNAL_TYPES or label in self.SIGNAL_TYPES:
@@ -102,9 +110,10 @@ class TelegramRouter:
             # fallback and must never override Final Watchlist/Signal Detail
             # routes configured by the current application.
             thread = specific_config or env_thread or category_config
-        elif category == "NEWS":
-            # NEWS is intentionally isolated. Its caller must refuse main-chat
-            # fallback when no numeric News topic exists.
+        elif category in {"NEWS", "AI"}:
+            # NEWS and Watchlist AI are intentionally isolated categories.
+            # Their callers must refuse main-chat fallback when no numeric topic
+            # exists, so one subsystem can never leak into another Telegram lane.
             thread = env_thread or specific_config or category_config
         else:
             thread = env_thread or specific_config or category_config
