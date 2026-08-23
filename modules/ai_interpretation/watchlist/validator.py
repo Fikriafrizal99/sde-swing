@@ -6,7 +6,10 @@ import re
 from typing import Any, Mapping
 
 
-_NUMBER_RE = re.compile(r"(?<![A-Za-z])[-+]?\d[\d.,]*(?:%|x)?")
+_NUMBER_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:Rp\s*)?[-+]?\d+(?:[.,]\d+)*(?:%|x)?",
+    re.IGNORECASE,
+)
 _UNIT_SCALES = {
     "k": 1_000.0,
     "ribu": 1_000.0,
@@ -41,7 +44,7 @@ def _variants(token: str) -> set[str]:
 def _parse_number(token: str) -> float | None:
     raw = str(token or "").strip().lower()
     raw = raw.replace("rp", "").replace("%", "").replace("x", "")
-    raw = raw.strip()
+    raw = raw.strip(" .,\t\r\n")
     if not raw:
         return None
 
