@@ -160,4 +160,35 @@ def validate_numbers(text: str, context: Mapping[str, Any]) -> None:
         raise ValueError(f"AI introduced unsupported number: {token}")
 
 
-__all__ = ["validate_numbers"]
+def _normalize_analysis(value: Any) -> str:
+    raw = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not raw:
+        return ""
+    raw = re.sub(r"[ \t]+", " ", raw)
+    paragraphs = [
+        re.sub(r"\s*\n\s*", " ", item).strip()
+        for item in re.split(r"\n\s*\n+", raw)
+        if item.strip()
+    ]
+    return "\n\n".join(item for item in paragraphs if item)
+
+
+def validate_response(payload: Mapping[str, Any], context: Mapping[str, Any]) -> tuple[str, str]:
+    """Validate the strict AI response while preserving natural paragraphs."""
+    if not isinstance(payload, Mapping):
+        raise ValueError("RESPONSE_NOT_OBJECT")
+    if set(payload) - {"analysis", "conclusion"}:
+        raise ValueError("UNSUPPORTED_RESPONSE_FIELDS")
+
+    analysis = _normalize_analysis(payload.get("analysis"))
+    conclusion = re.sub(r"\s+", " ", str(payload.get("conclusion") or "")).strip()
+    if len(analysis) < 80:
+        raise ValueError("ANALYSIS_TOO_SHORT")
+    if not conclusion:
+        raise ValueError("CONCLUSION_EMPTY")
+
+    validate_numbers(f"{analysis}\n{conclusion}", context)
+    return analysis[:3000].rstrip(), conclusion[:700].rstrip()
+
+
+__all__ = ["validate_numbers", "validate_response"]
