@@ -18,10 +18,11 @@ echo [5] Normal + Morning News - satu kali jalan
 echo [6] Morning News Only
 echo [7] Preview Morning News existing
 echo [8] Force Send Morning News existing
+echo [9] Recovery sesi terakhir terlewat - historical/as-of, tanpa Telegram
 echo [0] Kembali
 echo.
-echo Catatan: Market Outlook historis yang tidak pernah dibuat tidak direkonstruksi
-echo          setelah sesi berakhir untuk mencegah look-ahead bias.
+echo Recovery Market Outlook memakai data point-in-time pada jam Outlook target,
+echo IHSG/technical context sesi sebelumnya, dan tidak menjalankan Decision Engine.
 echo.
 set "MODE="
 set /p "MODE=Pilih mode: "
@@ -36,6 +37,7 @@ if "%MODE%"=="5" goto NORMAL_WITH_NEWS
 if "%MODE%"=="6" goto NEWS_ONLY
 if "%MODE%"=="7" goto NEWS_PREVIEW
 if "%MODE%"=="8" goto NEWS_FORCE_SEND
+if "%MODE%"=="9" goto RECOVER_LAST_SESSION
 if not "%MODE%"=="1" goto MENU
 
 %SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job market_outlook
@@ -50,6 +52,19 @@ if not defined PREVIEW_DATE goto PREVIEW_DATE_FAILED
 echo.
 echo Membuka preview Market Outlook trade date !PREVIEW_DATE! dari artifact existing...
 %SDE_PYTHON_CMD% -u tools\resend_daily_report.py --job market_outlook --trade-date !PREVIEW_DATE! --preview-only
+set "RC=!ERRORLEVEL!"
+goto STATUS
+
+:RECOVER_LAST_SESSION
+echo.
+echo ================================================================
+echo MARKET OUTLOOK RECOVERY - HISTORICAL / AS-OF
+echo ================================================================
+echo Recovery otomatis memilih sesi IDX terakhir yang sudah selesai.
+echo Data global dibatasi sampai sesi yang sudah diketahui pada jam Outlook target.
+echo Telegram OFF. Decision/quant engine tidak dijalankan.
+echo.
+%SDE_PYTHON_CMD% -u tools\recover_market_outlook.py
 set "RC=!ERRORLEVEL!"
 goto STATUS
 
