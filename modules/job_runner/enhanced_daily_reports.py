@@ -82,6 +82,11 @@ BROKER_MULTIDAY_COLUMNS = [
     "today_pulse_direction", "broker_alignment",
 ]
 
+# Telegram detail cards are intentionally action-oriented. WATCH/AVOID remain
+# available in summary counts and the complete CSV for audit, but they do not
+# consume detail-card/chart delivery slots.
+FINAL_WATCHLIST_DETAIL_DECISIONS = {"BUY ON TRIGGER", "BUY CANDIDATE"}
+
 
 def _norm(value: Any) -> str:
     return "".join(char.lower() if char.isalnum() else "_" for char in str(value or "")).strip("_")
@@ -145,7 +150,8 @@ class EnhancedDailyReportBuilder:
     ) -> None:
         self.output_root = Path(output_root)
         self.interpreter = interpreter or GeminiInterpreter()
-        self.max_watchlist_messages = max(1, int(max_watchlist_messages))
+        # 0 means unlimited detail cards after the actionable-status filter.
+        self.max_watchlist_messages = max(0, int(max_watchlist_messages))
 
     def build_all(self, bundle: dict[str, Any]) -> list[DailyReportArtifact]:
         artifacts: list[DailyReportArtifact] = []
@@ -881,11 +887,18 @@ class EnhancedDailyReportBuilder:
             bucket = self._decision_bucket(row.get("decision"))
             counts[bucket] = counts.get(bucket, 0) + 1
 
+        detail_rows = [
+            row for row in selected
+            if self._decision_key(row.get("decision")) in FINAL_WATCHLIST_DETAIL_DECISIONS
+        ]
+        if self.max_watchlist_messages > 0:
+            detail_rows = detail_rows[: self.max_watchlist_messages]
+
         summary_data = {
             **data,
             "rows": selected,
             "decision_counts": counts,
-            "top_priority": selected[:5],
+            "top_priority": detail_rows[:5],
             "csv_filename": csv_path.name,
         }
         artifacts: list[DailyReportArtifact] = [
@@ -897,7 +910,7 @@ class EnhancedDailyReportBuilder:
                 format_watchlist_detail(row),
                 symbol=str(row.get("symbol", "")).upper(),
             )
-            for row in selected[: self.max_watchlist_messages]
+            for row in detail_rows
         )
         artifacts.append(DailyReportArtifact(
             "final_watchlist_csv", "", attachment_path=csv_path,
@@ -1276,8 +1289,9 @@ _fw_original_build_final_watchlist = EnhancedDailyReportBuilder.build_final_watc
 
 
 def _fw_build_final_watchlist(self, data):
-    # Preserve the canonical delivery limit: CSV keeps every eligible row,
-    # while Telegram detail/chart artifacts are built only for Top N (default 5).
+    # Preserve the builder's action-oriented detail policy. The CSV keeps every
+    # eligible active row, while only generated actionable detail cards receive
+    # chart attachments and material signatures.
     artifacts = _fw_original_build_final_watchlist(self, data)
 
     trade_date = str(data.get("trade_date", ""))
