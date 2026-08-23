@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -13,6 +13,7 @@ from typing import Any, Iterable, Mapping
 import requests
 
 from swing_utils import write_json
+from .validator import validate_response
 
 
 OUTPUT_SCHEMA = {
@@ -53,6 +54,24 @@ _ALLOWED_FACT_FIELDS = (
     "foreign_buy", "foreign_sell", "foreign_net", "provider", "source_mode",
     "coverage", "generated_at",
 )
+
+_PROVIDER_DEFAULTS = {
+    "OPENAI": {
+        "api_key_env": "WATCHLIST_AI_OPENAI_API_KEY",
+        "model_env": "WATCHLIST_AI_OPENAI_MODEL",
+        "model": "gpt-5.6-luna",
+    },
+    "GEMINI": {
+        "api_key_env": "WATCHLIST_AI_GEMINI_API_KEY",
+        "model_env": "WATCHLIST_AI_GEMINI_MODEL",
+        "model": "gemini-2.5-flash",
+    },
+    "GROQ": {
+        "api_key_env": "WATCHLIST_AI_GROQ_API_KEY",
+        "model_env": "WATCHLIST_AI_GROQ_MODEL",
+        "model": "llama-3.3-70b-versatile",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -110,21 +129,30 @@ def _clean_scalar(value: Any) -> Any:
     return value
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def build_watchlist_context(
     row: Mapping[str, Any],
     *,
     chart_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Build one read-only AI context from the official Final Watchlist CSV row."""
+    """Build one read-only AI context from the official Final Watchlist row."""
     facts = {
-        key: _clean_scalar(row.get(key))
+        key: cleaned
         for key in _ALLOWED_FACT_FIELDS
-        if _clean_scalar(row.get(key)) not in ("", [], {})
+        if (cleaned := _clean_scalar(row.get(key))) not in ("", [], {})
     }
     symbol = str(facts.get("symbol") or row.get("symbol") or "").strip().upper()
     trade_date = str(facts.get("trade_date") or row.get("trade_date") or "").strip()[:10]
     decision = str(facts.get("decision") or row.get("decision") or "").strip().upper()
     context: dict[str, Any] = {
+        "schema_version": "WATCHLIST_AI_CONTEXT_V1",
         "identity": {"symbol": symbol, "trade_date": trade_date},
         "final_result": {
             "decision": decision,
@@ -138,41 +166,10 @@ def build_watchlist_context(
             "path": str(chart),
             "role": "visual_context_only",
             "numeric_authority": "structured_sde_facts",
+            "sha256": _file_sha256(chart),
+            "size_bytes": chart.stat().st_size,
         }
     return context
-
-
-def _numeric_variants(token: str) -> set[str]:
-    value = str(token or "").strip().lower()
-    value = value.replace("rp", "").replace("%", "").replace("x", "")
-    value = value.lstrip("+-").strip()
-    if not value:
-        return set()
-    variants = {value}
-    compact = value.replace(".", "").replace(",", "")
-    if compact:
-        variants.add(compact)
-    variants.add(value.replace(",", "."))
-    variants.add(value.replace(".", ","))
-    return {item.strip(".,") for item in variants if item.strip(".,")}
-
-
-def _number_tokens(text: str) -> list[str]:
-    return re.findall(r"(?<![A-Za-z])[-+]?\d[\d.,]*(?:%|x)?", str(text or ""))
-
-
-def _validate_numbers(text: str, context: Mapping[str, Any]) -> None:
-    rendered = json.dumps(context, ensure_ascii=False, sort_keys=True, default=str)
-    allowed: set[str] = set()
-    for token in _number_tokens(rendered):
-        allowed.update(_numeric_variants(token))
-    # Ratio prose commonly renders the implicit leading `1:` even when the SDE
-    # stores only the numeric RR. This does not create a new engine level.
-    allowed.add("1")
-    for token in _number_tokens(text):
-        variants = _numeric_variants(token)
-        if variants and variants.isdisjoint(allowed):
-            raise ValueError(f"AI introduced unsupported number: {token}")
 
 
 def _sanitize_reason(value: Any) -> str:
@@ -202,18 +199,24 @@ def _image_data_url(path: Path, max_bytes: int) -> str:
     if not path.exists() or not path.is_file() or path.stat().st_size > max_bytes:
         return ""
     suffix = path.suffix.lower()
-    mime = "image/png" if suffix == ".png" else "image/jpeg" if suffix in {".jpg", ".jpeg"} else "image/webp"
-    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+    mime = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }.get(suffix, "")
+    if not mime:
         return ""
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{mime};base64,{encoded}"
 
 
 class WatchlistAIService:
-    """Provider-neutral, failover-capable Final Watchlist AI interpreter.
+    """Provider-neutral failover service for Final Watchlist interpretation.
 
-    This service owns only the `watchlist_ai` configuration/cache/artifact
-    namespace. It has no dependency on News Monitor or IDX Disclosure AI state.
+    This class owns only the top-level ``watchlist_ai`` configuration plus its
+    dedicated cache/artifact namespace. It has no dependency on News Monitor or
+    IDX Disclosure AI state.
     """
 
     def __init__(
@@ -243,7 +246,11 @@ class WatchlistAIService:
 
     def _providers(self) -> list[dict[str, Any]]:
         raw = self.config.get("providers", [])
-        providers = [dict(item) for item in raw if isinstance(item, Mapping) and item.get("enabled", True)]
+        providers = [
+            dict(item)
+            for item in raw
+            if isinstance(item, Mapping) and item.get("enabled", True)
+        ]
         providers.sort(key=lambda item: int(item.get("priority", 999) or 999))
         return providers[:3]
 
@@ -253,13 +260,34 @@ class WatchlistAIService:
             "Anda adalah AI interpreter khusus Final Watchlist SDE Swing. Jelaskan perspektif Anda "
             "sebagai swing trader berdasarkan HANYA fakta SDE yang diberikan. Anda boleh menyebut "
             "angka resmi seperti harga, entry, stop loss, target, RR, score, net flow, broker cost, "
-            "support/resistance, RSI, dan angka lain persis dari data. Jangan mengubah angka, jangan "
-            "menciptakan level baru, jangan membuat AI Score/probability/AI Decision, dan jangan "
-            "menggantikan keputusan SDE. Hubungkan chart, technical, plan, broker, multi-day flow, "
-            "market context, dan risiko secara natural bila datanya tersedia. Tulis Bahasa Indonesia "
-            "dalam 2-4 paragraf yang benar-benar menjelaskan pemikiran, bukan daftar poin. Kesimpulan "
-            "harus singkat. Keluarkan JSON valid dengan tepat dua key: analysis dan conclusion."
+            "support/resistance, RSI, dan angka lain persis atau dalam format ekuivalen dari data. "
+            "Jangan mengubah nilai, jangan menciptakan level baru, jangan membuat AI Score, "
+            "probability, atau AI Decision, dan jangan menggantikan keputusan SDE. Hubungkan chart, "
+            "technical, plan, broker, multi-day flow, market context, dan risiko secara natural bila "
+            "datanya tersedia. Tulis Bahasa Indonesia dalam 2-4 paragraf yang benar-benar menjelaskan "
+            "pemikiran, bukan daftar poin. Kesimpulan harus singkat. Keluarkan JSON valid dengan tepat "
+            "dua key: analysis dan conclusion."
         )
+
+    def _provider_identity(self, cfg: Mapping[str, Any]) -> tuple[str, str, str]:
+        provider = str(cfg.get("provider") or "").strip().upper()
+        defaults = _PROVIDER_DEFAULTS.get(provider)
+        if defaults is None:
+            raise RuntimeError(f"UNSUPPORTED_PROVIDER:{provider or 'EMPTY'}")
+        key_env = str(cfg.get("api_key_env") or defaults["api_key_env"]).strip()
+        model_env = str(defaults["model_env"])
+        model = str(
+            cfg.get("model")
+            or self.environ.get(model_env)
+            or defaults["model"]
+        ).strip()
+        return provider, model, key_env
+
+    def _api_key(self, key_env: str) -> str:
+        key = str(self.environ.get(key_env, "") or "").strip()
+        if not key:
+            raise RuntimeError(f"MISSING_API_KEY:{key_env}")
+        return key
 
     def _cache_path(self, provider: str, model: str, context_hash: str) -> Path:
         safe_provider = re.sub(r"[^a-z0-9_-]+", "_", provider.lower())
@@ -289,11 +317,16 @@ class WatchlistAIService:
             "cached_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         })
 
-    def _request_openai(self, cfg: Mapping[str, Any], context: Mapping[str, Any], chart_path: Path | None) -> dict[str, Any]:
-        key = str(self.environ.get(str(cfg.get("api_key_env") or "OPENAI_API_KEY"), "") or "").strip()
-        model = str(cfg.get("model") or self.environ.get("WATCHLIST_AI_OPENAI_MODEL") or "gpt-5.6-luna").strip()
-        if not key:
-            raise RuntimeError("MISSING_API_KEY")
+    def _request_openai(
+        self,
+        cfg: Mapping[str, Any],
+        context: Mapping[str, Any],
+        chart_path: Path | None,
+        *,
+        model: str,
+        key_env: str,
+    ) -> dict[str, Any]:
+        key = self._api_key(key_env)
         content: list[dict[str, Any]] = [{
             "type": "input_text",
             "text": json.dumps(context, ensure_ascii=False, default=str),
@@ -317,7 +350,10 @@ class WatchlistAIService:
         response = self.session.post(
             str(cfg.get("base_url") or "https://api.openai.com/v1/responses"),
             json=body,
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
             timeout=self.timeout_seconds,
         )
         if response.status_code >= 400:
@@ -328,17 +364,38 @@ class WatchlistAIService:
             raise RuntimeError("EMPTY_RESPONSE")
         return json.loads(text)
 
-    def _request_gemini(self, cfg: Mapping[str, Any], context: Mapping[str, Any], chart_path: Path | None) -> dict[str, Any]:
-        key = str(self.environ.get(str(cfg.get("api_key_env") or "GEMINI_API_KEY"), "") or "").strip()
-        model = str(cfg.get("model") or self.environ.get("WATCHLIST_AI_GEMINI_MODEL") or "gemini-2.5-flash").strip()
-        if not key:
-            raise RuntimeError("MISSING_API_KEY")
-        parts: list[dict[str, Any]] = [{"text": json.dumps(context, ensure_ascii=False, default=str)}]
-        if bool(cfg.get("vision", True)) and chart_path is not None and chart_path.exists() and chart_path.stat().st_size <= self.max_chart_bytes:
-            suffix = chart_path.suffix.lower()
-            mime = "image/png" if suffix == ".png" else "image/jpeg" if suffix in {".jpg", ".jpeg"} else "image/webp" if suffix == ".webp" else ""
+    def _request_gemini(
+        self,
+        cfg: Mapping[str, Any],
+        context: Mapping[str, Any],
+        chart_path: Path | None,
+        *,
+        model: str,
+        key_env: str,
+    ) -> dict[str, Any]:
+        key = self._api_key(key_env)
+        parts: list[dict[str, Any]] = [{
+            "text": json.dumps(context, ensure_ascii=False, default=str),
+        }]
+        if (
+            bool(cfg.get("vision", True))
+            and chart_path is not None
+            and chart_path.exists()
+            and chart_path.stat().st_size <= self.max_chart_bytes
+        ):
+            mime = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".webp": "image/webp",
+            }.get(chart_path.suffix.lower(), "")
             if mime:
-                parts.append({"inlineData": {"mimeType": mime, "data": base64.b64encode(chart_path.read_bytes()).decode("ascii")}})
+                parts.append({
+                    "inlineData": {
+                        "mimeType": mime,
+                        "data": base64.b64encode(chart_path.read_bytes()).decode("ascii"),
+                    }
+                })
         body = {
             "systemInstruction": {"parts": [{"text": self._instruction()}]},
             "contents": [{"role": "user", "parts": parts}],
@@ -356,7 +413,10 @@ class WatchlistAIService:
                 "temperature": float(self.config.get("temperature", 0.25) or 0.25),
             },
         }
-        base = str(cfg.get("base_url") or "https://generativelanguage.googleapis.com/v1beta/models").rstrip("/")
+        base = str(
+            cfg.get("base_url")
+            or "https://generativelanguage.googleapis.com/v1beta/models"
+        ).rstrip("/")
         response = self.session.post(
             f"{base}/{model}:generateContent?key={key}",
             json=body,
@@ -378,11 +438,16 @@ class WatchlistAIService:
             raise RuntimeError("EMPTY_RESPONSE")
         return json.loads(text)
 
-    def _request_groq(self, cfg: Mapping[str, Any], context: Mapping[str, Any], chart_path: Path | None) -> dict[str, Any]:
-        key = str(self.environ.get(str(cfg.get("api_key_env") or "GROQ_API_KEY"), "") or "").strip()
-        model = str(cfg.get("model") or self.environ.get("WATCHLIST_AI_GROQ_MODEL") or "llama-3.3-70b-versatile").strip()
-        if not key:
-            raise RuntimeError("MISSING_API_KEY")
+    def _request_groq(
+        self,
+        cfg: Mapping[str, Any],
+        context: Mapping[str, Any],
+        chart_path: Path | None,
+        *,
+        model: str,
+        key_env: str,
+    ) -> dict[str, Any]:
+        key = self._api_key(key_env)
         user_content: Any = json.dumps(context, ensure_ascii=False, default=str)
         if bool(cfg.get("vision", False)) and chart_path is not None:
             image = _image_data_url(chart_path, self.max_chart_bytes)
@@ -404,7 +469,10 @@ class WatchlistAIService:
         response = self.session.post(
             str(cfg.get("base_url") or "https://api.groq.com/openai/v1/chat/completions"),
             json=body,
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
             timeout=self.timeout_seconds,
         )
         if response.status_code >= 400:
@@ -422,33 +490,28 @@ class WatchlistAIService:
             raise RuntimeError("EMPTY_RESPONSE")
         return json.loads(text)
 
-    def _request(self, cfg: Mapping[str, Any], context: Mapping[str, Any], chart_path: Path | None) -> tuple[str, str, dict[str, Any]]:
-        provider = str(cfg.get("provider") or "").strip().upper()
+    def _request(
+        self,
+        cfg: Mapping[str, Any],
+        context: Mapping[str, Any],
+        chart_path: Path | None,
+    ) -> tuple[str, str, dict[str, Any]]:
+        provider, model, key_env = self._provider_identity(cfg)
         if provider == "OPENAI":
-            model = str(cfg.get("model") or self.environ.get("WATCHLIST_AI_OPENAI_MODEL") or "gpt-5.6-luna").strip()
-            return provider, model, self._request_openai(cfg, context, chart_path)
-        if provider == "GEMINI":
-            model = str(cfg.get("model") or self.environ.get("WATCHLIST_AI_GEMINI_MODEL") or "gemini-2.5-flash").strip()
-            return provider, model, self._request_gemini(cfg, context, chart_path)
-        if provider == "GROQ":
-            model = str(cfg.get("model") or self.environ.get("WATCHLIST_AI_GROQ_MODEL") or "llama-3.3-70b-versatile").strip()
-            return provider, model, self._request_groq(cfg, context, chart_path)
-        raise RuntimeError(f"UNSUPPORTED_PROVIDER:{provider or 'EMPTY'}")
-
-    @staticmethod
-    def _validate(payload: Mapping[str, Any], context: Mapping[str, Any]) -> tuple[str, str]:
-        if not isinstance(payload, Mapping):
-            raise ValueError("RESPONSE_NOT_OBJECT")
-        if set(payload) - {"analysis", "conclusion"}:
-            raise ValueError("UNSUPPORTED_RESPONSE_FIELDS")
-        analysis = re.sub(r"\s+", " ", str(payload.get("analysis") or "")).strip()
-        conclusion = re.sub(r"\s+", " ", str(payload.get("conclusion") or "")).strip()
-        if len(analysis) < 80:
-            raise ValueError("ANALYSIS_TOO_SHORT")
-        if not conclusion:
-            raise ValueError("CONCLUSION_EMPTY")
-        _validate_numbers(f"{analysis} {conclusion}", context)
-        return analysis[:3000], conclusion[:700]
+            payload = self._request_openai(
+                cfg, context, chart_path, model=model, key_env=key_env
+            )
+        elif provider == "GEMINI":
+            payload = self._request_gemini(
+                cfg, context, chart_path, model=model, key_env=key_env
+            )
+        elif provider == "GROQ":
+            payload = self._request_groq(
+                cfg, context, chart_path, model=model, key_env=key_env
+            )
+        else:  # protected by _provider_identity
+            raise RuntimeError(f"UNSUPPORTED_PROVIDER:{provider}")
+        return provider, model, payload
 
     def interpret(self, context: Mapping[str, Any]) -> WatchlistAIResult:
         symbol = str((context.get("identity") or {}).get("symbol") or "").upper()
@@ -460,29 +523,34 @@ class WatchlistAIService:
         chart_path_text = str((context.get("chart") or {}).get("path") or "")
         chart_path = Path(chart_path_text) if chart_path_text else None
         attempts: list[ProviderAttempt] = []
-
         providers = self._providers()
+
         if not providers:
-            return WatchlistAIResult(
+            result = WatchlistAIResult(
                 status="ALL_PROVIDERS_FAILED",
                 symbol=symbol,
                 trade_date=trade_date,
                 decision=decision,
-                attempts=(ProviderAttempt("CONFIG", "", "FAILED", "NO_PROVIDER_CONFIGURED"),),
+                attempts=(ProviderAttempt(
+                    "CONFIG", "", "FAILED", "NO_PROVIDER_CONFIGURED"
+                ),),
                 context_hash=context_hash,
             )
+            return self._persist_result(result, context)
 
         for index, cfg in enumerate(providers, start=1):
-            provider = str(cfg.get("provider") or "").strip().upper()
-            if provider == "OPENAI":
-                model = str(cfg.get("model") or self.environ.get("WATCHLIST_AI_OPENAI_MODEL") or "gpt-5.6-luna").strip()
-            elif provider == "GEMINI":
-                model = str(cfg.get("model") or self.environ.get("WATCHLIST_AI_GEMINI_MODEL") or "gemini-2.5-flash").strip()
-            elif provider == "GROQ":
-                model = str(cfg.get("model") or self.environ.get("WATCHLIST_AI_GROQ_MODEL") or "llama-3.3-70b-versatile").strip()
-            else:
-                model = str(cfg.get("model") or "")
-            cache_path = self._cache_path(provider or "unknown", model or "unknown", context_hash)
+            try:
+                provider, model, key_env = self._provider_identity(cfg)
+            except Exception as exc:
+                attempts.append(ProviderAttempt(
+                    str(cfg.get("provider") or "UNKNOWN").upper(),
+                    str(cfg.get("model") or ""),
+                    "FAILED",
+                    _sanitize_reason(exc),
+                ))
+                continue
+
+            cache_path = self._cache_path(provider, model, context_hash)
             cached = self._read_cache(cache_path)
             if cached is not None:
                 analysis, conclusion = cached
@@ -500,9 +568,10 @@ class WatchlistAIService:
                     context_hash=context_hash,
                 )
                 return self._persist_result(result, context)
+
             try:
                 provider, model, payload = self._request(cfg, context, chart_path)
-                analysis, conclusion = self._validate(payload, context)
+                analysis, conclusion = validate_response(payload, context)
                 self._write_cache(cache_path, analysis, conclusion)
                 attempts.append(ProviderAttempt(provider, model, "SUCCESS"))
                 result = WatchlistAIResult(
@@ -519,7 +588,9 @@ class WatchlistAIService:
                 )
                 return self._persist_result(result, context)
             except Exception as exc:
-                attempts.append(ProviderAttempt(provider, model, "FAILED", _sanitize_reason(exc)))
+                attempts.append(ProviderAttempt(
+                    provider, model, "FAILED", _sanitize_reason(exc)
+                ))
 
         result = WatchlistAIResult(
             status="ALL_PROVIDERS_FAILED",
@@ -531,7 +602,11 @@ class WatchlistAIService:
         )
         return self._persist_result(result, context)
 
-    def _persist_result(self, result: WatchlistAIResult, context: Mapping[str, Any]) -> WatchlistAIResult:
+    def _persist_result(
+        self,
+        result: WatchlistAIResult,
+        context: Mapping[str, Any],
+    ) -> WatchlistAIResult:
         target_dir = self.output_root / result.trade_date
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / f"{result.symbol or 'UNKNOWN'}.json"
@@ -552,11 +627,13 @@ class WatchlistAIService:
             "context": context,
         }
         write_json(target, payload)
-        return WatchlistAIResult(
-            **{**result.__dict__, "artifact_path": str(target)}
-        )
+        return replace(result, artifact_path=str(target))
 
-    def write_manifest(self, trade_date: str, results: Iterable[WatchlistAIResult]) -> Path:
+    def write_manifest(
+        self,
+        trade_date: str,
+        results: Iterable[WatchlistAIResult],
+    ) -> Path:
         items = list(results)
         target_dir = self.output_root / trade_date
         target_dir.mkdir(parents=True, exist_ok=True)
