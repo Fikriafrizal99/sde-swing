@@ -1,22 +1,50 @@
-TELEGRAM REPORTER — SDE SWING V1.5
-==================================
+TELEGRAM REPORTING — SDE SWING V1.7.1
+=====================================
 
-Formatter pusat:
-modules/telegram/professional_ui.py
+Jalur aktif:
+engine-owned artifact
+-> enhanced report builder
+-> current presentation formatter
+-> ReportPayload
+-> modules/job_runner/delivery.py
+-> TelegramRouter
+-> Telegram topic
 
-Penggunaan utama:
-- Scheduler: run_sde_job.py
-- Full manual: master_pipeline.py / telegram_bot.py swing
+Presentation aktif utama:
+- Market Outlook       : modules/telegram/market_outlook_ui.py
+- Post Market          : modules/telegram/post_market_ui.py
+- Final Watchlist      : modules/telegram/final_watchlist_ui.py
+- Shared/operational   : modules/telegram/daily_report_ui.py
+- Heatmap              : modules/telegram/market_heatmap.py
 
-Test koneksi : run_test_telegram.bat
-Dry run      : python modules\telegram\telegram_bot.py --config config\telegram.json --dry-run swing ...
-Preview UI   : python tools\generate_telegram_ui_preview.py --trade-date YYYY-MM-DD
-Validasi UI  : python tools\validate_telegram_ui_preview.py
+Routing aktif:
+- Market / Post Market / Broker / Final Watchlist : topic 9
+- Signal Detail                                : topic 6
+- Evaluation / operational report             : topic 701
+- System                                      : topic 5
+- News                                        : topic 1451
+
+Maintenance Telegram:
+- Validasi credential : python tools\telegram_settings.py validate-credentials
+- Validasi semua topic: python tools\telegram_settings.py test-all
+- Status konfigurasi  : python tools\telegram_settings.py status
+
+Preview/report aktif harus mengikuti enhanced runtime/report builder. Jangan
+menambahkan launcher baru yang memanggil telegram_bot.py secara langsung.
+
+COMPATIBILITY ONLY
+------------------
+modules/telegram/telegram_bot.py dan modules/telegram/swing_report_builder.py
+masih dipertahankan hanya karena deprecated master_pipeline.py masih memiliki
+kontrak kompatibilitas Full Manual/regression. Keduanya bukan jalur operasional
+utama dan tidak boleh menjadi sumber presentation baru.
 
 Guardrail:
-- Entry/SL/TP hanya dianggap valid bila entry plan berstatus APPROVED/VALID/READY/ACTIVE.
-- Plan REJECT ditampilkan sebagai ENTRY READINESS: NOT READY.
-- AVOID tidak masuk Top Watchlist.
+- Reporting/presentation tidak boleh mengubah engine decision, score, threshold,
+  entry, SL, TP1, TP2, risk/reward, atau lifecycle semantics.
 - Dynamic HTML di-escape.
 - Parse mode default HTML.
-- Pipeline Swing tetap terpisah dari Day Trade.
+- Final Watchlist Summary/Detail/CSV harus berada pada topic Final Watchlist yang
+  sama.
+- Legacy TELEGRAM_THREAD_SIGNAL_ID hanya compatibility fallback dan tidak boleh
+  menimpa route spesifik.
