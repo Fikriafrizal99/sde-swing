@@ -4,7 +4,15 @@ chcp 65001 >nul
 cd /d "%~dp0.."
 call tools\set_python_cmd.bat
 if not defined SDE_PYTHON_CMD exit /b 9009
-%SDE_PYTHON_CMD% modules\telegram\telegram_bot.py --config config\telegram.json test
+
+%SDE_PYTHON_CMD% tools\telegram_settings.py validate-credentials
+if errorlevel 1 (
+  set "RC=%ERRORLEVEL%"
+  pause
+  exit /b %RC%
+)
+
+%SDE_PYTHON_CMD% tools\telegram_settings.py test-all
 set "RC=%ERRORLEVEL%"
 pause
 exit /b %RC%
