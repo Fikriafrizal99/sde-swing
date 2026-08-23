@@ -114,6 +114,38 @@ Neither recovery path bypasses Final Watchlist same-date dependency validation.
 
 See `RUNTIME_JOBS.md` for the operational recovery policy.
 
+## Database archive boundary
+
+The history database is a downstream archive, not a decision input for the
+current run. The active path remains:
+
+```text
+config/pipeline.json: paths.database_archiver
+  -> modules/database/swing_history_db.py
+  -> baseline schema/general archive behavior
+  -> row-incremental historical price archive
+```
+
+Historical Yahoo CSV files remain fully inspected when their physical SHA
+changes so older candle corrections cannot be missed. The optimized archive
+compares canonical Symbol + Date + OHLCV row hashes against the current SQLite
+projection before writing revisions:
+
+```text
+unchanged row -> no DB revision write
+new row       -> append-only revision + current projection
+corrected row -> append-only revision + corrected current projection
+```
+
+Whole-file SHA and archive timestamps are intentionally excluded from the row
+value comparison. This prevents a newly appended daily candle from turning all
+older candles in the same CSV into duplicate revisions, while preserving the
+append-only correction history and physical-file audit trail.
+
+This optimization changes no Technical, Candidate, Broker, Decision, Entry/Exit,
+Lifecycle, Portfolio, scoring, threshold, or quant behavior. See
+`DATABASE_ARCHIVE.md` for the archive contract and regression requirements.
+
 ## Compatibility boundary
 
 `master_pipeline.py` is a deprecated compatibility entry point retained for
