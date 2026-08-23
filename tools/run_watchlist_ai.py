@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from modules.ai_interpretation.watchlist import WatchlistAIResult, WatchlistAIService, build_watchlist_context
-from modules.job_runner.delivery import deliver
+from modules.job_runner.delivery import deliver, telegram_route
 from modules.job_runner.reports import ReportPayload
 from modules.job_runner.runtime import RunnerContext, load_environment_file, read_json, resolve
 from modules.telegram.watchlist_ai_ui import format_watchlist_ai_failure, format_watchlist_ai_interpretation
@@ -112,36 +112,65 @@ def _failure_payload(trade_date: str, symbols: list[str], reason: str = "") -> R
     )
 
 
+def _deliver_ai(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str, Any]]:
+    """Deliver only when a dedicated AI topic is configured.
+
+    Watchlist AI is not allowed to fall back into the Telegram main chat or any
+    News/IDX/SDE report topic. `TELEGRAM_THREAD_AI_ID` is the preferred route.
+    """
+    if not payloads:
+        return []
+    configured: list[ReportPayload] = []
+    for payload in payloads:
+        route = telegram_route(ctx, payload)
+        if str(route.get("message_thread_id") or "").strip():
+            configured.append(payload)
+    if not configured:
+        return [{
+            "status": "SKIPPED_AI_TOPIC_NOT_CONFIGURED",
+            "category": "AI",
+            "trade_date": ctx.trade_date.isoformat(),
+            "report_count": len(payloads),
+            "required_env": "TELEGRAM_THREAD_AI_ID",
+        }]
+    return deliver(ctx, configured)
+
+
 def run(ctx: RunnerContext) -> dict[str, Any]:
     service = WatchlistAIService(ctx.scheduler_config)
     if not service.enabled:
         return {"status": "DISABLED", "payloads": [], "results": []}
 
+    notify_failure = bool(service.config.get("notify_on_failure", True))
     ok, official_status = _official_status_ok(ctx.trade_date.isoformat())
     if not ok:
-        payload = _failure_payload(
-            ctx.trade_date.isoformat(),
-            [],
-            "Interpretasi tidak dijalankan karena Final Watchlist resmi belum berstatus sukses untuk tanggal tersebut.",
-        )
+        payloads = []
+        if notify_failure:
+            payloads.append(_failure_payload(
+                ctx.trade_date.isoformat(),
+                [],
+                "Interpretasi tidak dijalankan karena Final Watchlist resmi belum berstatus sukses untuk tanggal tersebut.",
+            ))
         return {
             "status": "SKIPPED_OFFICIAL_NOT_READY",
             "reason": official_status,
-            "payloads": [payload],
+            "payloads": payloads,
             "results": [],
         }
 
     csv_path = _final_watchlist_path(ctx.trade_date.isoformat(), ctx.scheduler_config)
     rows = _read_csv(csv_path)
     if not rows:
-        payload = _failure_payload(
-            ctx.trade_date.isoformat(),
-            [],
-            "Artifact Final Watchlist resmi tidak tersedia atau kosong; jalur SDE resmi tidak diubah.",
-        )
+        payloads = []
+        if notify_failure:
+            payloads.append(_failure_payload(
+                ctx.trade_date.isoformat(),
+                [],
+                "Artifact Final Watchlist resmi tidak tersedia atau kosong; jalur SDE resmi tidak diubah.",
+            ))
         return {
             "status": "SOURCE_ARTIFACT_MISSING",
-            "payloads": [payload],
+            "payloads": payloads,
             "results": [],
             "source": str(csv_path),
         }
@@ -163,7 +192,7 @@ def run(ctx: RunnerContext) -> dict[str, Any]:
             failed_symbols.append(result.symbol or symbol or "UNKNOWN")
 
     manifest = service.write_manifest(ctx.trade_date.isoformat(), results)
-    if failed_symbols:
+    if failed_symbols and notify_failure:
         payloads.append(_failure_payload(
             ctx.trade_date.isoformat(),
             failed_symbols,
@@ -200,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
         ctx = _load_context(args)
         outcome = run(ctx)
         payloads = list(outcome.get("payloads", []))
-        delivery = deliver(ctx, payloads) if payloads else []
+        delivery = _deliver_ai(ctx, payloads)
         print(json.dumps({
             "status": outcome.get("status"),
             "trade_date": args.trade_date,
@@ -222,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
                 [],
                 f"Subsystem Watchlist AI mengalami error operasional ({type(exc).__name__}); Final Watchlist resmi tetap tidak terpengaruh.",
             )
-            deliver(ctx, [payload])
+            _deliver_ai(ctx, [payload])
         except Exception:
             pass
         print(f"[WATCHLIST AI] non-blocking failure: {type(exc).__name__}: {exc}", file=sys.stderr)
