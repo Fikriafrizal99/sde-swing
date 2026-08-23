@@ -51,7 +51,7 @@ still used by active reports.
 
 ## Historical report access boundary
 
-Weekend/holiday access is intentionally split from engine execution:
+Weekend/holiday access is intentionally split from normal engine execution:
 
 ```text
 latest completed IDX session
@@ -63,14 +63,54 @@ latest completed IDX session
 
 Preview-only and resend paths do not run the engine or dependency graph. A
 missing dated artifact is an explicit missing-artifact condition, not permission
-to rebuild it from newer live data.
+to relabel newer live data as historical.
 
-The only explicit missed-session engine recovery currently exposed is Post
-Market. It runs the same frozen Post Market runtime for the latest completed
-trade date with Telegram disabled. Market Outlook is not historically rebuilt
-when its original pre-market artifact is missing, because a later live global
-snapshot could introduce look-ahead information. Final Watchlist never bypasses
-its same-date dependency validation.
+### Market Outlook recovery
+
+A missing Market Outlook now has a separate point-in-time recovery path:
+
+```text
+RUN_MARKET_OUTLOOK.bat [9]
+  -> tools/recover_market_outlook.py
+  -> modules/global_market/historical_global_market_snapshot.py
+  -> YahooGlobalMarketProvider.download_batch_range()
+  -> existing global-market validator
+  -> existing global sentiment scorer
+  -> previous-session IHSG/technical context
+  -> existing sector-rotation producer
+  -> enhanced Market Outlook report builder
+  -> preview/status only; Telegram OFF
+```
+
+This recovery path is deliberately separate from the normal live runner. The
+normal Market Outlook command and behavior remain unchanged.
+
+For a target trade date `T`, global instruments are grouped by the market
+session that was already completed at the configured Market Outlook timestamp
+(currently 07:30 Asia/Jakarta). Each Yahoo request is bounded to that expected
+session, and the existing `validate_instrument()` and
+`compute_global_sentiment()` functions remain authoritative.
+
+The IHSG regime and technical/sector context are constrained to the previous
+completed IDX session because a pre-market report for `T` must not consume the
+IDX close of `T`. Current-state ZAPI activity is intentionally not queried in
+historical recovery because this contract has no guaranteed point-in-time ZAPI
+activity source.
+
+Recovery records `HISTORICAL_AS_OF`, the as-of timestamp, prior technical
+snapshot, and bounded Yahoo transport ranges. It fails closed when those
+historical facts cannot be reconstructed. It does not execute or modify the
+Decision Engine, Candidate Selector, Broker Fusion, Final Watchlist engine,
+lifecycle semantics, or quant parameters.
+
+### Post Market recovery
+
+Post Market remains the other explicit missed-session recovery. It runs the
+same frozen Post Market runtime for the latest completed trade date with
+Telegram disabled; its historical evaluation time is pinned to the requested
+session close.
+
+Neither recovery path bypasses Final Watchlist same-date dependency validation.
 
 See `RUNTIME_JOBS.md` for the operational recovery policy.
 
