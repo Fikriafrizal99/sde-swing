@@ -11,10 +11,14 @@ echo                SDE SWING - FINAL WATCHLIST
 echo ================================================================
 echo.
 echo [1] Normal - pilih Broker Summary 1D / 3D / 5D / Custom / Reuse
-echo [2] Preview existing - tidak kirim Telegram
+echo [2] Preview existing - sesi trading terakhir, read-only
 echo [3] Kirim ulang - delivery-only hasil hari trading terakhir
 echo [4] Cek status Final Watchlist
 echo [0] Kembali
+echo.
+echo Catatan: Final Watchlist tidak akan dibuat ulang dengan melewati dependency.
+echo          Recovery hanya valid jika Market Outlook, Post Market, dan broker
+necho          context untuk trade date yang sama memang tersedia dan valid.
 echo.
 set "MODE="
 set /p "MODE=Pilih mode: "
@@ -38,8 +42,8 @@ for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_
 if not defined PREVIEW_DATE goto PREVIEW_DATE_FAILED
 
 echo.
-echo Preview Final Watchlist trade date !PREVIEW_DATE! tanpa kirim Telegram...
-%SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job final_watchlist --trade-date !PREVIEW_DATE! --preview-existing --no-telegram
+echo Membuka preview Final Watchlist trade date !PREVIEW_DATE! dari artifact existing...
+%SDE_PYTHON_CMD% -u tools\resend_final_watchlist.py --trade-date !PREVIEW_DATE! --preview-only
 set "RC=!ERRORLEVEL!"
 goto STATUS
 
