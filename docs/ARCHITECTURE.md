@@ -49,6 +49,31 @@ Current dedicated presentation modules are:
 Shared operational presentation can remain in `daily_report_ui.py` where it is
 still used by active reports.
 
+## Historical report access boundary
+
+Weekend/holiday access is intentionally split from engine execution:
+
+```text
+latest completed IDX session
+  -> existing dated engine artifacts
+  -> enhanced report builder
+  -> current presentation
+  -> preview-only OR delivery-only resend
+```
+
+Preview-only and resend paths do not run the engine or dependency graph. A
+missing dated artifact is an explicit missing-artifact condition, not permission
+to rebuild it from newer live data.
+
+The only explicit missed-session engine recovery currently exposed is Post
+Market. It runs the same frozen Post Market runtime for the latest completed
+trade date with Telegram disabled. Market Outlook is not historically rebuilt
+when its original pre-market artifact is missing, because a later live global
+snapshot could introduce look-ahead information. Final Watchlist never bypasses
+its same-date dependency validation.
+
+See `RUNTIME_JOBS.md` for the operational recovery policy.
+
 ## Compatibility boundary
 
 `master_pipeline.py` is a deprecated compatibility entry point retained for
