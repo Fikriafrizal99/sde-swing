@@ -239,11 +239,11 @@ def format_watchlist_detail(row: Mapping[str, Any]) -> str:
     top_sell = _compact_actors(_pick(row, "top_sellers", default=[])) or "N/A"
 
     lines = [
-        f"📈 {symbol} | {decision} | {confidence}",
+        f"📈 <b>{symbol}</b> | {decision} | {confidence}",
         f"{setup} • {analysis_date}",
         "",
-        f"💰 {current} | Entry {entry_low}–{entry_high}",
-        f"🛑 {stop} | 🎯 {tp1} / {tp2} | RR 1:{rr}",
+        f"💰 Harga {current} | Entry {entry_low}–{entry_high}",
+        f"🛑 SL {stop} | 🎯 {tp1} / {tp2} | RR 1:{rr}",
         "",
         f"📊 {trend} | {phase}",
         f"S {support} | R {resistance}",
