@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from modules.analytics import outcome_tracker as tracker
-from tools.send_lifecycle_digest import build_lifecycle_message
+from modules.analytics.lifecycle_presentation import build_lifecycle_message
 
 
 def _open_read_only(db_path: Path) -> sqlite3.Connection:
