@@ -30,10 +30,9 @@ def _sample(**overrides):
         "ihsg_change": 0.75,
         "ihsg_status": "CURRENT_SESSION",
         "ihsg_data_date": "2026-08-18",
-        "leading": [],
-        "rotating_in": [],
-        "sector_rotation_trade_date": "",
-        "sector_rotation_status": "NOT_CURRENT",
+        "daily_sector": {},
+        "daily_sector_trade_date": "",
+        "daily_sector_status": "NOT_CURRENT",
         "candidate_data_date": "2026-08-18",
         "setup_distribution": {
             "DEVELOPING": 15,
@@ -76,8 +75,8 @@ Bullish 40% · Neutral 45% · Bearish 15%
 🧭 Market  : SELECTIVE
 📊 Breadth : MIXED
 
-🔥 Sektor kuat
-⚠️ Data sektor current tidak tersedia.
+🔄 ROTASI SEKTOR HARI INI
+⚠️ Data sektor sesi berjalan belum cukup.
 
 📈 TECHNICAL BREADTH
 ✅ Valid   : 777 saham
@@ -101,6 +100,32 @@ Hindari mengejar saham yang sudah terlalu jauh dari area entry.
 
 SDE-POST-MARKET-20260818-163023-f69d"""
     assert text == expected
+
+
+def test_daily_sector_pulse_renders_strongest_and_weakest_without_multiday_buckets() -> None:
+    daily_sector = {
+        "status": "VALID",
+        "trade_date": "2026-08-18",
+        "data_date": "2026-08-18",
+        "sectors": [
+            {"sector": "Barang Baku", "rank": 1, "median_return_1d": 1.84, "positive_breadth": 0.71},
+            {"sector": "Energi", "rank": 2, "median_return_1d": 1.21, "positive_breadth": 0.67},
+            {"sector": "Teknologi", "rank": 3, "median_return_1d": 0.86, "positive_breadth": 0.63},
+            {"sector": "Infrastruktur", "rank": 4, "median_return_1d": -0.48, "positive_breadth": 0.38},
+            {"sector": "Kesehatan", "rank": 5, "median_return_1d": -0.74, "positive_breadth": 0.34},
+            {"sector": "Keuangan", "rank": 6, "median_return_1d": -1.02, "positive_breadth": 0.29},
+        ],
+    }
+    text = format_post_market(_sample(
+        daily_sector=daily_sector,
+        daily_sector_trade_date="2026-08-18",
+        daily_sector_status="VALID",
+    ))
+    assert "🔥 Barang Baku  +1,84% · Breadth 71%" in text
+    assert "🔥 Energi  +1,21% · Breadth 67%" in text
+    assert "🔻 Keuangan  -1,02% · Breadth 29%" in text
+    assert "LEADING" not in text
+    assert "IMPROVING" not in text
 
 
 def test_legacy_and_removed_sections_never_reappear() -> None:
@@ -149,16 +174,19 @@ def test_stale_technical_blocks_breadth_and_setup_distribution() -> None:
     assert "Data setup current tidak tersedia." in text
 
 
-def test_stale_sector_rotation_is_not_rendered_as_current() -> None:
+def test_stale_daily_sector_is_not_rendered_as_current() -> None:
     text = format_post_market(_sample(
-        leading=["Transportasi & Logistik"],
-        rotating_in=["Infrastruktur"],
-        sector_rotation_trade_date="2026-08-17",
-        sector_rotation_status="VALID",
+        daily_sector={
+            "status": "VALID",
+            "trade_date": "2026-08-17",
+            "data_date": "2026-08-17",
+            "sectors": [{"sector": "Transportasi", "rank": 1, "median_return_1d": 2.0, "positive_breadth": 0.8}],
+        },
+        daily_sector_trade_date="2026-08-17",
+        daily_sector_status="VALID",
     ))
     assert "Transportasi" not in text
-    assert "Infrastruktur" not in text
-    assert "Data sektor current tidak tersedia." in text
+    assert "Data sektor sesi berjalan belum cukup." in text
 
 
 def test_stale_candidate_hides_setup_distribution() -> None:
