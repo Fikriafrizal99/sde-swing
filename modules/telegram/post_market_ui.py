@@ -208,21 +208,53 @@ def _broker_presentation_status(data: Mapping[str, Any]) -> str:
     return "READY"
 
 
-def _sector_payload(data: Mapping[str, Any]) -> Mapping[str, Any]:
-    payload = data.get("sector_rotation")
-    return payload if isinstance(payload, Mapping) else data
+def _daily_sector_payload(data: Mapping[str, Any]) -> Mapping[str, Any]:
+    payload = data.get("daily_sector")
+    return payload if isinstance(payload, Mapping) else {}
 
 
-def _sector_current(data: Mapping[str, Any]) -> bool:
-    payload = _sector_payload(data)
-    status = _upper(data.get("sector_rotation_status") or payload.get("status"))
-    if status and status not in {"VALID", "CURRENT", "READY"}:
+def _daily_sector_current(data: Mapping[str, Any]) -> bool:
+    payload = _daily_sector_payload(data)
+    status = _upper(data.get("daily_sector_status") or payload.get("status"))
+    if status not in {"VALID", "CURRENT", "READY"}:
         return False
     trade_date = _iso_date(data.get("trade_date"))
-    rotation_date = _iso_date(data.get("sector_rotation_trade_date") or payload.get("trade_date"))
-    return (not trade_date and not rotation_date) or (
-        bool(trade_date and rotation_date) and trade_date == rotation_date
-    )
+    sector_date = _iso_date(data.get("daily_sector_trade_date") or payload.get("trade_date"))
+    data_date = _iso_date(payload.get("data_date"))
+    return bool(trade_date and sector_date and data_date) and trade_date == sector_date == data_date
+
+
+def _daily_sector_rows(data: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    if not _daily_sector_current(data):
+        return []
+    raw = _daily_sector_payload(data).get("sectors")
+    if not isinstance(raw, list):
+        return []
+    rows = [row for row in raw if isinstance(row, Mapping) and _present(row.get("sector"))]
+    return sorted(rows, key=lambda row: _integer(row.get("rank")) or 999)
+
+
+def _daily_sector_lines(data: Mapping[str, Any]) -> list[str]:
+    rows = _daily_sector_rows(data)
+    if not rows:
+        return []
+    strongest = rows[:3]
+    weakest = list(reversed(rows[-3:])) if len(rows) > 3 else []
+    lines: list[str] = []
+
+    def render(icon: str, row: Mapping[str, Any]) -> str:
+        sector = _text(row.get("sector"))
+        ret = _pct(row.get("median_return_1d"), signed=True, decimals=2)
+        breadth = _number(row.get("positive_breadth"))
+        breadth_text = _pct((breadth or 0.0) * 100.0, decimals=0) if breadth is not None else ""
+        suffix = " · ".join(item for item in (ret, f"Breadth {breadth_text}" if breadth_text else "") if item)
+        return f"{icon} {sector}{f'  {suffix}' if suffix else ''}"
+
+    lines.extend(render("🔥", row) for row in strongest)
+    if weakest:
+        lines.append("")
+        lines.extend(render("🔻", row) for row in weakest)
+    return lines
 
 
 def _breadth_label(data: Mapping[str, Any]) -> str:
@@ -274,18 +306,6 @@ def _percentages(data: Mapping[str, Any]) -> tuple[int, int, int] | None:
     if sum(counts) <= 0:
         return None
     return _allocate_units(counts, 100)
-
-
-def _sector_values(data: Mapping[str, Any]) -> list[str]:
-    if not _sector_current(data):
-        return []
-    payload = _sector_payload(data)
-    values: list[str] = []
-    for key in ("leading", "rotating_in", "improving"):
-        raw = payload.get(key)
-        if isinstance(raw, (list, tuple)):
-            values.extend(str(item).strip() for item in raw if str(item).strip())
-    return list(dict.fromkeys(values))
 
 
 def _setup_items(data: Mapping[str, Any]) -> list[tuple[str, int]]:
@@ -379,7 +399,7 @@ def format_post_market(data: dict[str, Any]) -> str:
     percentages = _percentages(data) if _technical_current(data) else None
     breadth = _breadth_label(data)
     market = _market_label(data)
-    sectors = _sector_values(data)
+    daily_sector_lines = _daily_sector_lines(data)
     setups = _setup_items(data)
 
     lines = [
@@ -399,11 +419,11 @@ def format_post_market(data: dict[str, Any]) -> str:
         lines.append(f"Bullish {bullish}% · Neutral {neutral}% · Bearish {bearish}%")
     lines += [_ihsg_line(data), f"🧭 Market  : {market}", f"📊 Breadth : {breadth}"]
 
-    lines += ["", "🔥 Sektor kuat"]
-    if sectors:
-        lines.extend(f"• {_text(sector)}" for sector in sectors)
+    lines += ["", "🔄 ROTASI SEKTOR HARI INI"]
+    if daily_sector_lines:
+        lines.extend(daily_sector_lines)
     else:
-        lines.append("⚠️ Data sektor current tidak tersedia.")
+        lines.append("⚠️ Data sektor sesi berjalan belum cukup.")
 
     lines += ["", "📈 TECHNICAL BREADTH"]
     if _technical_current(data) and sum(_counts(data)) > 0:
