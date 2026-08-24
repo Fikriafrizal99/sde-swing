@@ -305,7 +305,7 @@ def format_market_outlook(data: dict[str, Any]) -> str:
     available_groups = [(title, _clean_items(values, 4)) for title, values in sector_groups]
     available_groups = [(title, values) for title, values in available_groups if values]
     if available_groups:
-        lines += ["", "<b>🔄 ROTASI SEKTOR — SWING</b>"]
+        lines += ["", "<b>🔄 ROTASI SEKTOR</b>", "<i>Swing 5D/20D relatif terhadap IHSG</i>"]
         for title, values in available_groups:
             lines += [f"<b>{escape(title)}</b>"]
             lines.extend(f"• {escape(item)}" for item in values)
