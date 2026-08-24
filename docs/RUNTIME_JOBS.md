@@ -10,6 +10,42 @@ post market/technical snapshot, broker summary, and broker multi-day. The
 dependency validator rejects missing, stale trade dates, or mismatched config
 versions.
 
+## Final Watchlist lifecycle presentation
+
+Final Watchlist keeps lifecycle state and presentation downstream of the engine.
+The official Final Watchlist stage calls `sync_outcome_tracker` after Decision
+Engine and Entry Plan output are available. That sync updates SQLite and writes
+the Active Recommendations and material lifecycle presentation artifacts.
+
+Telegram presentation is canonicalized in:
+
+`modules/analytics/lifecycle_presentation.py`
+
+The same builders are reused by outcome-tracker sync, manual send tools, and
+preview/resend tools. Do not add another Active Recommendations or Lifecycle
+Digest formatter in a job runner, menu, or utility.
+
+The canonical manual Final Watchlist entrypoint
+`tools/run_final_watchlist_entrypoint.py` performs these downstream steps only
+after the official Final Watchlist child returns success:
+
+1. send the canonical Active Recommendations card from existing outcome-tracker
+   state through `tools/send_active_recommendations.py`;
+2. run the isolated Watchlist AI lane.
+
+Both are non-blocking relative to the authoritative Final Watchlist exit status.
+`--no-telegram` suppresses the Active Recommendations send. No Decision Engine,
+Technical, Broker, Entry, SL, TP, or lifecycle state formula is changed by this
+presentation step.
+
+`AGE` in Active Recommendations is lifecycle age in IDX market sessions.
+`scan_staleness_sessions` remains available in analytics state, but `Last Scan`
+is intentionally not rendered in Telegram because it is operational freshness,
+not lifecycle age.
+
+The full presentation/change-control contract is documented in
+`docs/LIFECYCLE_PRESENTATION_CONTRACT.md`.
+
 ## Trading-day guard
 
 Normal engine execution remains trading-calendar gated. A normal
