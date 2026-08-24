@@ -6,11 +6,15 @@ Status: canonical presentation contract for SDE Swing lifecycle reporting.
 
 This document fixes one presentation contract so Active Recommendations and Lifecycle Digest do not drift between automatic delivery, manual send, preview, and resend paths.
 
-The single source of truth for lifecycle Telegram presentation is:
+The single source of truth for **official runtime** lifecycle Telegram presentation is:
 
 `modules/analytics/lifecycle_presentation.py`
 
-No other module or tool may own a second implementation of the Active Recommendations or Lifecycle Digest formatter.
+No new runtime module or tool may own a second implementation of the Active Recommendations or Lifecycle Digest formatter.
+
+### Frozen baseline exception
+
+`modules/analytics/outcome_tracker_baseline.py` intentionally retains historical formatter code as part of the frozen baseline/compatibility layer. That legacy code is **not** the official output owner. `modules/analytics/outcome_tracker.py` installs the canonical presentation functions over the baseline hooks used by official sync/runtime execution, and direct baseline CLI execution is already blocked. Future presentation changes must therefore modify the canonical presentation module, not the frozen baseline formatter bodies.
 
 ## Scope Boundary
 
@@ -28,7 +32,7 @@ Lifecycle state remains owned by `modules/analytics/outcome_tracker.py`, `outcom
 
 ## Canonical Builders
 
-Only these builders own Telegram text:
+Only these canonical runtime builders own Telegram text:
 
 - `build_active_message(active)` — Active Recommendations.
 - `build_lifecycle_message(events, max_events=20)` — material Lifecycle Digest.
@@ -84,19 +88,21 @@ TP1 remains non-terminal and is presented as trailing active. Expiry presentatio
 
 ### Final Watchlist
 
-Canonical manual Final Watchlist flow:
+Canonical Final Watchlist flow:
 
 1. `tools/run_final_watchlist_entrypoint.py`
 2. official Final Watchlist child runs normally
 3. Final Watchlist calls `sync_outcome_tracker`
 4. outcome tracker writes canonical analytics artifacts
 5. material lifecycle status changes are available to the existing Final Watchlist delivery lane
-6. after successful Final Watchlist completion, `tools/send_active_recommendations.py` sends the canonical Active Recommendations card
+6. after a successful **live** Final Watchlist completion, `tools/send_active_recommendations.py` sends the canonical Active Recommendations card
 7. isolated Watchlist AI runs afterward as a separate non-blocking lane
 
 Failure of the Active Recommendations presentation step does not replace the official Final Watchlist result.
 
-`--no-telegram` suppresses the downstream Active Recommendations send. Dry-run behavior remains non-live.
+`--no-telegram` suppresses the downstream Active Recommendations send. `--dry-run` also skips that downstream send because dry-run intentionally does not persist a fresh lifecycle sync; an older Active Recommendations CSV must never be presented as if it came from the current dry-run.
+
+The canonical entrypoint is shared by the normal Final Watchlist launcher, scheduled Final Watchlist wrapper, and full-daily broker-period orchestration, so these paths do not own separate Active Recommendations formatting logic.
 
 ## Canonical Artifacts
 
@@ -112,13 +118,13 @@ Outcome Tracker sync owns these presentation artifacts:
 
 ## Consumer Map
 
-The following routes must reuse the canonical presentation module:
+The following official routes must reuse the canonical presentation module:
 
 - Outcome Tracker sync -> canonical Active + Lifecycle artifacts.
 - `tools/send_active_recommendations.py` -> canonical Active builder.
 - `tools/send_lifecycle_digest.py` -> canonical Lifecycle builder.
 - `tools/preview_lifecycle_digest.py` -> canonical Lifecycle builder.
-- Final Watchlist entrypoint -> canonical Active sender after successful official Final Watchlist.
+- Final Watchlist entrypoint -> canonical Active sender after successful live official Final Watchlist.
 - Performance & Evaluation menu -> the same canonical send tools.
 
 Manual preview/resend must never introduce a separate formatter.
@@ -128,12 +134,14 @@ Manual preview/resend must never introduce a separate formatter.
 Any future lifecycle Telegram formatting change must follow all rules below:
 
 1. Change `modules/analytics/lifecycle_presentation.py` first.
-2. Do not duplicate formatter code in tools or job runners.
-3. Keep engine/state calculations unchanged unless a separate engine change is explicitly approved.
-4. Update presentation contract tests in the same change.
-5. Preserve the distinction between lifecycle AGE and scan freshness.
-6. Keep Active Recommendations and material Lifecycle Digest as separate concepts/cards.
-7. Preserve duplicate actionable-symbol fail-closed validation.
+2. Do not duplicate runtime formatter code in tools or job runners.
+3. Do not edit frozen baseline formatter bodies merely to change presentation; official facade hooks must continue to point to the canonical builders.
+4. Keep engine/state calculations unchanged unless a separate engine change is explicitly approved.
+5. Update presentation contract tests in the same change.
+6. Preserve the distinction between lifecycle AGE and scan freshness.
+7. Keep Active Recommendations and material Lifecycle Digest as separate concepts/cards.
+8. Preserve duplicate actionable-symbol fail-closed validation.
+9. A dry-run must not reuse stale persisted Active Recommendations as current output.
 
 ## Regression Tests
 
@@ -143,7 +151,7 @@ The presentation contract is guarded by:
 - `tests/test_lifecycle_presentation_contract.py`
 - lifecycle state tests such as `tests/test_lifecycle_rec_age_expiry.py`
 
-The contract tests verify that user-facing tools reuse the same canonical builders and that `Last Scan` stays hidden while AGE remains present.
+The contract tests verify that user-facing tools reuse the same canonical builders, official baseline hooks point to the canonical facade, `Last Scan` stays hidden while AGE remains present, and Final Watchlist keeps Active Recommendations downstream/non-blocking.
 
 ## Non-Goals
 
