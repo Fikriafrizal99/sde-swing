@@ -9,7 +9,6 @@ from pathlib import Path
 
 from modules.job_runner.delivery import deliver
 from modules.job_runner.enhanced_runtime_bridge import (
-    broker_multiday_payloads,
     broker_summary_payloads,
     final_watchlist_payloads,
     lifecycle_payloads,
@@ -40,7 +39,6 @@ ENHANCED_JOBS = {
     "market_outlook",
     "post_market",
     "broker_summary",
-    "broker_multi_day",
     "final_watchlist",
     "full_manual",
 }
@@ -51,7 +49,6 @@ SUPPORTED_JOBS = (
     "post_market",
     "technical_snapshot",
     "broker_summary",
-    "broker_multi_day",
     "universe_selection",
     "candidate_selection",
     "final_watchlist",
@@ -60,6 +57,7 @@ SUPPORTED_JOBS = (
     "job_status",
     "full_manual",
 )
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -154,58 +152,18 @@ def _enhanced_payloads(ctx, job: str):
         return post_market_payloads(ctx, _load_post_manifest(ctx))
     if job == "broker_summary":
         return broker_summary_payloads(ctx)
-    if job == "broker_multi_day":
-        return broker_multiday_payloads(ctx)
     if job == "final_watchlist":
-        return (
-            broker_summary_payloads(ctx)
-            + _optional_broker_multiday_payloads(ctx)
-            + final_watchlist_payloads(ctx)
-            + lifecycle_payloads(ctx)
-        )
+        return broker_summary_payloads(ctx) + final_watchlist_payloads(ctx) + lifecycle_payloads(ctx)
     if job == "full_manual":
         global_snapshot, market_status = _load_market_artifacts(ctx)
         return (
             market_outlook_payloads(ctx, global_snapshot, market_status)
             + post_market_payloads(ctx, _load_post_manifest(ctx))
             + broker_summary_payloads(ctx)
-            + _optional_broker_multiday_payloads(ctx)
             + final_watchlist_payloads(ctx)
             + lifecycle_payloads(ctx)
         )
     return []
-
-
-def _optional_broker_multiday_payloads(ctx):
-    """Keep final/full reports usable when history is explicitly insufficient.
-
-    The standalone broker_multi_day report remains fail-closed and reports its
-    validation error.  Final Watchlist can still be generated from valid
-    one-day fusion; the skipped multi-day report is recorded in the audit log.
-    """
-    try:
-        return broker_multiday_payloads(ctx)
-    except ReportSourceValidationError as exc:
-        insufficient = any(
-            "DATA_QUALITY_NOT_VALID" in error and any(
-                marker in error.upper() for marker in ("INSUFFICIENT_HISTORY", "PARTIAL_COVERAGE")
-            )
-            for error in exc.errors
-        )
-        missing_manifest = (
-            exc.report_type == "broker_multi_day_manifest"
-            and any(str(error).startswith("INPUT_FILE_NOT_FOUND:") for error in exc.errors)
-        )
-        if not insufficient and not missing_manifest:
-            raise
-        record_validation_error(ctx, exc)
-        append_job_log(ctx, "BROKER_MULTI_DAY_REPORT_SKIPPED", str({
-            "errors": exc.errors,
-            "input_paths": exc.input_paths,
-            "source_of_truth": exc.source_of_truth,
-            "reason": "MISSING_MANIFEST" if missing_manifest else "INSUFFICIENT_HISTORY",
-        }))
-        return []
 
 
 def _run_integrated(args: argparse.Namespace, ctx) -> int:
