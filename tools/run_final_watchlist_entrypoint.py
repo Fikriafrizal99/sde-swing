@@ -184,13 +184,18 @@ def write_orchestration_failure(
 def _run_active_recommendations(forwarded: list[str]) -> None:
     """Send the canonical Active Recommendations card after Final Watchlist.
 
-    The Final Watchlist child already refreshed the outcome tracker and produced
-    ``ACTIVE_RECOMMENDATIONS.csv``. This step only renders/sends that existing
-    analytics state. Failures are presentation-only and cannot alter the
-    official Final Watchlist status.
+    The live Final Watchlist child already refreshed the outcome tracker and
+    produced ``ACTIVE_RECOMMENDATIONS.csv``. This step only renders/sends that
+    fresh analytics state. Dry-run is skipped because outcome sync is
+    intentionally not persisted there; using an older CSV would be misleading.
+    Failures are presentation-only and cannot alter the official Final
+    Watchlist status.
     """
     if "--no-telegram" in forwarded:
         print("[LIFECYCLE] Active Recommendations skipped: --no-telegram.", flush=True)
+        return
+    if "--dry-run" in forwarded:
+        print("[LIFECYCLE] Active Recommendations skipped: --dry-run has no fresh persisted lifecycle state.", flush=True)
         return
 
     command = [
@@ -202,8 +207,6 @@ def _run_active_recommendations(forwarded: list[str]) -> None:
         value = _arg_value(forwarded, option)
         if value:
             command.extend([option, value])
-    if "--dry-run" in forwarded:
-        command.append("--dry-run")
 
     try:
         completed = subprocess.run(command, cwd=ROOT)
