@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-"""Integrated job dependency graph and execution facade."""
+"""Integrated job dependency graph and execution facade.
+
+Broker production flow is intentionally single-path: ``broker_summary`` owns the
+operator-selected exact PRIMARY period and Final Watchlist may carry a separate
+exact TODAY 1D presentation pulse.  There is no rolling ``broker_multi_day``
+production dependency.
+"""
 
 import json
 from dataclasses import dataclass
@@ -17,7 +23,6 @@ INTEGRATED_JOB_NAMES = (
     "post_market",
     "technical_snapshot",
     "broker_summary",
-    "broker_multi_day",
     "universe_selection",
     "candidate_selection",
     "final_watchlist",
@@ -32,10 +37,9 @@ JOB_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "post_market": ("market_outlook",),
     "technical_snapshot": ("post_market",),
     "broker_summary": ("technical_snapshot",),
-    "broker_multi_day": ("broker_summary",),
     "universe_selection": ("technical_snapshot",),
     "candidate_selection": ("universe_selection",),
-    "final_watchlist": ("market_outlook", "post_market", "broker_summary", "broker_multi_day"),
+    "final_watchlist": ("market_outlook", "post_market", "broker_summary"),
     "final_decision": ("final_watchlist",),
     "telegram_delivery": ("final_watchlist", "final_decision"),
     "job_status": (),
@@ -60,8 +64,20 @@ DEFAULT_JOB_DEFINITIONS: dict[str, JobDefinition] = {
     name: JobDefinition(
         name=name,
         dependencies=JOB_DEPENDENCIES.get(name, ()),
-        data_record_types=("MarketIndex",) if name == "market_outlook" else (("DailyBar",) if name in {"post_market", "technical_snapshot"} else (("BrokerFlow", "ForeignFlow") if name in {"broker_summary", "broker_multi_day"} else ())),
-        topic="SIGNAL" if name in {"final_watchlist", "final_decision"} else ("REPORT" if name not in {"pre_market", "telegram_delivery", "job_status"} else "SYSTEM"),
+        data_record_types=(
+            ("MarketIndex",)
+            if name == "market_outlook"
+            else (
+                ("DailyBar",)
+                if name in {"post_market", "technical_snapshot"}
+                else (("BrokerFlow", "ForeignFlow") if name == "broker_summary" else ())
+            )
+        ),
+        topic=(
+            "SIGNAL"
+            if name in {"final_watchlist", "final_decision"}
+            else ("REPORT" if name not in {"pre_market", "telegram_delivery", "job_status"} else "SYSTEM")
+        ),
     )
     for name in INTEGRATED_JOB_NAMES
 }
@@ -81,19 +97,7 @@ def _dated_dependency_status(
     *,
     ready_only: bool = False,
 ) -> Mapping[str, Any] | None:
-    """Return the newest persisted status for the effective trade date.
-
-    Final Watchlist can run on the latest completed trading session while the
-    calendar date is already a weekend/holiday. In that case ``*_latest.json``
-    may legitimately point at a later skipped attempt. The runtime already
-    keeps immutable per-trade-date status files, so use that history instead of
-    weakening the dependency date/status/config contract.
-
-    ``ready_only`` is used only for harmless same-date reruns that were skipped
-    before executing the engine. It searches backward for the newest completed
-    predecessor from the same effective trading date; genuine engine failures
-    are never replaced by an older success.
-    """
+    """Return the newest persisted status for the effective trade date."""
     configured_root = str(
         (context.scheduler_config.get("paths", {}) or {}).get(
             "job_status_root", "data/output/job_status"
@@ -136,18 +140,7 @@ def _final_watchlist_dependency_payload(
     dependency: str,
     payload: Mapping[str, Any] | None,
 ) -> tuple[Mapping[str, Any] | None, str]:
-    """Reconcile non-engine terminal outcomes for Final Watchlist only.
-
-    Market Outlook/Post Market write their canonical engine artifacts before
-    Telegram delivery. A DELIVERY_FAILED terminal status at the engine's final
-    stage therefore means the predecessor computation completed; delivery is
-    not an engine dependency of Final Watchlist. Likewise, a later same-date
-    run that was SKIPPED at DEPENDENCY_VALIDATION did not execute or invalidate
-    the previously completed same-date engine output, so the newest ready
-    historical status may be used.
-
-    FAILED/WAITING/guardrail/exception outcomes remain authoritative.
-    """
+    """Reconcile non-engine terminal outcomes for Final Watchlist only."""
     if payload is None:
         return payload, ""
 
@@ -188,10 +181,6 @@ def validate_dependency_status(
         payload: Mapping[str, Any] | None = statuses.get(dependency)
         override = ""
 
-        # Scope this reconciliation to Final Watchlist only. A later
-        # weekend/holiday attempt may overwrite ``*_latest.json`` even though
-        # the required completed-session status remains durably stored under
-        # ``job_status/<trade_date>/``.
         if job_name == "final_watchlist" and (
             payload is None or str(payload.get("trade_date", "")) != expected_date
         ):
