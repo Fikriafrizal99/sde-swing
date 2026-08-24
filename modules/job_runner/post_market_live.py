@@ -11,6 +11,7 @@ import pandas as pd
 from swing_utils import file_sha256, write_json as _durable_write_json
 
 from modules.market_data.market_outlook_regime import calculate_market_outlook_regime
+from modules.market_data.sector_analytics import build_daily_sector_pulse
 from modules.telegram.post_market_ui import format_post_market
 
 from .enhanced_runtime_bridge import validated_post_market_payloads as _validated_post_market_payloads
@@ -559,41 +560,27 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     _durable_write_json(path, payload)
 
 
-def _rotation_context(ctx: RunnerContext) -> dict[str, Any]:
-    regime_path = ctx.previews_root.parent / "market_regime" / ctx.trade_date.isoformat() / "market_outlook_regime.json"
-    existing = read_json(regime_path)
-    rotation: dict[str, Any] = {}
-    raw_path = str(existing.get("sector_rotation_path") or "").strip()
-    candidates: list[Path] = []
-    if raw_path:
-        candidate = Path(raw_path)
-        candidates.append(candidate if candidate.is_absolute() else resolve(candidate))
-    configured = str(ctx.path("sector_rotation_output", "data/output/market/SECTOR_ROTATION.json"))
-    if configured:
-        candidates.append(Path(configured))
-    for candidate in candidates:
-        payload = read_json(candidate)
-        if isinstance(payload.get("sector_rotation"), dict):
-            rotation = dict(payload["sector_rotation"])
-        elif payload:
-            rotation = dict(payload)
-        if rotation:
-            break
-    if not rotation and isinstance(existing.get("sector_rotation"), dict):
-        rotation = dict(existing["sector_rotation"])
-
-    rotation_date = str(rotation.get("trade_date") or existing.get("sector_rotation_trade_date") or "")[:10]
-    rotation_status = str(rotation.get("status") or existing.get("sector_rotation_status") or "UNAVAILABLE").upper()
-    current = rotation_date == ctx.trade_date.isoformat() and rotation_status in {"VALID", "CURRENT", "READY"}
+def _daily_sector_context(ctx: RunnerContext, technical_path: Path) -> dict[str, Any]:
+    """Build Post Market's current-session sector view from shared analytics."""
+    metadata_path = ctx.path("sector_rotation_metadata", "data/input/sector_metadata.csv")
+    output_path = ctx.path("daily_sector_output", "data/output/market/DAILY_SECTOR_PULSE.json")
+    daily = build_daily_sector_pulse(
+        technical_path=technical_path,
+        output_path=output_path,
+        trade_date=ctx.trade_date,
+        metadata_path=metadata_path,
+    )
+    current = (
+        str(daily.get("status") or "").upper() == "VALID"
+        and str(daily.get("trade_date") or "")[:10] == ctx.trade_date.isoformat()
+        and str(daily.get("data_date") or "")[:10] == ctx.trade_date.isoformat()
+    )
     return {
-        "leading": rotation.get("leading", []) if current else [],
-        "rotating_in": rotation.get("improving", rotation.get("rotating_in", [])) if current else [],
-        "weakening": rotation.get("weakening", rotation.get("rotating_out", [])) if current else [],
-        "rotating_out": rotation.get("rotating_out", rotation.get("weakening", [])) if current else [],
-        "lagging": rotation.get("lagging", []) if current else [],
-        "sector_rotation_trade_date": rotation_date,
-        "sector_rotation_status": rotation_status if current else "NOT_CURRENT",
-        "sector_rotation_current": current,
+        "daily_sector": daily if current else {},
+        "daily_sector_trade_date": str(daily.get("trade_date") or "")[:10],
+        "daily_sector_status": str(daily.get("status") or "UNAVAILABLE").upper() if current else "NOT_CURRENT",
+        "daily_sector_current": current,
+        "daily_sector_path": str(daily.get("output_path") or output_path),
     }
 
 
@@ -729,7 +716,7 @@ def prepare_post_market_pulse(
         "technical_data_date": technical_data_date,
         "candidate_data_date": candidate_data_date,
         "candidate_ranking_current": candidate_current,
-        **_rotation_context(ctx),
+        **_daily_sector_context(ctx, technical_path),
         "warnings": warnings,
         "source": "POST_MARKET_CLOSING_PULSE",
     }
@@ -744,6 +731,7 @@ def prepare_post_market_pulse(
             "technical_rows": len(technical),
             "candidate_rows": len(candidates),
             "breadth": breadth,
+            "daily_sector_status": pulse.get("daily_sector_status"),
         }))
     return pulse
 
@@ -826,6 +814,8 @@ def post_market_live_payloads(ctx: RunnerContext, manifest: dict[str, Any]) -> l
         inputs = list(getattr(payload, "input_paths", ()) or ())
         if pulse.get("pulse_path"):
             inputs.append(str(pulse["pulse_path"]))
+        if pulse.get("daily_sector_path"):
+            inputs.append(str(pulse["daily_sector_path"]))
         setattr(payload, "input_paths", tuple(dict.fromkeys(inputs)))
         details = dict(getattr(payload, "validation_details", {}) or {})
         details["post_market_pulse"] = {
@@ -838,6 +828,8 @@ def post_market_live_payloads(ctx: RunnerContext, manifest: dict[str, Any]) -> l
             "technical_bullish_count": pulse.get("technical_bullish_count"),
             "technical_neutral_count": pulse.get("technical_neutral_count"),
             "technical_bearish_count": pulse.get("technical_bearish_count"),
+            "daily_sector_status": pulse.get("daily_sector_status"),
+            "daily_sector_trade_date": pulse.get("daily_sector_trade_date"),
             "warnings": pulse.get("warnings", []),
         }
         setattr(payload, "validation_details", details)
