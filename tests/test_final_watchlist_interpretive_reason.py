@@ -66,7 +66,8 @@ def test_hrum_card_is_compact_and_reason_explains_why_wait():
     assert "Persistence" not in text
 
     assert "BK 3,44B" in text
-    assert "Tunggu break >880. Jangan chase." in text
+    assert "Tunggu trigger valid di area 840–860. Jangan chase." in text
+    assert "Tunggu break >880" not in text
     assert "Broker mendukung" not in text
     assert "generic engine reason" not in text
     assert len(text) <= 1024
@@ -99,6 +100,48 @@ def test_insufficient_broker_is_explained_as_missing_evidence_not_distribution()
     assert "INSUFFICIENT 0/100" in text
     assert "Net +Rp2,54B" in text
     assert "B/S 1/0" in text
-    assert "Tunggu break >1.125. Jangan chase." in text
+    assert "Tunggu trigger valid di area 1.085–1.105. Jangan chase." in text
+    assert "Tunggu break >1.125" not in text
     assert "distribusi" not in text.lower()
     assert len(text) <= 1024
+
+
+def test_tins_regression_resistance_is_context_not_implicit_trigger():
+    row = _hrum_row()
+    row.update({
+        "symbol": "TINS",
+        "decision": "BUY ON TRIGGER",
+        "analysis_date": "2026-08-21",
+        "last_price": 4030,
+        "entry_low": 3990,
+        "entry_high": 4070,
+        "active_stop_loss": 3830,
+        "target_1": 4310,
+        "target_2": 4550,
+        "risk_reward": 2.0,
+        "phase": "WAIT_TRIGGER",
+        "support": 3380,
+        "resistance": 4190,
+    })
+
+    text = format_watchlist_detail(row)
+    action = text.splitlines()[-1]
+
+    assert "Entry 3.990–4.070" in text
+    assert "S 3.380 | R 4.190" in text
+    assert action == "⚠️ Tunggu trigger valid di area 3.990–4.070. Jangan chase."
+    assert "4.190" not in action
+
+
+def test_explicit_engine_trigger_wins_over_entry_and_resistance_inference():
+    row = _hrum_row()
+    row.update({
+        "trigger_description": "Close di atas 900 dengan volume valid",
+        "resistance": 880,
+    })
+
+    text = format_watchlist_detail(row)
+    action = text.splitlines()[-1]
+
+    assert action == "⚠️ Trigger: Close di atas 900 dengan volume valid. Jangan chase."
+    assert "Tunggu break >880" not in action
