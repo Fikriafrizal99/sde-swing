@@ -8,9 +8,10 @@ calendar dates are resolved to the latest completed IDX session, while failures
 that happen before the final_watchlist engine can write status are terminalized
 instead of leaving an older SUCCESS status looking current.
 
-After the official Final Watchlist child has completed successfully, an isolated
-non-blocking Watchlist AI runner is invoked. Its exit status never replaces the
-official Final Watchlist exit status.
+After the official Final Watchlist child has completed successfully, the
+canonical Active Recommendations card is sent as a non-blocking presentation
+step, then the isolated Watchlist AI runner is invoked. Neither downstream step
+can replace the official Final Watchlist exit status.
 """
 
 import json
@@ -180,6 +181,44 @@ def write_orchestration_failure(
     atomic_write_json(STATUS_PATH, payload)
 
 
+def _run_active_recommendations(forwarded: list[str]) -> None:
+    """Send the canonical Active Recommendations card after Final Watchlist.
+
+    The Final Watchlist child already refreshed the outcome tracker and produced
+    ``ACTIVE_RECOMMENDATIONS.csv``. This step only renders/sends that existing
+    analytics state. Failures are presentation-only and cannot alter the
+    official Final Watchlist status.
+    """
+    if "--no-telegram" in forwarded:
+        print("[LIFECYCLE] Active Recommendations skipped: --no-telegram.", flush=True)
+        return
+
+    command = [
+        sys.executable,
+        "-u",
+        str(ROOT / "tools/send_active_recommendations.py"),
+    ]
+    for option in ("--telegram-config", "--scheduler-config"):
+        value = _arg_value(forwarded, option)
+        if value:
+            command.extend([option, value])
+    if "--dry-run" in forwarded:
+        command.append("--dry-run")
+
+    try:
+        completed = subprocess.run(command, cwd=ROOT)
+        if int(completed.returncode) != 0:
+            print(
+                f"[LIFECYCLE] Active Recommendations returned {completed.returncode}; Final Watchlist tetap sukses.",
+                file=sys.stderr,
+            )
+    except Exception as exc:
+        print(
+            f"[LIFECYCLE] Active Recommendations launcher failure: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
+
 def _run_watchlist_ai(forwarded: list[str], trade_date: str) -> None:
     """Run the optional AI lane after official Final Watchlist success.
 
@@ -256,8 +295,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return rc
 
-    # Official Final Watchlist is already complete at this point. Watchlist AI
-    # is a separate, best-effort, downstream-only lane.
+    # Official Final Watchlist is already complete. Both downstream steps are
+    # isolated presentation/AI lanes and cannot change the authoritative rc.
+    _run_active_recommendations(forwarded)
     _run_watchlist_ai(forwarded, trade_date)
     return rc
 
