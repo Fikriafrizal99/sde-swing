@@ -48,7 +48,7 @@ def _hrum_row() -> dict:
 
 def test_package_runtime_uses_interpretive_final_watchlist_contract():
     text = _daily_report_ui.format_watchlist_detail(_hrum_row())
-    assert "HRUM | WATCH | 73%" in text
+    assert "<b>HRUM</b> | WATCH | 73%" in text
     assert "STRONG ACCUMULATION 64/100" in text
     assert "generic engine reason" not in text
 
@@ -145,3 +145,14 @@ def test_explicit_engine_trigger_wins_over_entry_and_resistance_inference():
 
     assert action == "⚠️ Trigger: Close di atas 900 dengan volume valid. Jangan chase."
     assert "Tunggu break >880" not in action
+
+
+def test_generic_machine_trigger_codes_fall_back_to_engine_entry_zone():
+    row = _hrum_row()
+    row["waiting_triggers"] = ["WAIT_FOR_ENTRY_TRIGGER", "WAIT_FOR_ENTRY_ZONE"]
+
+    text = format_watchlist_detail(row)
+    action = text.splitlines()[-1]
+
+    assert action == "⚠️ Tunggu trigger valid di area 840–860. Jangan chase."
+    assert "WAIT_FOR_" not in text

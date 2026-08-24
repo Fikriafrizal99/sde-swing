@@ -125,17 +125,19 @@ def test_final_watchlist_uses_agreed_format_and_exports_active_rows(tmp_path: Pa
     assert "• BUY CANDIDATE  : 1" in summary[0].text
     assert "• WATCH          : 3" in summary[0].text
 
-    assert len(detail) == 5
+    # Only BUY ON TRIGGER / BUY CANDIDATE receive detail cards. BUY READY and
+    # WATCH remain visible in the summary and complete CSV.
+    assert len(detail) == 1
     text = detail[0].text
     # FINAL WATCHLIST is the compact, one-card Telegram contract. The
     # verbose bold section layout belongs to the retired formatter.
     required_sections = [
-        "S1 | BUY | 89%",
+        "<b>S2</b> | BUY CANDIDATE | 88%",
         "BREAKOUT RETEST",
         "Entry 100",
         "Net +Rp1,50B",
         "Cost 102 (+0,98%)",
-        "Tunggu",
+        "Trigger: Harga masuk area entry dan volume menguat.",
     ]
     for section in required_sections:
         assert section in text

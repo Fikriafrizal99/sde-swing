@@ -62,9 +62,9 @@ def test_presentation_context_humanizes_bbni_raw_facts():
     assert presentation["trade plan"]["stop loss"] == "3.640"
     assert presentation["trade plan"]["TP1"] == "3.860"
     assert presentation["broker"]["net flow"] == "Rp138,34 miliar"
-    assert presentation["broker"]["buyer concentration"] == "23,04%"
-    assert presentation["broker"]["seller concentration"] == "9,71%"
-    assert presentation["broker"]["alignment"] == "broker searah positif"
+    assert presentation["broker"]["konsentrasi buyer"] == "23,04%"
+    assert presentation["broker"]["konsentrasi seller"] == "9,71%"
+    assert presentation["broker"]["keselarasan"] == "broker searah positif"
     assert presentation["broker"]["status"] == "data belum cukup"
     assert presentation["hasil SDE"]["keputusan SDE"] == "BUY ON TRIGGER"
 

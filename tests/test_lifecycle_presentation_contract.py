@@ -15,10 +15,12 @@ from tools import send_lifecycle_digest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_all_user_facing_tools_reuse_canonical_formatters() -> None:
-    assert send_active_recommendations.build_active_message is presentation.build_active_message
-    assert send_lifecycle_digest.build_lifecycle_message is presentation.build_lifecycle_message
+def test_all_user_facing_tools_reuse_canonical_formatters_before_branding() -> None:
+    assert send_active_recommendations._build_active_message is presentation.build_active_message
+    assert send_lifecycle_digest._build_lifecycle_message is presentation.build_lifecycle_message
     assert preview_lifecycle_digest.build_lifecycle_message is presentation.build_lifecycle_message
+    assert send_active_recommendations.build_active_message is not presentation.build_active_message
+    assert send_lifecycle_digest.build_lifecycle_message is not presentation.build_lifecycle_message
 
 
 def test_outcome_tracker_sync_hooks_use_canonical_formatters() -> None:

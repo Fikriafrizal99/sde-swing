@@ -201,9 +201,8 @@ def test_export_reports_formats_active_recommendation_prices(tmp_path: Path) -> 
     export_reports(conn, output, historical)
     telegram = (output / "ACTIVE_RECOMMENDATIONS_TELEGRAM.txt").read_text(encoding="utf-8")
     assert "BBCA" in telegram
-    assert "Entry mesin  : 103" in telegram
-    assert "Harga kini   : 104" in telegram
-    assert "TP1          : 110" in telegram
+    assert "EMT  ENTRY NOW" in telegram
+    assert "BBCA   103 104 +0,97% 95 110 115" in telegram
     conn.close()
 
 
@@ -322,7 +321,8 @@ def test_lifecycle_digest_marks_only_material_events_after_success(tmp_path: Pat
     assert material_id not in {row["event_id"] for row in pending}
     check.close()
     text = (tmp_path / "performance" / "LIFECYCLE_DIGEST_TELEGRAM.txt").read_text(encoding="utf-8")
-    assert "CLOSE_ABOVE" in text
+    assert "Close Above" in text
+    assert "CLOSE_ABOVE" not in text
     assert "SIGNAL_RECONFIRMED" not in text
 
 

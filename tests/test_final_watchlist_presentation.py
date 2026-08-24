@@ -67,16 +67,17 @@ def full_row():
 
 def test_final_watchlist_format_is_compact_and_bounded():
     text = format_watchlist_detail(full_row())
-    assert text.startswith("📈 ANTM | WATCH | 84%")
+    assert text.startswith("📈 <b>ANTM</b> | WATCH | 84%")
     assert "BREAKOUT RETEST" in text
-    assert "Entry 3.350" in text
-    assert "3.220 |" in text and "3.600 / 3.850" in text
+    assert "Harga 3.390 | Entry 3.350" in text
+    assert "SL 3.220 |" in text and "3.600 / 3.850" in text
     assert "BROKER CONFIRM 78/100" in text
     assert "XL 20,4B" in text
     assert "AK 16,1B" in text
     assert "B/S 4/1" in text
     assert "Cost 3.370 (+0,74%)" in text
-    assert "Tunggu break >3.600. Jangan chase." in text
+    assert "Tunggu trigger valid di area 3.350–3.400. Jangan chase." in text
+    assert "Tunggu break >3.600" not in text
     assert "ENGINE_DATA_NOT_AVAILABLE" not in text
     assert "Pattern" not in text
     assert "Persistence" not in text
@@ -269,12 +270,12 @@ class DummyInterpreter:
         )
 
 
-def test_final_watchlist_keeps_all_rows_in_csv_but_only_top_five_details(tmp_path: Path):
+def test_final_watchlist_keeps_all_rows_in_csv_but_only_top_five_actionable_details(tmp_path: Path):
     rows = []
     for index in range(8):
         rows.append({
             "symbol": f"T{index:03d}",
-            "decision": "BUY CONFIRMED" if index < 3 else "WATCH",
+            "decision": "BUY ON TRIGGER" if index < 6 else "WATCH",
             "confidence": 90 - index,
             "technical_score": 90 - index,
             "broker_score": 80 - index,

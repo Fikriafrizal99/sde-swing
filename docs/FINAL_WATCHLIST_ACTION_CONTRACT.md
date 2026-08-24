@@ -55,6 +55,8 @@ This keeps the visible action tied to the same entry zone shown on the card.
 
 A breakout/close-above instruction may appear only when an existing engine/source field explicitly says so, for example through `trigger_description` or `waiting_triggers`.
 
+Generic machine-state identifiers such as `WAIT_FOR_ENTRY_TRIGGER`, `WAIT_FOR_ENTRY_ZONE`, and `ENTRY_NOT_TRIGGERED` are not executable trigger descriptions. The formatter must not expose those raw codes as user-facing actions; it skips them and continues to the next explicit condition or the entry-zone fallback.
+
 The formatter must not derive `break > resistance` merely from:
 
 ```text

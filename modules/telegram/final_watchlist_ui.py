@@ -191,6 +191,28 @@ def _period_is_multi(period: str) -> bool:
     return bool(period) and period.upper() not in {"1D", "1DAY", "DAY"}
 
 
+_GENERIC_TRIGGER_CODES = {
+    "ENTRY_NOT_TRIGGERED",
+    "TRIGGER_NOT_MET",
+    "WAIT_FOR_CONFIRMATION",
+    "WAIT_FOR_ENTRY_TRIGGER",
+    "WAIT_FOR_ENTRY_ZONE",
+}
+
+
+def _trigger_text(value: Any) -> str:
+    """Return a presentable trigger while suppressing generic state codes."""
+    candidate = _raw(value).rstrip(" .")
+    if not candidate:
+        return ""
+    normalized = re.sub(r"[\s-]+", "_", candidate).upper()
+    if normalized in _GENERIC_TRIGGER_CODES:
+        return ""
+    if re.fullmatch(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+", candidate):
+        return candidate.replace("_", " ").capitalize()
+    return candidate
+
+
 def _explicit_trigger(row: Mapping[str, Any]) -> str:
     """Return an engine/source-owned trigger without inventing one from S/R.
 
@@ -199,7 +221,7 @@ def _explicit_trigger(row: Mapping[str, Any]) -> str:
     Resistance remains technical context only and is deliberately not a
     fallback trigger source.
     """
-    direct = _raw(_pick(
+    direct = _trigger_text(_pick(
         row,
         "trigger_description",
         "Trigger_Description",
@@ -208,7 +230,7 @@ def _explicit_trigger(row: Mapping[str, Any]) -> str:
         default="",
     ))
     if direct:
-        return direct.rstrip(" .")
+        return direct
 
     pending = _pick(row, "waiting_triggers", "Waiting_Triggers", default=[])
     items = _list(pending)
@@ -220,16 +242,16 @@ def _explicit_trigger(row: Mapping[str, Any]) -> str:
         ]
     for item in items:
         if isinstance(item, Mapping):
-            candidate = _raw(
+            candidate = _trigger_text(
                 item.get("description")
                 or item.get("trigger")
                 or item.get("condition")
                 or item.get("text")
             )
         else:
-            candidate = _raw(item)
+            candidate = _trigger_text(item)
         if candidate:
-            return candidate.rstrip(" .")
+            return candidate
     return ""
 
 
