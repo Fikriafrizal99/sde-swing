@@ -24,6 +24,10 @@ from modules.analytics.lifecycle_contract import (
     lifecycle_state_dict,
     prepare_lifecycle_bars,
 )
+from modules.analytics.lifecycle_presentation import (
+    build_active_message,
+    build_lifecycle_message,
+)
 
 # Save immutable delegates before the facade installs runtime hooks back into
 # the baseline module. Calling _baseline.connect after that hook would recurse.
@@ -313,15 +317,14 @@ def update_outcomes(conn: sqlite3.Connection, historical_dir: Path) -> dict[str,
     return counters
 
 
-_baseline_status_changes_telegram = _baseline._status_changes_telegram
-
-
 def _status_changes_telegram(events, *, max_events: int = 20) -> str:
-    text = _baseline_status_changes_telegram(events, max_events=max_events)
-    return text.replace(
-        "🎯 <b>TP1 HIT</b>\n💰 Exit    :",
-        "🎯 <b>TP1 HIT — TRAILING ACTIVE</b>\n💰 Level   :",
-    )
+    """Canonical material lifecycle presentation used by sync and auto delivery."""
+    return build_lifecycle_message(list(events), max_events=max_events)
+
+
+def _active_recommendations_telegram(active: pd.DataFrame) -> str:
+    """Canonical active-recommendation presentation used by every output path."""
+    return build_active_message(active)
 
 
 def _call_telegram_delegate(delegate, args):
@@ -347,6 +350,7 @@ _baseline.load_prices = load_prices
 _baseline.evaluate_record = evaluate_record
 _baseline.update_outcomes = update_outcomes
 _baseline._status_changes_telegram = _status_changes_telegram
+_baseline._active_recommendations_telegram = _active_recommendations_telegram
 _baseline.lifecycle_telegram = lifecycle_telegram
 _baseline.active_telegram = active_telegram
 
