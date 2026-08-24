@@ -26,6 +26,7 @@ through environment variables; `config/telegram.json` contains no credentials.
 
 ## Canonical contracts
 
+- [`FTJ_BRANDING_CONTRACT.md`](FTJ_BRANDING_CONTRACT.md) — canonical FTJ Community report naming and the hard exclusion that IDX Disclosure / Keterbukaan Informasi remains unchanged.
 - [`LIFECYCLE_PRESENTATION_CONTRACT.md`](LIFECYCLE_PRESENTATION_CONTRACT.md) — source of truth for Active Recommendations and Lifecycle Digest presentation.
 - [`FINAL_WATCHLIST_ACTION_CONTRACT.md`](FINAL_WATCHLIST_ACTION_CONTRACT.md) — action-line contract: explicit engine trigger first, entry-zone fallback, and S/R never promoted into an implicit trigger.
 - [`IDX_DISCLOSURE_WATCHER_ARCHITECTURE.md`](IDX_DISCLOSURE_WATCHER_ARCHITECTURE.md) — isolated IDX disclosure watcher architecture.
