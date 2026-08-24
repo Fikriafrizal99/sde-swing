@@ -191,18 +191,64 @@ def _period_is_multi(period: str) -> bool:
     return bool(period) and period.upper() not in {"1D", "1DAY", "DAY"}
 
 
+def _explicit_trigger(row: Mapping[str, Any]) -> str:
+    """Return an engine/source-owned trigger without inventing one from S/R.
+
+    ``trigger_description`` and ``waiting_triggers`` are populated by the
+    existing Final Watchlist enrichment from already-produced engine artifacts.
+    Resistance remains technical context only and is deliberately not a
+    fallback trigger source.
+    """
+    direct = _raw(_pick(
+        row,
+        "trigger_description",
+        "Trigger_Description",
+        "Entry_Trigger",
+        "Execution_Trigger",
+        default="",
+    ))
+    if direct:
+        return direct.rstrip(" .")
+
+    pending = _pick(row, "waiting_triggers", "Waiting_Triggers", default=[])
+    items = _list(pending)
+    if not items and isinstance(pending, str):
+        items = [
+            item.strip()
+            for item in re.split(r"\s*(?:\r?\n|[;|])\s*", pending)
+            if item.strip()
+        ]
+    for item in items:
+        if isinstance(item, Mapping):
+            candidate = _raw(
+                item.get("description")
+                or item.get("trigger")
+                or item.get("condition")
+                or item.get("text")
+            )
+        else:
+            candidate = _raw(item)
+        if candidate:
+            return candidate.rstrip(" .")
+    return ""
+
+
 def _compact_action(row: Mapping[str, Any]) -> str:
     current = _num(_pick(row, "last_price", "current_price", "Reference_Close"))
     low = _num(_pick(row, "entry_low", "Entry_Zone_Low"))
     high = _num(_pick(row, "entry_high", "Entry_Zone_High"))
-    resistance = _num(_pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance"))
     phase = _enum(_pick(row, "phase", "execution_state", "Execution_Status"), "", upper=True)
     waiting = any(token in phase for token in ("WAIT", "NOT READY", "CONDITIONAL", "MONITOR"))
+    explicit_trigger = _explicit_trigger(row)
 
-    if current is not None and high is not None and current > high:
+    # Explicit engine/source trigger always wins. Never infer a breakout merely
+    # because a technical resistance level exists on the card.
+    if explicit_trigger:
+        return f"⚠️ Trigger: {html.escape(explicit_trigger, quote=False)}. Jangan chase."
+    if current is not None and low is not None and high is not None and current > high:
         return f"⚠️ Jangan chase. Tunggu pullback ke {_price(low)}–{_price(high)}."
-    if waiting and resistance is not None:
-        return f"⚠️ Tunggu break >{_price(resistance)}. Jangan chase."
+    if waiting and low is not None and high is not None:
+        return f"⚠️ Tunggu trigger valid di area {_price(low)}–{_price(high)}. Jangan chase."
     if waiting:
         return "⚠️ Tunggu trigger valid sebelum entry. Jangan chase."
     if low is not None and high is not None:
