@@ -8,11 +8,11 @@
 | MIGRATED_DELETED | `modules/snapshots/`, `modules/market_data/zapi_sector_metadata.py`, Portfolio Backfill v1 | Tests/workflows moved to current owners; obsolete source removed |
 | GENERATED | `data/output/`, `logs/`, `data/state/` | Ignored; never committed |
 | FIXTURE | `tests/fixtures/` | Retained and test-visible |
-| ARCHIVE_CANDIDATE | old reports and archived v1.1 docs | No deletion in this change; review separately |
+| ARCHIVED_DOCUMENTATION | `docs/archive/v1.1/`, `docs/archive/v1.7/` | Historical evidence only; retained, indexed, and excluded from current operational guidance |
 | SECRET_RISK | local `config/telegram.json`, `.env` | Credentials removed; environment-only policy |
 
-The ordered cleanup keeps the compatibility chain explicit, moves the snapshot
-and ZAPI sector tests to current owners, and removes only the superseded v1
-Portfolio Backfill source. Imports, entry points, CI, config references, and
-backward compatibility were checked before final validation.
+The ordered cleanup keeps the compatibility chain explicit, moves historical
+documentation under the archive index, and removes only superseded source when
+separately approved. Imports, entry points, CI, config references, and backward
+compatibility must remain checked during final validation.
 

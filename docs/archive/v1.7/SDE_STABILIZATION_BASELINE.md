@@ -1,9 +1,12 @@
 # SDE Stabilization Baseline — Commit 1
 
+> Archived historical governance evidence. Retained for audit traceability; it
+> is not current operational guidance. See `docs/README.md` for active documentation.
+
 ## Purpose
 
 This document establishes the characterization baseline for
-`audit/sde-stabilization`. It is derived from `docs/SDE_AUDIT_BASELINE.md` and
+`audit/sde-stabilization`. It is derived from `docs/archive/v1.7/SDE_AUDIT_BASELINE.md` and
 does not redefine the audit.
 
 The stabilization branch starts from the audited baseline:

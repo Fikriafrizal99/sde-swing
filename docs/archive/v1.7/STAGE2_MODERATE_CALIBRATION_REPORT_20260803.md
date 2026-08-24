@@ -1,5 +1,8 @@
 # SDE Swing V1.6.2 — Stage 2 Moderate Calibration Report
 
+> Archived historical implementation evidence. This dated snapshot is not
+> current operational guidance. See `docs/README.md` for active documentation.
+
 **Tanggal implementasi:** 3 Agustus 2026  
 **Versi:** `1.6.2-stage2`  
 **Pipeline:** `SDE_SWING_V1_6_2_STAGE2_MODERATE_CALIBRATION`  

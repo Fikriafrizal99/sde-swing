@@ -1,5 +1,8 @@
 # SDE Audit Baseline
 
+> Archived historical governance evidence. Retained for audit traceability; it
+> is not current operational guidance. See `docs/README.md` for active documentation.
+
 Dokumen ini adalah landasan resmi untuk audit arsitektur, quant, runtime,
 data, storage, scheduler, reporting, security, dan QA pada Stock Decision
 Engine (SDE) Swing.
@@ -129,7 +132,7 @@ RunnerContext / RuntimeContext
         +--> Status + Logs + Manifests
 ```
 
-Dokumentasi arsitektur berada di [ARCHITECTURE.md](ARCHITECTURE.md), tetapi
+Dokumentasi arsitektur berada di [ARCHITECTURE.md](../../ARCHITECTURE.md), tetapi
 auditor wajib membandingkan dokumentasi dengan execution path aktual. Jalur
 yang didokumentasikan tidak otomatis berarti jalur yang benar-benar dipakai.
 

@@ -1,5 +1,8 @@
 # Stage 3 Runtime Integration Report
 
+> Archived historical implementation evidence. This dated snapshot is not
+> current operational guidance. See `docs/README.md` for active documentation.
+
 **Branch:** `agent/sde-swing-v1-7-0-multisource`  
 **Runtime/config version:** `1.7.0-multisource`  
 **Official entry point:** `run_sde_job.py`  

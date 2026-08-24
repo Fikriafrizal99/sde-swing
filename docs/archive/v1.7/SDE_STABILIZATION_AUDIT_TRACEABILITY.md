@@ -1,10 +1,13 @@
 # SDE Stabilization — Audit Traceability Register
 
+> Archived historical governance evidence. Retained for audit traceability; it
+> is not current operational guidance. See `docs/README.md` for active documentation.
+
 ## Purpose
 
 Cumulative tracking register for audit-driven work on
 `audit/sde-stabilization`. It does **not** replace
-`docs/SDE_AUDIT_BASELINE.md`; the immutable audited observation point remains:
+`docs/archive/v1.7/SDE_AUDIT_BASELINE.md`; the immutable audited observation point remains:
 
 `121bc58b0f6a62dc3a844ee59575fe48ce86cc7d`
 
@@ -81,7 +84,7 @@ Commit: `78231c9f624c287fe0bdc24e090bb5015accecbd`
 Status: IMPLEMENTED / VERIFIED BY FINAL RE-AUDIT
 
 Evidence: `config/audit_quant_freeze.json`, `tools/ci_validate_quant_freeze.py`,
-`tests/test_audit_quant_freeze.py`, `docs/SDE_STABILIZATION_BASELINE.md`.
+`tests/test_audit_quant_freeze.py`, `docs/archive/v1.7/SDE_STABILIZATION_BASELINE.md`.
 
 ### Commit 2 — Artifact integrity
 
@@ -91,7 +94,7 @@ Status: CLOSED BY RE-AUDIT
 
 Evidence: `modules/broker_fusion/broker_fusion_publisher.py`,
 `tests/test_artifact_integrity_v2.py`,
-`docs/SDE_STABILIZATION_COMMIT2_ARTIFACT_INTEGRITY.md`.
+`docs/archive/v1.7/SDE_STABILIZATION_COMMIT2_ARTIFACT_INTEGRITY.md`.
 
 ### Commit 3 — Lifecycle consistency
 
@@ -104,7 +107,7 @@ Contract: `SDE_SWING_LIFECYCLE_V1`
 Evidence: `modules/analytics/lifecycle_contract.py`, lifecycle facades,
 `tests/test_lifecycle_contract_v1.py`,
 `tests/test_lifecycle_commit3_verification.py`, and
-`docs/SDE_STABILIZATION_COMMIT3_LIFECYCLE_CONSISTENCY.md`.
+`docs/archive/v1.7/SDE_STABILIZATION_COMMIT3_LIFECYCLE_CONSISTENCY.md`.
 
 ### Commit 4 — Runtime / status / locking
 
@@ -120,7 +123,7 @@ Evidence:
 - `modules/job_runner/runtime_baseline.py`
 - `modules/runtime/status.py`
 - `tests/test_runtime_status_commit4.py`
-- `docs/SDE_STABILIZATION_COMMIT4_RUNTIME_STATUS_LOCKING.md`
+- `docs/archive/v1.7/SDE_STABILIZATION_COMMIT4_RUNTIME_STATUS_LOCKING.md`
 
 Verified semantics:
 
@@ -146,7 +149,7 @@ Evidence:
 - `modules/technical_feature_engine/post_market_validated_runner.py`
 - `tests/test_multisource_conflict.py`
 - `tests/test_canonical_data_path_commit5.py`
-- `docs/SDE_STABILIZATION_COMMIT5_CANONICAL_DATA_PATH.md`
+- `docs/archive/v1.7/SDE_STABILIZATION_COMMIT5_CANONICAL_DATA_PATH.md`
 
 Verified semantics:
 
@@ -184,7 +187,7 @@ Candidate evidence before squash:
 - credential scan PASS
 
 Detailed evidence:
-`docs/SDE_STABILIZATION_COMMIT6_RELEASE_EVIDENCE.md`.
+`docs/archive/v1.7/SDE_STABILIZATION_COMMIT6_RELEASE_EVIDENCE.md`.
 
 ## New findings discovered during stabilization
 
@@ -222,7 +225,7 @@ Detailed evidence:
 | PA2-NF-002 | Phase 2 pre-audit | Resend regression assumes `/` path separators | Phase 2 Commit 3 resolved-`Path` comparison | **CLOSED BY PHASE 2 RE-AUDIT** |
 
 Detailed non-blocking observations remain in
-`docs/SDE_STABILIZATION_DEFERRED_FINDINGS.md`.
+`docs/archive/v1.7/SDE_STABILIZATION_DEFERRED_FINDINGS.md`.
 
 ## Phase 2 hardening commit register
 
@@ -244,7 +247,7 @@ Evidence:
 
 - `.github/workflows/hotfix-exit-volume.yml`
 - `tests/test_release_governance_workflow.py`
-- `docs/SDE_PHASE2_COMMIT1_RELEASE_GOVERNANCE.md`
+- `docs/archive/v1.7/SDE_PHASE2_COMMIT1_RELEASE_GOVERNANCE.md`
 
 No production application, quant, lifecycle, runtime-status, canonical-data, or
 V2 publication behavior is owned by this Phase 2 commit.
@@ -266,7 +269,7 @@ validation. It also records and fixes in-scope finding `P2P2-NF-001`.
 
 Evidence:
 
-- `docs/SDE_PHASE2_PROCESS2_RUNTIME_DATA_INTEGRITY.md`
+- `docs/archive/v1.7/SDE_PHASE2_PROCESS2_RUNTIME_DATA_INTEGRITY.md`
 - `tests/test_delivery_idempotency_phase2.py`
 - `tests/test_historical_price_revisions_phase2.py`
 - `tests/test_artifact_durability_phase2.py`
@@ -304,8 +307,8 @@ Evidence:
 - `tests/test_replay_contract_phase2.py`
 - `tests/test_audit_quant_freeze.py`
 - `tests/test_resend_daily_reports.py`
-- `docs/SDE_PHASE2_COMMIT3_FINAL_REAUDIT.md`
-- `docs/SDE_PHASE2_TRACEABILITY.md`
+- `docs/archive/v1.7/SDE_PHASE2_COMMIT3_FINAL_REAUDIT.md`
+- `docs/archive/v1.7/SDE_PHASE2_TRACEABILITY.md`
 
 Final local candidate evidence: compile PASS; targeted aggregate **94 passed**;
 full suite **595 passed, 3 subtests passed, 0 failed**; quant freeze PASS;

@@ -1,8 +1,11 @@
 # SDE Stabilization — Commit 3 Lifecycle Consistency
 
+> Archived historical evidence. Retained for audit traceability; it is not
+> current operational guidance. See `docs/README.md` for active documentation.
+
 ## Audit basis
 
-Commit 3 owns `AF-P1-002` from `docs/SDE_AUDIT_BASELINE.md`: lifecycle
+Commit 3 owns `AF-P1-002` from `docs/archive/v1.7/SDE_AUDIT_BASELINE.md`: lifecycle
 semantics were not identical across Exit Engine, outcome tracker, SQLite
 outcome archive, profile shadow evaluation, and backtest/evaluation.
 

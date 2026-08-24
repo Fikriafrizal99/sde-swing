@@ -1,5 +1,8 @@
 # SDE Swing V1.7.0 Multi-Source — Pipeline Validation Report
 
+> Archived historical evidence. This snapshot is retained for traceability and
+> is not current operational guidance. See `docs/README.md` for active documentation.
+
 **Audit date:** 2026-08-04 (Asia/Jakarta)
 **Scope:** stabilization and integration validation only.  Decision scoring, thresholds, and the BUY/WATCH/AVOID strategy were not changed.
 

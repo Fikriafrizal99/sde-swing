@@ -1,5 +1,8 @@
 # SDE Stabilization — Commit 6 Final Re-Audit Index
 
+> Archived historical governance evidence. Retained for audit traceability; it
+> is not current operational guidance. See `docs/README.md` for active documentation.
+
 Audited baseline: `121bc58b0f6a62dc3a844ee59575fe48ce86cc7d`
 
 Commit 5 parent: `e1344f43a9248fc72b3673edf7dfa91463df6051`

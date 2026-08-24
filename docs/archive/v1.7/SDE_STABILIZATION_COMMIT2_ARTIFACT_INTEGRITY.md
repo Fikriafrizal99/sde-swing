@@ -1,9 +1,12 @@
 # SDE Stabilization — Commit 2 Artifact Integrity
 
+> Archived historical evidence. Retained for audit traceability; it is not
+> current operational guidance. See `docs/README.md` for active documentation.
+
 ## Audit basis
 
 Commit 2 closes the P0 artifact-integrity finding recorded in
-`docs/SDE_AUDIT_BASELINE.md`:
+`docs/archive/v1.7/SDE_AUDIT_BASELINE.md`:
 
 - shared `FINAL_DECISION_V2.csv` writer was not entirely protected by the
   global writer lock;

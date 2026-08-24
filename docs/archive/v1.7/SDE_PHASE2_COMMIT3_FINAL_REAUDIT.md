@@ -1,5 +1,8 @@
 # SDE Phase 2 — Final Re-Audit
 
+> Archived historical governance evidence. Retained for audit traceability; it
+> is not current operational guidance. See `docs/README.md` for active documentation.
+
 ## Baseline
 
 - Repository: `Fikriafrizal99/sde-swing`

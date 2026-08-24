@@ -1,4 +1,7 @@
 # Stage 3 Multi-Source Architecture Report
+
+> Archived historical implementation evidence. This dated snapshot is not
+> current operational guidance. See `docs/README.md` for active documentation.
 **Date:** 2026-08-03  
 **Branch:** agent/sde-swing-v1-7-0-multisource  
 **Baseline:** agent/sde-swing-v1-6-2-stage1-stabilized

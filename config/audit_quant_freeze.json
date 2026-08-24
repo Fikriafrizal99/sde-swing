@@ -2,7 +2,7 @@
   "schema_version": 1,
   "baseline": {
     "commit": "121bc58b0f6a62dc3a844ee59575fe48ce86cc7d",
-    "audit_document": "docs/SDE_AUDIT_BASELINE.md",
+    "audit_document": "docs/archive/v1.7/SDE_AUDIT_BASELINE.md",
     "audit_date": "2026-08-13",
     "implementation_branch": "audit/sde-stabilization"
   },

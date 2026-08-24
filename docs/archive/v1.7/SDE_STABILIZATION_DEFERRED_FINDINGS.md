@@ -1,5 +1,8 @@
 # SDE Stabilization — Deferred Findings Log
 
+> Archived historical backlog evidence. Retained for audit traceability; it is
+> not current operational guidance. See `docs/README.md` for active documentation.
+
 ## Policy
 
 This file records observations discovered during stabilization that are outside
@@ -9,7 +12,7 @@ history is not lost.
 
 Cumulative status is tracked in:
 
-`docs/SDE_STABILIZATION_AUDIT_TRACEABILITY.md`
+`docs/archive/v1.7/SDE_STABILIZATION_AUDIT_TRACEABILITY.md`
 
 Stabilization finding IDs use `NF-C<commit>-NNN`; Phase 2 Process 2 findings
 use `P2P2-NF-NNN`.
@@ -186,5 +189,5 @@ subsequently closed by Phase 2 re-audit.
 
 Implementation did not equal closure. Phase 2 Commit 3 independently re-audited
 the executable behavior and closed the listed findings. The remaining risks are
-recorded in `docs/SDE_PHASE2_COMMIT3_FINAL_REAUDIT.md`; no historical evidence
+recorded in `docs/archive/v1.7/SDE_PHASE2_COMMIT3_FINAL_REAUDIT.md`; no historical evidence
 above was deleted.

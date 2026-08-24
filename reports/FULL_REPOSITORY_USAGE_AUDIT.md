@@ -886,22 +886,22 @@ the active report format is frozen.
 | docs/IDX_AI_DOCUMENT_READER.md | CURRENT | Keep; reflects Playwright -> official delivery -> queued AI/edit flow |
 | docs/IDX_DISCLOSURE_WATCHER_ARCHITECTURE.md | CURRENT with historical HTTP guidance | Clarify that Playwright is now the configured proven fallback/primary transport |
 | docs/CONFIGURATION.md | CONTRADICTORY | It says .env.example is blank, but no .env.example is tracked; correct doc or add approved blank template |
-| PIPELINE_VALIDATION_REPORT.md | STALE | Move to historical archive or add a prominent snapshot banner; it audits removed START_SDE_SWING.bat and old 265/273-test results |
+| docs/archive/v1.7/PIPELINE_VALIDATION_REPORT.md | ARCHIVED | Historical snapshot banner added; it audits removed START_SDE_SWING.bat and old 265/273-test results |
 | modules/backtesting/README.md | STALE | Replace claim that master_pipeline.py is the official path with current integrated/compatibility wording |
 | modules/technical_feature_engine/README.md | STALE | Same |
 | modules/candidate_selector/README.md | CONTRADICTORY | RUN_SDE remains valid, but master_pipeline.py is no longer an equal official path |
 | modules/exit_engine/README.md | CURRENT ENGINE DOC | Keep; do not alter engine semantics |
-| docs/SDE_AUDIT_BASELINE.md | HISTORICAL_ARCHIVE / GOVERNANCE | Keep as dated audit baseline; do not present its test snapshot as current |
-| docs/SDE_STABILIZATION_BASELINE.md | HISTORICAL_ARCHIVE / GOVERNANCE | Keep; old failure/pass counts are explicitly baseline evidence |
-| docs/SDE_STABILIZATION_AUDIT_TRACEABILITY.md | HISTORICAL_ARCHIVE / GOVERNANCE | Keep; prior closure counts are dated evidence |
-| docs/SDE_STABILIZATION_DEFERRED_FINDINGS.md | HISTORICAL_ARCHIVE / BACKLOG | Keep and review unresolved entries separately |
+| docs/archive/v1.7/SDE_AUDIT_BASELINE.md | HISTORICAL_ARCHIVE / GOVERNANCE | Kept as dated audit baseline; not presented as current guidance |
+| docs/archive/v1.7/SDE_STABILIZATION_BASELINE.md | HISTORICAL_ARCHIVE / GOVERNANCE | Kept; old failure/pass counts are explicitly baseline evidence |
+| docs/archive/v1.7/SDE_STABILIZATION_AUDIT_TRACEABILITY.md | HISTORICAL_ARCHIVE / GOVERNANCE | Kept; prior closure counts are dated evidence |
+| docs/archive/v1.7/SDE_STABILIZATION_DEFERRED_FINDINGS.md | HISTORICAL_ARCHIVE / BACKLOG | Kept for traceability; unresolved entries require separate review |
 | 39 Markdown files under docs/archive/v1.1 | HISTORICAL_ARCHIVE | Keep; no automatic deletion |
-| 20 SDE_/STAGE dated evidence documents | HISTORICAL_ARCHIVE | Keep or organize under an archive index |
+| 20 SDE_/STAGE dated evidence documents under docs/archive/v1.7 | HISTORICAL_ARCHIVE | Organized under the V1.7 archive index |
 | reports/FILE_USAGE_AUDIT.md/json and versioned release/E2E/Telegram reports | HISTORICAL_ARCHIVE | Keep as prior-release evidence; do not use as current architecture truth |
-| docs/LEGACY_FILE_MANIFEST.md | CURRENT but coarse | Update after approved cleanup to include newly identified islands and local cleanup classes |
+| docs/LEGACY_FILE_MANIFEST.md | CURRENT | Updated with the archived-documentation class |
 
-Stale/contradictory active-facing document count: five
-(CONFIGURATION, PIPELINE_VALIDATION_REPORT, and three module READMEs).
+Stale/contradictory active-facing document count after archiving: four
+(CONFIGURATION and three module READMEs).
 Historical documentation is intentionally excluded from that count.
 
 ## 12. Local/Generated Cleanup
@@ -1037,8 +1037,8 @@ deletion amount.
    current launcher wrappers, current IDX AI configuration, and current
    Playwright dependency boundary.
 3. Keep engine/freeze/canonical assertions unchanged.
-4. Correct the five stale/contradictory docs.
-5. Decide whether PIPELINE_VALIDATION_REPORT.md belongs under a dated archive.
+4. Correct the four remaining stale/contradictory active-facing docs.
+5. Keep historical pipeline validation evidence under the dated archive.
 6. Reconcile .env.example policy and dependency comments.
 7. Require normal CI to return green before source cleanup merges.
 

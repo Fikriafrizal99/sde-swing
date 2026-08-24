@@ -131,11 +131,11 @@ def validate_sqlite() -> None:
 
 def validate_structure() -> None:
     required = [
-        "docs/SDE_AUDIT_BASELINE.md",
-        "docs/SDE_STABILIZATION_AUDIT_TRACEABILITY.md",
-        "docs/SDE_STABILIZATION_DEFERRED_FINDINGS.md",
-        "docs/SDE_PHASE2_COMMIT3_FINAL_REAUDIT.md",
-        "docs/SDE_PHASE2_TRACEABILITY.md",
+        "docs/archive/v1.7/SDE_AUDIT_BASELINE.md",
+        "docs/archive/v1.7/SDE_STABILIZATION_AUDIT_TRACEABILITY.md",
+        "docs/archive/v1.7/SDE_STABILIZATION_DEFERRED_FINDINGS.md",
+        "docs/archive/v1.7/SDE_PHASE2_COMMIT3_FINAL_REAUDIT.md",
+        "docs/archive/v1.7/SDE_PHASE2_TRACEABILITY.md",
         "modules/broker_fusion/broker_fusion_publisher.py",
         "modules/technical_feature_engine/post_market_validated_runner.py",
         "modules/data_sources/legacy_daily_bar_adapter.py",

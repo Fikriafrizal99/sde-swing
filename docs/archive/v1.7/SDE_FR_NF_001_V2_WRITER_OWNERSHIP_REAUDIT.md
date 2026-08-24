@@ -1,5 +1,8 @@
 # SDE FR-NF-001 — Canonical V2 Writer Ownership Re-Audit
 
+> Archived historical evidence. Retained for audit traceability; it is not
+> current operational guidance. See `docs/README.md` for active documentation.
+
 ## Baseline and Scope
 
 - Branch: `audit/sde-stabilization`

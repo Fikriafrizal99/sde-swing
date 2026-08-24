@@ -1,5 +1,8 @@
 # SDE Swing V1.6.2 Stage 1 Stabilization Report
 
+> Archived historical implementation evidence. This dated snapshot is not
+> current operational guidance. See `docs/README.md` for active documentation.
+
 **Tanggal validasi:** 3 Agustus 2026  
 **Versi kerja:** `1.6.2-stage1`  
 **Pipeline version:** `SDE_SWING_V1_6_2_STAGE1_STABILIZED`  

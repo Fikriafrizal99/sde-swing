@@ -1,5 +1,8 @@
 # SDE Stabilization — Commit 6 Release Evidence & Final Re-Audit
 
+> Archived historical governance evidence. Retained for audit traceability; it
+> is not current operational guidance. See `docs/README.md` for active documentation.
+
 ## Scope
 
 Commit 6 closes the agreed P0/P1 stabilization sequence. It is release cleanup,
@@ -122,7 +125,7 @@ Commit 6 does not close or silently implement:
 - `AF-P2-002` hotfix workflow governance;
 - `AF-P2-003` full DB revision immutability;
 - the explicitly deferred NF items listed in
-  `docs/SDE_STABILIZATION_DEFERRED_FINDINGS.md`.
+  `docs/archive/v1.7/SDE_STABILIZATION_DEFERRED_FINDINGS.md`.
 
 CI runs without live provider/Telegram credentials, so the re-audit is proof of
 code/config/contracts—not proof of current external endpoint availability.

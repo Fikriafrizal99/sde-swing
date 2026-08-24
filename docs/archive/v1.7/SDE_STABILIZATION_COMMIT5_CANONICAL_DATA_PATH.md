@@ -1,8 +1,11 @@
 # SDE Stabilization — Commit 5 Canonical Data Path
 
+> Archived historical evidence. Retained for audit traceability; it is not
+> current operational guidance. See `docs/README.md` for active documentation.
+
 ## Audit basis
 
-Commit 5 owns two confirmed P1 findings from `docs/SDE_AUDIT_BASELINE.md`:
+Commit 5 owns two confirmed P1 findings from `docs/archive/v1.7/SDE_AUDIT_BASELINE.md`:
 
 - `AF-P1-001` — the canonical data layer exists but is not the actual
   production Stage 1/2 execution boundary;
@@ -187,10 +190,10 @@ is not a claim that the entire repository is green.
 ## New findings tracking
 
 In-scope implementation observations are recorded in
-`docs/SDE_STABILIZATION_AUDIT_TRACEABILITY.md`.
+`docs/archive/v1.7/SDE_STABILIZATION_AUDIT_TRACEABILITY.md`.
 
 Non-blocking observations discovered while implementing the canonical boundary
-are recorded in `docs/SDE_STABILIZATION_DEFERRED_FINDINGS.md` for the
+are recorded in `docs/archive/v1.7/SDE_STABILIZATION_DEFERRED_FINDINGS.md` for the
 post-stabilization consolidated discussion, per the agreed audit workflow.
 
 ## Guardrails

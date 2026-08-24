@@ -223,14 +223,14 @@ Historical release material remains available under `docs/archive/` instead of b
 
 ## Documentation
 
+- [Documentation Index](docs/README.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Configuration](docs/CONFIGURATION.md)
 - [Data Sources](docs/DATA_SOURCES.md)
 - [Runtime Jobs](docs/RUNTIME_JOBS.md)
 - [Telegram Routing](docs/TELEGRAM_ROUTING.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Stabilization Baseline](docs/SDE_STABILIZATION_BASELINE.md)
-- [Stabilization Traceability](docs/SDE_STABILIZATION_AUDIT_TRACEABILITY.md)
+- [Historical Documentation Archive](docs/archive/README.md)
 
 > [!CAUTION]
 > Market analysis involves uncertainty and financial risk. SDE Swing is an analytical decision-support project and does not guarantee outcomes.

@@ -1,5 +1,8 @@
 ## Broker Period Flow — Audit & Mapping
 
+> Archived historical evidence. This file is retained for traceability and is
+> not current operational guidance. See `docs/README.md` for active documentation.
+
 Tanggal: 2026-08-11
 
 Tujuan: audit cepat codebase untuk menentukan file / fungsi yang perlu diubah agar Final Watchlist mendukung PRIMARY broker context (1D/3D/5D/CUSTOM), immutable daily archive, internal aggregate building, TODAY PULSE interpretasi, dan provenance.

@@ -1,5 +1,8 @@
 # SDE Phase 2 Traceability
 
+> Archived historical governance evidence. Retained for audit traceability; it
+> is not current operational guidance. See `docs/README.md` for active documentation.
+
 ## Purpose
 
 This register maps every Phase 2 finding to its implementation boundary,

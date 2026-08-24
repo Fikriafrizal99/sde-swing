@@ -1,5 +1,8 @@
 # Stage 2 Gap Closure
 
+> Archived historical implementation evidence. This dated snapshot is not
+> current operational guidance. See `docs/README.md` for active documentation.
+
 Implemented before Stage 3:
 
 - permanent CI for compile, pytest, diff integrity, and redaction scan;

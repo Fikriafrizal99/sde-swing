@@ -1,8 +1,11 @@
 # SDE Stabilization — Commit 4 Runtime / Status / Locking
 
+> Archived historical evidence. Retained for audit traceability; it is not
+> current operational guidance. See `docs/README.md` for active documentation.
+
 ## Audit basis
 
-Commit 4 owns two confirmed P1 findings from `docs/SDE_AUDIT_BASELINE.md`:
+Commit 4 owns two confirmed P1 findings from `docs/archive/v1.7/SDE_AUDIT_BASELINE.md`:
 
 - `AF-P1-003` — resend/delivery can overwrite the engine `*_latest.json` status;
 - `AF-P1-004` — interruption can leave an inconsistent terminal state, including

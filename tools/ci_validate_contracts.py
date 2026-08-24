@@ -183,7 +183,7 @@ def check_structure_and_security() -> int:
     required_docs = {
         "README.md", "ARCHITECTURE.md", "RUNTIME_JOBS.md", "DATA_SOURCES.md",
         "TELEGRAM_ROUTING.md", "CONFIGURATION.md", "MIGRATION_V1_6_TO_V1_7.md",
-        "TROUBLESHOOTING.md", "LEGACY_FILE_MANIFEST.md",
+        "TROUBLESHOOTING.md", "LEGACY_FILE_MANIFEST.md", "archive/README.md",
     }
     missing_docs = [name for name in required_docs if not (ROOT / "docs" / name).exists()]
     if missing_docs:
