@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-"""Final Watchlist orchestration with explicit Broker Summary horizon.
+"""Final Watchlist orchestration for the canonical broker-period contract.
 
-The existing Broker Fusion / Broker Confidence / Decision / Entry / Exit
-engines remain untouched. This wrapper owns only input selection, immutable
-snapshotting, lineage, transactional canonical activation, and stage order.
+Production broker analysis has exactly two sources:
+
+* PRIMARY: the exact Stockbit period selected by the operator (1D/3D/5D/CUSTOM).
+* TODAY: an exact real-1D capture for the Final Watchlist date, only when
+  PRIMARY is longer than 1D.
+
+No rolling broker-history database is used to reconstruct a second 3D/5D
+opinion.  Broker Fusion keeps its existing scoring semantics and the Final
+Decision Engine remains the sole owner of trading decisions.
 """
 
 import argparse
@@ -23,7 +29,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from swing_utils import make_run_id
 from modules.broker_bridge.broker_period_context import (
     BrokerPeriodSpec,
     atomic_copy,
@@ -33,16 +38,9 @@ from modules.broker_bridge.broker_period_context import (
     list_reusable_snapshots,
     persist_snapshot,
     raw_companion,
-    session_coverage,
     wait_for_matching_export,
 )
-from modules.data_sources.broker_history import (
-    connect as connect_broker_history,
-    get_trading_sessions_before,
-    ingest_daily_capture_files,
-    init_schema as init_broker_history_schema,
-)
-from swing_utils import file_sha256
+from swing_utils import file_sha256, make_run_id
 
 WIB = ZoneInfo("Asia/Jakarta")
 
@@ -87,10 +85,6 @@ class BridgeRunLock:
     @staticmethod
     def _pid_is_alive(pid: int) -> bool:
         if os.name == "nt":
-            # ``os.kill(pid, 0)`` is not a non-destructive liveness probe on
-            # every supported Windows Python/runtime combination. Querying a
-            # limited process handle is read-only and avoids signalling the
-            # current process.
             import ctypes
 
             process_query_limited_information = 0x1000
@@ -114,10 +108,7 @@ class BridgeRunLock:
         self.root.mkdir(parents=True, exist_ok=True)
         for _attempt in range(2):
             try:
-                descriptor = os.open(
-                    self.path,
-                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                )
+                descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             except FileExistsError:
                 try:
                     pid = int(self.path.read_text(encoding="utf-8").strip())
@@ -215,7 +206,6 @@ class CanonicalTransaction:
 
 
 def recover_unfinished_transactions(recovery_root: Path) -> int:
-    """Restore canonical files left by a killed/interrupted prior process."""
     if not recovery_root.exists():
         return 0
     recovered = 0
@@ -244,7 +234,7 @@ def recover_unfinished_transactions(recovery_root: Path) -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Final Watchlist with 1D/3D/5D/CUSTOM Broker Summary horizon")
+    parser = argparse.ArgumentParser(description="Final Watchlist with exact PRIMARY broker period + optional TODAY 1D pulse")
     parser.add_argument("--config", default="config/pipeline.json")
     parser.add_argument("--scheduler-config", default="config/scheduler.json")
     parser.add_argument("--trade-date", default="")
@@ -266,7 +256,7 @@ def choose_period(requested: str, custom_start: str) -> tuple[str, str]:
     print("[2] 3D     - 3 sesi perdagangan IDX")
     print("[3] 5D     - 5 sesi perdagangan IDX")
     print("[4] CUSTOM - tanggal awal sampai tanggal Final Watchlist")
-    print("[5] REUSE  - snapshot valid tersimpan untuk tanggal ini")
+    print("[5] REUSE  - snapshot exact yang valid untuk tanggal ini")
     choice = input("Pilih periode: ").strip()
     period = {"1": "1D", "2": "3D", "3": "5D", "4": "CUSTOM", "5": "REUSE"}.get(choice, "")
     if not period:
@@ -276,23 +266,16 @@ def choose_period(requested: str, custom_start: str) -> tuple[str, str]:
     return period, custom_start
 
 
+def _is_exact_snapshot(item: dict[str, Any]) -> bool:
+    source = str(item.get("broker_period_source") or "").strip().upper()
+    return source in {"STOCKBIT_1D", "STOCKBIT_AGGREGATE_EXPORT", ""}
+
+
 def select_reuse(trade_date: str) -> dict[str, Any]:
-    all_snapshots = list_reusable_snapshots(trade_date)
-    snapshots = [
-        item
-        for item in all_snapshots
-        if str(item.get("broker_period_source", "")).strip().upper() != "INTERNAL_DAILY_ROLLUP"
-    ]
-    blocked = len(all_snapshots) - len(snapshots)
-    if blocked:
-        print(
-            f"[REUSE] {blocked} snapshot INTERNAL_DAILY_ROLLUP lama diblokir karena payload multi-day "
-            "tidak dapat dibuktikan sebagai exact aggregate.",
-            flush=True,
-        )
+    snapshots = [item for item in list_reusable_snapshots(trade_date) if _is_exact_snapshot(item)]
     if not snapshots:
         raise RuntimeError(f"BROKER_REUSE_SNAPSHOT_NOT_FOUND:{trade_date}")
-    print("\nSNAPSHOT VALID TERSEDIA")
+    print("\nSNAPSHOT EXACT VALID TERSEDIA")
     for idx, item in enumerate(snapshots, 1):
         print(
             f"[{idx}] {item.get('broker_period_type')} "
@@ -345,12 +328,19 @@ def resolve_snapshot_and_symbols(config: dict[str, Any], trade_date: str) -> tup
 
 def run_stage(job: str, run_id: str, *, config_path: Path, scheduler_config: str, trade_date: str, no_telegram: bool, debug: bool) -> int:
     command = [
-        sys.executable, "-u", str(PROJECT_ROOT / "run_sde_job.py"),
-        "--job", job,
-        "--config", str(config_path),
-        "--scheduler-config", scheduler_config,
-        "--trade-date", trade_date,
-        "--run-id", run_id,
+        sys.executable,
+        "-u",
+        str(PROJECT_ROOT / "run_sde_job.py"),
+        "--job",
+        job,
+        "--config",
+        str(config_path),
+        "--scheduler-config",
+        scheduler_config,
+        "--trade-date",
+        trade_date,
+        "--run-id",
+        run_id,
     ]
     if no_telegram:
         command.append("--no-telegram")
@@ -367,42 +357,26 @@ def active_sidecar_payload(
     daily_manifest: dict[str, Any] | None = None,
     daily_archive_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Build the active PRIMARY sidecar with separate daily-capture lineage."""
+    """Build the one canonical PRIMARY/TODAY lineage sidecar."""
     daily_manifest = dict(daily_manifest or {})
-    primary_source = str(manifest.get("broker_period_source") or "").upper()
-    daily_raw_text = str(daily_manifest.get("raw_snapshot_path", "")).strip()
-    daily_raw_path = Path(daily_raw_text) if daily_raw_text else None
+    period_type = str(manifest.get("broker_period_type") or "").upper()
+    separate_today = period_type not in {"", "1D", "1DAY", "DAY"}
+    daily_summary = str(daily_manifest.get("summary_snapshot_path") or "").strip()
+    daily_raw = str(daily_manifest.get("raw_snapshot_path") or "").strip()
     daily_available = bool(
-        daily_raw_path
-        and daily_raw_path.exists()
-        and daily_raw_path.stat().st_size > 0
-        and str(daily_manifest.get("broker_period_end", ""))[:10]
+        separate_today
+        and daily_summary
+        and Path(daily_summary).exists()
+        and daily_raw
+        and Path(daily_raw).exists()
     )
-    if str(manifest.get("broker_period_type", "")).upper() in {"1D", "1DAY", "DAY"}:
-        daily_available = bool(str(manifest.get("raw_snapshot_path", "")).strip()) and bool(
-            Path(str(manifest.get("raw_snapshot_path", ""))).exists()
-        )
-    elif primary_source == "INTERNAL_DAILY_ROLLUP" and manifest.get("daily_source_snapshot_id"):
-        internal_raw = Path(str(manifest.get("raw_snapshot_path", "")))
-        daily_available = internal_raw.exists() and internal_raw.stat().st_size > 0
-        if daily_available and not daily_manifest:
-            daily_manifest = {
-                "snapshot_id": manifest.get("daily_source_snapshot_id", ""),
-                "manifest_path": manifest.get("daily_source_manifest_path", ""),
-                "raw_snapshot_path": str(internal_raw),
-                "broker_period_end": manifest.get("broker_period_end", ""),
-            }
     coverage = manifest.get("broker_coverage", manifest.get("coverage_ratio", 0.0))
-    missing_sessions = list(
-        manifest.get("broker_missing_sessions")
-        or manifest.get("broker_missing_session_dates")
-        or []
-    )
-    payload = {
+    missing_sessions = list(manifest.get("broker_missing_sessions") or manifest.get("broker_missing_session_dates") or [])
+    return {
         "Run_ID": run_id,
         "snapshot_id": manifest.get("snapshot_id"),
         "broker_snapshot_id": manifest.get("broker_snapshot_id") or manifest.get("snapshot_id"),
-        "broker_period_type": manifest.get("broker_period_type"),
+        "broker_period_type": period_type,
         "broker_period_start": manifest.get("broker_period_start"),
         "broker_period_end": manifest.get("broker_period_end"),
         "broker_trading_days": manifest.get("broker_trading_days"),
@@ -421,47 +395,33 @@ def active_sidecar_payload(
         "summary_hash": manifest.get("summary_hash") or manifest.get("summary_snapshot_hash"),
         "raw_source_hash": manifest.get("raw_source_hash", ""),
         "raw_hash": manifest.get("raw_hash") or manifest.get("raw_source_hash", ""),
-        "broker_period_source": primary_source,
+        "broker_period_source": str(manifest.get("broker_period_source") or "").upper(),
         "broker_missing_sessions": missing_sessions,
-        "broker_period_complete": bool(
-            manifest.get("broker_period_complete", not missing_sessions)
-        ),
-        "broker_period_coverage": manifest.get(
-            "broker_period_coverage", manifest.get("broker_session_coverage", 1.0 if not missing_sessions else 0.0)
-        ),
-        "aggregate_snapshot": bool(manifest.get("aggregate_snapshot", False)),
-        "daily_history_eligible": bool(manifest.get("daily_history_eligible", False)),
+        "broker_period_complete": bool(manifest.get("broker_period_complete", not missing_sessions)),
+        "broker_period_coverage": manifest.get("broker_period_coverage", manifest.get("broker_session_coverage", 1.0 if not missing_sessions else 0.0)),
+        "aggregate_snapshot": bool(manifest.get("aggregate_snapshot", period_type not in {"1D", "1DAY", "DAY"})),
         "primary_summary_snapshot_path": manifest.get("summary_snapshot_path", ""),
         "primary_raw_snapshot_path": manifest.get("raw_snapshot_path", ""),
-        "daily_capture_snapshot_id": daily_manifest.get("snapshot_id", "") or (
-            manifest.get("snapshot_id", "") if str(manifest.get("broker_period_type", "")).upper() == "1D" else ""
-        ),
-        "daily_capture_manifest_path": daily_manifest.get("manifest_path", ""),
-        "daily_capture_raw_snapshot_path": daily_manifest.get("raw_snapshot_path", ""),
-        "daily_archive_path": str(daily_archive_path.resolve()) if daily_archive_path else "",
+        "daily_capture_snapshot_id": daily_manifest.get("snapshot_id", "") if separate_today else "",
+        "daily_capture_manifest_path": daily_manifest.get("manifest_path", "") if separate_today else "",
+        "daily_capture_summary_snapshot_path": daily_summary if separate_today else "",
+        "daily_capture_raw_snapshot_path": daily_raw if separate_today else "",
+        "daily_archive_path": str(daily_archive_path.resolve()) if daily_archive_path and separate_today else "",
         "today_pulse_available": daily_available,
         "today_pulse_date": str(manifest.get("broker_period_end", ""))[:10] if daily_available else "",
         "today_pulse_snapshot_id": daily_manifest.get("snapshot_id", "") if daily_available else "",
         "today_pulse_source": "STOCKBIT_1D" if daily_available else "",
-        "today_pulse_status": "AVAILABLE" if daily_available else "NOT_AVAILABLE",
-        "today_pulse_net_flow": "",
-        "today_pulse_buy_days": "",
-        "today_pulse_sell_days": "",
-        "broker_alignment": "INSUFFICIENT",
+        "today_pulse_status": "AVAILABLE" if daily_available else ("NOT_APPLICABLE" if not separate_today else "NOT_AVAILABLE"),
         "BROKER_PERIOD_PRIMARY": True,
+        "BROKER_PERIOD_CONTEXT_MODEL": "EXACT_PRIMARY_PLUS_TODAY_V1",
         "SCORING_ADJUSTMENT_APPLIED": False,
         "FRESHNESS_ADJUSTMENT_APPLIED": False,
         "PERSISTENCE_ADJUSTMENT_APPLIED": False,
     }
-    # A reused internal rollup already carries the daily source lineage.
-    if not daily_manifest and manifest.get("daily_source_snapshot_id"):
-        payload["daily_capture_snapshot_id"] = manifest.get("daily_source_snapshot_id", "")
-        payload["daily_capture_manifest_path"] = manifest.get("daily_source_manifest_path", "")
-        payload["today_pulse_snapshot_id"] = manifest.get("daily_source_snapshot_id", "")
-    return payload
 
 
 def archive_daily_raw(raw_path: Path, archive_dir: Path, trade_date: str) -> Path | None:
+    """Keep the real 1D raw capture for audit only; it is not an analysis DB."""
     if not raw_path.exists() or raw_path.stat().st_size <= 0:
         return None
     archive_dir.mkdir(parents=True, exist_ok=True)
@@ -469,9 +429,6 @@ def archive_daily_raw(raw_path: Path, archive_dir: Path, trade_date: str) -> Pat
     destination = archive_dir / f"BROKER_RAW_{trade_date}_{digest[:16]}.csv"
     if destination.exists() and file_sha256(destination) == digest:
         return destination
-    # Keep an immutable same-date revision instead of silently overwriting an
-    # earlier capture.  The normalized history layer will explicitly reject a
-    # conflicting observation while preserving its revision lineage.
     if destination.exists():
         destination = archive_dir / f"BROKER_RAW_{trade_date}_{digest}.csv"
     shutil.copy2(raw_path, destination)
@@ -494,14 +451,10 @@ def capture_real_daily_snapshot(
     archive_dir: Path,
     snapshot_root: Path,
 ) -> tuple[dict[str, Any], Path | None]:
-    """Capture today's REAL Stockbit 1D before selecting a PRIMARY horizon."""
+    """Capture one exact real-1D Stockbit snapshot for the current session."""
     daily_spec = fixed_period_spec("1D", trade_date)
     print(
-        "\n[DAILY CAPTURE] Menerima REAL Stockbit 1D untuk sesi IDX {0}.\n"
-        "Export Broker Summary dengan range PERSIS {1}..{2}; data ini disimpan "
-        "sebagai TODAY PULSE/daily history, bukan sebagai aggregate.".format(
-            trade_date, daily_spec.period_start, daily_spec.period_end
-        ),
+        f"\n[TODAY 1D] Export Broker Summary PERSIS {daily_spec.period_start}..{daily_spec.period_end}.",
         flush=True,
     )
     export_path, info = wait_for_matching_export(
@@ -519,7 +472,7 @@ def capture_real_daily_snapshot(
         daily_spec,
         info,
         snapshot_root=snapshot_root,
-        selected_by="DAILY_CAPTURE",
+        selected_by="TODAY_1D_CAPTURE",
     )
     archived = (
         archive_daily_raw(Path(str(manifest["raw_snapshot_path"])), archive_dir, trade_date)
@@ -534,46 +487,12 @@ def capture_real_daily_snapshot(
         "broker_missing_sessions": [],
         "broker_session_coverage": 1.0,
         "broker_coverage_text": "1/1",
+        "analysis_role": "TODAY" if daily_spec.period_type == "1D" else "",
     })
     manifest_path_text = str(manifest.get("manifest_path", "")).strip()
     if manifest_path_text:
         atomic_write_json(Path(manifest_path_text), manifest)
     return manifest, archived
-
-
-def daily_history_coverage(
-    *,
-    history_db: Path,
-    raw_archive: Path,
-    current_archive: Path | None,
-    expected_dates: tuple[str, ...] | list[str],
-    trade_date: str,
-) -> dict[str, Any]:
-    """Ingest immutable daily files and return exact session coverage."""
-    conn = connect_broker_history(history_db)
-    init_broker_history_schema(conn)
-    try:
-        paths = [
-            path
-            for path in [
-                current_archive,
-                *sorted(
-                    raw_archive.glob("BROKER_RAW_*.csv"),
-                    key=lambda item: item.stat().st_mtime,
-                ),
-            ]
-            if path is not None and path.exists() and path.stat().st_size > 0
-        ]
-        ingest_daily_capture_files(
-            conn,
-            paths,
-            as_of_date=trade_date,
-            source="STOCKBIT_1D",
-        )
-        observed = get_trading_sessions_before(conn, trade_date, limit=240)
-    finally:
-        conn.close()
-    return session_coverage(expected_dates, observed)
 
 
 def capture_exact_aggregate_primary(
@@ -586,16 +505,9 @@ def capture_exact_aggregate_primary(
     poll_seconds: float,
     snapshot_root: Path,
 ) -> dict[str, Any]:
-    """Capture the exact Stockbit aggregate used by Broker Summary/Fusion.
-
-    Daily history remains the source of multi-day persistence context, but its
-    1D rows are not sufficient to reconstruct Stockbit's aggregate detector
-    fields without changing scoring semantics. Multi-day PRIMARY therefore
-    always uses the exact requested Stockbit aggregate.
-    """
+    """Capture the exact operator-selected aggregate used by Broker Fusion."""
     print(
-        "\n[PRIMARY] Mengambil exact Stockbit aggregate dengan range PERSIS:",
-        f"{spec.period_start}..{spec.period_end}",
+        f"\n[PRIMARY {spec.period_type}] Export range PERSIS {spec.period_start}..{spec.period_end}.",
         flush=True,
     )
     export_path, info = wait_for_matching_export(
@@ -606,40 +518,36 @@ def capture_exact_aggregate_primary(
         timeout_seconds=timeout_seconds,
         poll_seconds=poll_seconds,
     )
-    return persist_snapshot(
+    manifest = persist_snapshot(
         export_path,
         raw_companion(export_path),
         spec,
         info,
         snapshot_root=snapshot_root,
-        selected_by="FINAL_WATCHLIST_EXACT_AGGREGATE_PRIMARY",
+        selected_by="FINAL_WATCHLIST_EXACT_PRIMARY",
     )
+    manifest.update({
+        "broker_period_source": "STOCKBIT_AGGREGATE_EXPORT",
+        "aggregate_snapshot": True,
+        "daily_history_eligible": False,
+        "analysis_role": "PRIMARY",
+    })
+    manifest_path_text = str(manifest.get("manifest_path", "")).strip()
+    if manifest_path_text:
+        atomic_write_json(Path(manifest_path_text), manifest)
+    return manifest
 
 
-def choose_primary_fallback(
-    *,
-    period_type: str,
-    missing_sessions: list[str],
-    daily_manifest: dict[str, Any] | None,
-) -> str:
-    """Legacy explicit fallback helper retained for backward compatibility."""
-    print(f"\nPRIMARY {period_type} tidak bisa dibentuk dari daily history.", flush=True)
-    print("Missing:", flush=True)
-    for value in missing_sessions:
-        print(str(value), flush=True)
-    print(f"\n[1] Gunakan Stockbit aggregate {period_type} sebagai fallback PRIMARY", flush=True)
-    print("[2] Gunakan 1D hari ini sebagai PRIMARY", flush=True)
-    print("[0] Cancel", flush=True)
-    choice = input("Pilih fallback: ").strip()
-    if choice == "1":
-        return "AGGREGATE"
-    if choice == "2":
-        if not daily_manifest:
-            raise RuntimeError("BROKER_TODAY_1D_NOT_AVAILABLE_FOR_FALLBACK")
-        return "1D"
-    if choice == "0":
-        raise RuntimeError("BROKER_PRIMARY_ROLLUP_CANCELLED")
-    raise RuntimeError("BROKER_PRIMARY_FALLBACK_SELECTION_INVALID")
+def _find_reusable_today(trade_date: str) -> dict[str, Any]:
+    for item in list_reusable_snapshots(trade_date):
+        if str(item.get("broker_period_type") or "").upper() != "1D":
+            continue
+        if str(item.get("broker_period_end") or "")[:10] != trade_date:
+            continue
+        if not _is_exact_snapshot(item):
+            continue
+        return item
+    return {}
 
 
 def mark_manifest_committed(manifest: dict[str, Any], run_id: str) -> Path | None:
@@ -655,7 +563,7 @@ def mark_manifest_committed(manifest: dict[str, Any], run_id: str) -> Path | Non
         "final_watchlist_run_id": run_id,
         "activated_at": now,
         "committed_at": now,
-        "primary_context": True,
+        "primary_context": str(manifest.get("analysis_role") or "").upper() == "PRIMARY",
     })
     atomic_write_json(manifest_path, manifest)
     return manifest_path
@@ -663,12 +571,21 @@ def mark_manifest_committed(manifest: dict[str, Any], run_id: str) -> Path | Non
 
 def capture_performance(run_id: str, manifest_path: Path, config: dict[str, Any]) -> None:
     db = resolve_project(config.get("paths", {}).get("swing_database", "data/database/sde_swing_history.db"))
-    command = [
-        sys.executable, "-u", str(PROJECT_ROOT / "tools/broker_period_performance.py"),
-        "capture", "--db", str(db), "--run-id", run_id,
-        "--snapshot-manifest", str(manifest_path),
-    ]
-    completed = subprocess.run(command, cwd=PROJECT_ROOT)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-u",
+            str(PROJECT_ROOT / "tools/broker_period_performance.py"),
+            "capture",
+            "--db",
+            str(db),
+            "--run-id",
+            run_id,
+            "--snapshot-manifest",
+            str(manifest_path),
+        ],
+        cwd=PROJECT_ROOT,
+    )
     if completed.returncode != 0:
         print("[PERFORMANCE WARNING] metadata Broker Period belum tercatat; Final Watchlist tetap valid.", flush=True)
 
@@ -688,7 +605,6 @@ def main() -> int:
     broker_cfg = config.get("broker", {})
     downloads = resolve_project(broker_cfg.get("downloads_dir", "%USERPROFILE%/Downloads"))
     raw_archive = resolve_project(paths.get("broker_raw_archive_dir", "data/input/broker/archive"))
-    history_db = resolve_project(paths.get("broker_history_db", "data/database/broker_multiday.db"))
     snapshot_root = resolve_project("data/output/broker_snapshots")
     timeout = args.timeout if args.timeout >= 0 else int(broker_cfg.get("timeout_seconds", 1200))
     poll = float(broker_cfg.get("poll_seconds", 2.0))
@@ -699,32 +615,18 @@ def main() -> int:
 
     daily_manifest: dict[str, Any] = {}
     daily_archive_path: Path | None = None
-    daily_raw_snapshot: Path | None = None
 
     if period_choice == "REUSE":
         selected_manifest = select_reuse(trade_date)
         spec = spec_from_manifest(selected_manifest)
-        summary_snapshot = Path(str(selected_manifest.get("summary_snapshot_path", "")))
-        raw_text = str(selected_manifest.get("raw_snapshot_path", "")).strip()
-        raw_snapshot = Path(raw_text) if raw_text else None
-        daily_manifest = _manifest_from_path(
-            str(
-                selected_manifest.get("daily_capture_manifest_path")
-                or selected_manifest.get("daily_source_manifest_path")
-                or ""
+        if spec.period_type not in {"1D", "1DAY", "DAY"}:
+            daily_manifest = _manifest_from_path(
+                str(selected_manifest.get("daily_capture_manifest_path") or "")
             )
-        )
-        if not daily_manifest and spec.period_type == "1D":
-            daily_manifest = dict(selected_manifest)
-        daily_raw_text = str(
-            daily_manifest.get("raw_snapshot_path")
-            or selected_manifest.get("daily_capture_raw_snapshot_path")
-            or ""
-        ).strip()
-        daily_raw_snapshot = Path(daily_raw_text) if daily_raw_text else None
-        archive_text = str(selected_manifest.get("daily_archive_path", "")).strip()
-        if archive_text and Path(archive_text).exists():
-            daily_archive_path = Path(archive_text)
+            if not daily_manifest:
+                daily_manifest = _find_reusable_today(trade_date)
+            if not daily_manifest:
+                raise RuntimeError(f"BROKER_TODAY_PULSE_REQUIRED_FOR_REUSE:{trade_date}")
     else:
         requested_spec = (
             custom_period_spec(custom_start, trade_date)
@@ -732,20 +634,19 @@ def main() -> int:
             else fixed_period_spec(period_choice, trade_date)
         )
         print("\n" + "=" * 68)
-        print("BROKER BRIDGE - FINAL WATCHLIST")
+        print("BROKER BRIDGE — EXACT PRIMARY + TODAY")
         print("=" * 68)
-        print(f"Technical date : {snapshot.get('trade_date')}")
-        print(f"Requested PRIMARY: {requested_spec.period_type}")
-        print(f"Range            : {requested_spec.period_start} s/d {requested_spec.period_end}")
-        print(f"IDX sessions     : {requested_spec.trading_sessions}")
-        print(f"Session dates    : {', '.join(requested_spec.session_dates)}")
-        print(f"Symbols        : {len(expected_symbols)}")
-        print(f"Navigator      : {navigator}")
-        print("Flow: CAPTURE REAL 1D hari ini -> exact Stockbit PRIMARY horizon.")
-        print("Daily history tetap context-only; aggregate tidak dipecah menjadi fake daily rows.")
+        print(f"Technical date    : {snapshot.get('trade_date')}")
+        print(f"Requested PRIMARY : {requested_spec.period_type}")
+        print(f"Range             : {requested_spec.period_start} s/d {requested_spec.period_end}")
+        print(f"IDX sessions      : {requested_spec.trading_sessions}")
+        print(f"Symbols           : {len(expected_symbols)}")
+        print(f"Navigator         : {navigator}")
+        print("Rolling broker multi-day DB: DISABLED FOR PRODUCTION ANALYSIS")
         print("=" * 68, flush=True)
+
         if period_choice == "1D":
-            daily_manifest, daily_archive_path = capture_real_daily_snapshot(
+            selected_manifest, daily_archive_path = capture_real_daily_snapshot(
                 downloads=downloads,
                 expected_symbols=expected_symbols,
                 min_coverage=min_coverage,
@@ -755,12 +656,9 @@ def main() -> int:
                 archive_dir=raw_archive,
                 snapshot_root=snapshot_root,
             )
-            selected_manifest = daily_manifest
+            selected_manifest["analysis_role"] = "PRIMARY"
             spec = requested_spec
         else:
-            # TODAY PULSE is mandatory and independent from PRIMARY. Do not
-            # continue to a multi-day PRIMARY without a real current-session
-            # raw capture.
             daily_manifest, daily_archive_path = capture_real_daily_snapshot(
                 downloads=downloads,
                 expected_symbols=expected_symbols,
@@ -771,29 +669,6 @@ def main() -> int:
                 archive_dir=raw_archive,
                 snapshot_root=snapshot_root,
             )
-            daily_raw_text = str(daily_manifest.get("raw_snapshot_path", "")).strip()
-            daily_raw_snapshot = Path(daily_raw_text) if daily_raw_text else None
-            raw_ready = bool(
-                daily_raw_snapshot
-                and daily_raw_snapshot.exists()
-                and daily_raw_snapshot.stat().st_size > 0
-            )
-            if not raw_ready:
-                raise RuntimeError(f"BROKER_TODAY_PULSE_REQUIRED:{trade_date}")
-
-            coverage = daily_history_coverage(
-                history_db=history_db,
-                raw_archive=raw_archive,
-                current_archive=daily_archive_path,
-                expected_dates=requested_spec.session_dates,
-                trade_date=trade_date,
-            )
-            print(
-                f"[DAILY HISTORY] {requested_spec.period_type} coverage "
-                f"{coverage.get('broker_coverage_text')} | context-only untuk persistence/multi-day.",
-                flush=True,
-            )
-
             selected_manifest = capture_exact_aggregate_primary(
                 downloads=downloads,
                 expected_symbols=expected_symbols,
@@ -804,36 +679,26 @@ def main() -> int:
                 snapshot_root=snapshot_root,
             )
             spec = requested_spec
-            print(
-                f"[PRIMARY] {spec.period_type} = STOCKBIT_AGGREGATE_EXPORT "
-                f"{spec.period_start}..{spec.period_end}. TODAY PULSE = REAL 1D {trade_date}.",
-                flush=True,
-            )
-        summary_snapshot = Path(str(selected_manifest["summary_snapshot_path"]))
-        raw_text = str(selected_manifest.get("raw_snapshot_path", "")).strip()
-        raw_snapshot = Path(raw_text) if raw_text else None
 
-    if not daily_manifest and spec.period_type == "1D":
-        daily_manifest = dict(selected_manifest)
-    if daily_raw_snapshot is None:
-        daily_raw_text = str(
-            daily_manifest.get("raw_snapshot_path")
-            or selected_manifest.get("daily_capture_raw_snapshot_path")
-            or ""
-        ).strip()
-        daily_raw_snapshot = Path(daily_raw_text) if daily_raw_text else None
-    if daily_raw_snapshot and daily_raw_snapshot.exists() and not daily_archive_path:
-        daily_archive_path = archive_daily_raw(daily_raw_snapshot, raw_archive, trade_date)
-
+    summary_snapshot = Path(str(selected_manifest.get("summary_snapshot_path") or ""))
+    raw_text = str(selected_manifest.get("raw_snapshot_path") or "").strip()
+    raw_snapshot = Path(raw_text) if raw_text else None
     if spec.period_end != trade_date:
         raise RuntimeError(f"BROKER_PRIMARY_CONTEXT_NOT_CURRENT:{spec.period_end}!={trade_date}")
     if not summary_snapshot.exists():
         raise RuntimeError(f"BROKER_SNAPSHOT_SUMMARY_MISSING:{summary_snapshot}")
+    if raw_snapshot is None or not raw_snapshot.exists() or raw_snapshot.stat().st_size <= 0:
+        raise RuntimeError("BROKER_PRIMARY_RAW_MISSING")
+
+    if spec.period_type not in {"1D", "1DAY", "DAY"}:
+        daily_summary = Path(str(daily_manifest.get("summary_snapshot_path") or ""))
+        daily_raw = Path(str(daily_manifest.get("raw_snapshot_path") or ""))
+        if not daily_summary.exists() or not daily_raw.exists():
+            raise RuntimeError(f"BROKER_TODAY_PULSE_REQUIRED:{trade_date}")
 
     canonical_summary = resolve_project(paths.get("broker_summary_latest", "data/input/broker/BROKER_SUMMARY_LATEST.csv"))
     canonical_sidecar = canonical_summary.with_suffix(".manifest.json")
     canonical_raw = resolve_project(paths.get("broker_raw_latest", "data/input/broker/BROKER_RAW_LATEST.csv"))
-    raw_archive = resolve_project(paths.get("broker_raw_archive_dir", "data/input/broker/archive"))
     recovery_root = PROJECT_ROOT / "data/output/broker_snapshots/recovery"
 
     run_lock = BridgeRunLock(recovery_root)
@@ -842,7 +707,6 @@ def main() -> int:
         recovered = recover_unfinished_transactions(recovery_root)
         if recovered:
             print(f"[RECOVERY] {recovered} transaksi Broker Bridge lama dipulihkan sebelum run baru.", flush=True)
-
         run_id = make_run_id()
         transaction = CanonicalTransaction(
             recovery_root,
@@ -853,10 +717,11 @@ def main() -> int:
     except Exception:
         run_lock.release()
         raise
-    committed = False
 
+    committed = False
     try:
         transaction.activate("summary", summary_snapshot)
+        transaction.activate("raw", raw_snapshot)
         atomic_write_json(
             canonical_sidecar,
             active_sidecar_payload(
@@ -867,62 +732,42 @@ def main() -> int:
             ),
         )
 
-        raw_is_available = bool(raw_snapshot and raw_snapshot.exists() and raw_snapshot.stat().st_size > 0)
-        if raw_is_available:
-            transaction.activate("raw", raw_snapshot)  # type: ignore[arg-type]
-        else:
-            # Stale raw data must never leak into the selected range's Fusion.
-            transaction.mask("raw")
-
         rc = run_stage(
-            "broker_summary", run_id, config_path=config_path,
-            scheduler_config=args.scheduler_config, trade_date=trade_date,
-            no_telegram=True, debug=args.debug,
+            "broker_summary",
+            run_id,
+            config_path=config_path,
+            scheduler_config=args.scheduler_config,
+            trade_date=trade_date,
+            no_telegram=True,
+            debug=args.debug,
         )
         if rc != 0:
             return rc
 
-        # CAPTURE DAILY 1D is independent from SELECT PRIMARY HORIZON.  After
-        # Broker Summary/Fusion consumes the selected primary raw, switch the
-        # canonical raw input to the real daily capture for history/pulse. An
-        # aggregate raw is never allowed into the daily stage.
-        daily_raw_is_available = bool(
-            daily_raw_snapshot
-            and daily_raw_snapshot.exists()
-            and daily_raw_snapshot.stat().st_size > 0
-        )
-        if daily_raw_is_available:
-            transaction.activate("raw", daily_raw_snapshot)  # type: ignore[arg-type]
-        else:
-            # Do not restore an unrelated old canonical raw file: it could be
-            # mistaken for today's pulse by a later stage.
-            transaction.mask("raw")
-
+        # No broker_multi_day stage.  Final Watchlist consumes Broker Fusion's
+        # exact PRIMARY result; TODAY remains presentation context only.
         rc = run_stage(
-            "broker_multi_day", run_id, config_path=config_path,
-            scheduler_config=args.scheduler_config, trade_date=trade_date,
-            no_telegram=True, debug=args.debug,
+            "final_watchlist",
+            run_id,
+            config_path=config_path,
+            scheduler_config=args.scheduler_config,
+            trade_date=trade_date,
+            no_telegram=args.no_telegram,
+            debug=args.debug,
         )
         if rc != 0:
             return rc
 
-        rc = run_stage(
-            "final_watchlist", run_id, config_path=config_path,
-            scheduler_config=args.scheduler_config, trade_date=trade_date,
-            no_telegram=args.no_telegram, debug=args.debug,
-        )
-        if rc != 0:
-            return rc
-
-        # Only after Final Watchlist succeeds may the new canonical state become
-        # durable. Any earlier failure rolls every canonical input back.
         transaction.commit()
         committed = True
 
         try:
-            selected_manifest["daily_capture_manifest_path"] = daily_manifest.get("manifest_path", "")
-            selected_manifest["daily_capture_snapshot_id"] = daily_manifest.get("snapshot_id", "")
-            selected_manifest["daily_archive_path"] = str(daily_archive_path.resolve()) if daily_archive_path else ""
+            if daily_manifest and spec.period_type not in {"1D", "1DAY", "DAY"}:
+                selected_manifest["daily_capture_manifest_path"] = daily_manifest.get("manifest_path", "")
+                selected_manifest["daily_capture_snapshot_id"] = daily_manifest.get("snapshot_id", "")
+                selected_manifest["daily_capture_summary_snapshot_path"] = daily_manifest.get("summary_snapshot_path", "")
+                selected_manifest["daily_capture_raw_snapshot_path"] = daily_manifest.get("raw_snapshot_path", "")
+                selected_manifest["daily_archive_path"] = str(daily_archive_path.resolve()) if daily_archive_path else ""
             manifest_path = mark_manifest_committed(selected_manifest, run_id)
             if daily_manifest and daily_manifest.get("snapshot_id") != selected_manifest.get("snapshot_id"):
                 daily_manifest["daily_archive_path"] = str(daily_archive_path.resolve()) if daily_archive_path else ""
@@ -934,21 +779,18 @@ def main() -> int:
             else:
                 print("[PERFORMANCE WARNING] immutable snapshot manifest tidak ditemukan.", flush=True)
         except Exception as exc:
-            # Analytics/audit enrichment is non-destructive and must not turn a
-            # successfully delivered Final Watchlist into a failed trading run.
             print(f"[AUDIT WARNING] {type(exc).__name__}: {exc}", flush=True)
 
         print("\n" + "=" * 68)
-        print("FINAL WATCHLIST - BROKER PERIOD COMPLETE")
+        print("FINAL WATCHLIST — BROKER PERIOD COMPLETE")
         print("=" * 68)
-        print(f"Run ID          : {run_id}")
-        print(f"Broker period   : {spec.period_type}")
-        print(f"Range           : {spec.period_start} s/d {spec.period_end}")
-        print(f"Trading sessions: {spec.trading_sessions}")
-        print(f"Snapshot ID     : {selected_manifest.get('snapshot_id')}")
-        print("Broker scoring  : EXISTING FORMULA (tidak diubah)")
-        print("Persistence     : context only; tidak ada bonus/penalty baru")
-        print("Telegram        : Final Watchlist + Lifecycle saja")
+        print(f"Run ID           : {run_id}")
+        print(f"PRIMARY          : {spec.period_type} {spec.period_start} s/d {spec.period_end}")
+        print(f"TODAY pulse      : {'1D exact ' + trade_date if spec.period_type != '1D' else 'NOT APPLICABLE (PRIMARY sudah 1D)'}")
+        print(f"Snapshot ID      : {selected_manifest.get('snapshot_id')}")
+        print("Broker scoring   : EXISTING BROKER FUSION FORMULA (tidak diubah)")
+        print("Rolling multi-day: REMOVED FROM PRODUCTION ANALYSIS")
+        print("Telegram         : Final Watchlist + Lifecycle")
         print("=" * 68)
         return 0
     finally:
