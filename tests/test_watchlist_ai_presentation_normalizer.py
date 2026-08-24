@@ -74,11 +74,13 @@ def test_presentation_context_humanizes_bbni_raw_facts():
     assert presentation["trade plan"]["area entry"] == "3.690–3.750"
     assert presentation["trade plan"]["stop loss"] == "3.640"
     assert presentation["trade plan"]["TP1"] == "3.860"
-    assert presentation["broker"]["net flow"] == "Rp138,34 miliar"
-    assert presentation["broker"]["skor broker"] == "68/100"
-    assert presentation["broker"]["konsentrasi buyer"] == "23,04%"
-    assert presentation["broker"]["konsentrasi seller"] == "9,71%"
-    assert presentation["broker"]["keselarasan"] == "broker searah positif"
+    assert set(presentation["broker"]) == {"PRIMARY", "TODAY 1D", "ALIGNMENT"}
+    assert presentation["broker"]["PRIMARY"]["net flow"] == "Rp138,34 miliar"
+    assert presentation["broker"]["PRIMARY"]["skor broker"] == "68/100"
+    assert presentation["broker"]["PRIMARY"]["konsentrasi buyer"] == "23,04%"
+    assert presentation["broker"]["PRIMARY"]["konsentrasi seller"] == "9,71%"
+    assert presentation["broker"]["TODAY 1D"]["net flow"] == "Rp15,4 miliar"
+    assert presentation["broker"]["ALIGNMENT"]["status"] == "PRIMARY dan TODAY 1D searah positif"
     assert presentation["hasil SDE"]["keputusan SDE"] == "BUY ON TRIGGER"
     assert "multi_day_flow" not in context["facts"]
     assert "flow_persistence" not in context["facts"]
@@ -157,7 +159,7 @@ def test_primary_1d_omits_duplicate_today_and_alignment():
         "broker_alignment": "ALIGNED_POSITIVE",
     })
     service = PresentationWatchlistAIService({"watchlist_ai": {"enabled": True}})
-    provider = service._provider_context(service._with_presentation_context(context))
+    provider = service._with_presentation_context(context)["presentation_context"]
 
     assert set(provider["broker"]) == {"PRIMARY"}
     assert provider["broker"]["PRIMARY"]["periode"] == "1D"
@@ -176,7 +178,7 @@ def test_insufficient_primary_does_not_turn_sentinel_zero_into_zero_quality_scor
         "today_pulse_status": "NOT_AVAILABLE",
     })
     service = PresentationWatchlistAIService({"watchlist_ai": {"enabled": True}})
-    provider = service._provider_context(service._with_presentation_context(context))
+    provider = service._with_presentation_context(context)["presentation_context"]
 
     assert provider["broker"]["PRIMARY"]["status"] == "data belum cukup"
     assert "skor broker" not in provider["broker"]["PRIMARY"]
