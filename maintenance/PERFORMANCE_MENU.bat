@@ -13,22 +13,22 @@ if not defined SDE_PYTHON_CMD (
 :MENU
 cls
 echo ================================================================
-echo          SDE SWING - PERFORMANCE AND EVALUATION
+echo         FTJ Community - PERFORMANCE AND EVALUATION
 echo ================================================================
 echo.
-echo [1] Update semua outcome dan win rate
-echo [2] Lihat performa keseluruhan
+echo [1] Update outcome dan win rate
+echo [2] Lihat performa
 echo [3] Evaluasi berdasarkan setup
 echo [4] Evaluasi berdasarkan jenis sinyal
 echo [5] Evaluasi berdasarkan broker confidence
 echo [6] Evaluasi berdasarkan market regime
 echo [7] Lihat Signal Outcome Ledger
-echo [8] Kirim laporan performance ke Telegram
-echo [9] Register semua keputusan BUY mesin
-echo [10] Maintain portfolio aktual
-echo [11] Kirim lifecycle digest (status material)
-echo [12] Kirim active recommendations ke Telegram
-echo [13] Preview lifecycle terbaru + opsi kirim ulang
+echo [8] Laporan performance
+echo [9] Register keputusan BUY
+echo [10] Maintain portfolio
+echo [11] Kirim lifecycle digest
+echo [12] Kirim active recommendations
+echo [13] Preview lifecycle
 echo [14] Evaluasi Broker Period + Confidence x Period
 echo [15] Exit Efficiency + Data Integrity
 echo [0] Kembali

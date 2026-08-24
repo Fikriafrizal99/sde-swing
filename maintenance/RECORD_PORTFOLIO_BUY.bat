@@ -17,7 +17,7 @@ set "BROKER_TASK_FILE=data\input\broker\BROKER_PORTFOLIO_BACKFILL_TASKS.csv"
 :MENU
 cls
 echo ================================================================
-echo          SDE - PORTFOLIO AKTUAL PENGGUNA
+echo          FTJ Community - PORTFOLIO AKTUAL PENGGUNA
 echo ================================================================
 echo Source of truth: data\database\sde_swing_history.db
 echo Broker task otomatis disinkronkan setelah BUY / SELL / edit posisi.

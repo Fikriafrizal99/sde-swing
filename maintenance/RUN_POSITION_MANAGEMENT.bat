@@ -40,7 +40,7 @@ if not "!ROUTE_RC!"=="0" (
 
 echo.
 echo ================================================================
-echo          SDE - ACTIVE PORTFOLIO MANAGEMENT
+echo          FTJ Community - ACTIVE PORTFOLIO MANAGEMENT
 echo ================================================================
 echo Trade date : !TRADE_DATE!
 echo Engine utama tidak dijalankan ulang.

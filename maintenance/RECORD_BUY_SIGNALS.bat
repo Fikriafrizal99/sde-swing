@@ -12,7 +12,7 @@ if not defined SDE_PYTHON_CMD (
 )
 
 echo ================================================================
-echo       SDE - REGISTER SEMUA KEPUTUSAN BUY MESIN
+echo      FTJ Community - REGISTER SEMUA KEPUTUSAN BUY MESIN
 echo ================================================================
 echo Tidak ada Yahoo refresh atau engine scan baru pada maintenance ini.
 echo Source of truth: SQLite signal_outcome_ledger.

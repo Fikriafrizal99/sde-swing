@@ -14,7 +14,7 @@ if not defined SDE_PYTHON_CMD (
 :MENU
 cls
 echo ================================================================
-echo               SDE SWING - SYSTEM AND STATUS
+echo              FTJ Community - SYSTEM AND STATUS
 echo ================================================================
 echo.
 echo [1] Cek Status Semua Job

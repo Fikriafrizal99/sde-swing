@@ -22,7 +22,7 @@ for /f "delims=" %%B in ('git branch --show-current 2^>nul') do set "GIT_BRANCH=
 :MENU
 cls
 echo ================================================================
-echo                    SDE SWING V1.7.1 - CONTROL CENTER
+echo               FTJ Community V1.7.1 - CONTROL CENTER
 echo ================================================================
 echo Root   : %SDE_ROOT%
 echo Branch : !GIT_BRANCH!

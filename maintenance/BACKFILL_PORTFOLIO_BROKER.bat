@@ -20,25 +20,22 @@ set "PLAYWRIGHT_STATUS=OFF"
 for /f "usebackq delims=" %%S in (`"%SDE_PYTHON_CMD% -u "%PLAYWRIGHT_PY%" status --value" 2^>nul`) do set "PLAYWRIGHT_STATUS=%%S"
 cls
 echo ================================================================
-echo             SDE - BROKER PORTFOLIO AKTIF
+echo             FTJ Community - BROKER PORTFOLIO AKTIF
 echo ================================================================
 echo Playwright Auto Collector : !PLAYWRIGHT_STATUS!
 echo.
-echo Mode normal HANYA mengambil tanggal broker yang belum ada di database.
-echo Target otomatis memakai SESI BEI TERAKHIR YANG SUDAH SELESAI.
-echo Sebelum post-market 16:30 WIB, tanggal hari ini belum dianggap missing.
 echo.
 echo Posisi BARU : pertama kali diisi dari tanggal BUY sampai sesi selesai terakhir.
 echo Posisi LAMA : berikutnya hanya tanggal yang MISSING dari sesi yang sudah selesai.
 echo Posisi SOLD : otomatis tidak ikut karena statusnya sudah CLOSED.
 echo.
-echo [1] UPDATE HARIAN  ^(disarankan^)
+echo [1] UPDATE HARIAN
 echo [2] IMPORT HASIL ke database
 echo [3] CEK STATUS histori broker
 echo [4] REPAIR / backfill satu emiten
 echo [5] PLAYWRIGHT ON / OFF
 echo [6] SETUP / LOGIN PLAYWRIGHT
-echo [9] ADVANCED - refresh ulang SEMUA histori OPEN
+echo [9] Refresh ulang SEMUA histori OPEN
 echo [0] Kembali
 echo.
 set "CHOICE="

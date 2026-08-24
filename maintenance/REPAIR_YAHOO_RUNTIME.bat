@@ -12,7 +12,7 @@ if not defined SDE_PYTHON_CMD (
 )
 
 echo ================================================================
-echo          SDE - REPAIR YAHOO / YFINANCE RUNTIME
+echo         FTJ Community - REPAIR YAHOO / YFINANCE RUNTIME
 echo ================================================================
 echo.
 echo Python yang dipakai SDE:

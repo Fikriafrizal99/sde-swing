@@ -14,11 +14,9 @@ if not defined SDE_PYTHON_CMD (
 :MENU
 cls
 echo ================================================================
-echo          SDE - TELEGRAM ^& NEWS SETTINGS
+echo          FTJ Community - TELEGRAM ^& NEWS SETTINGS
 echo ================================================================
 echo.
-echo Credential disimpan lokal dan tidak dicommit ke Git.
-echo Setiap topic divalidasi dengan pesan silent lalu auto-delete.
 echo.
 echo [1] Set / Update Telegram Bot Token
 echo [2] Set / Update Telegram Chat ID

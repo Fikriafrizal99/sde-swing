@@ -14,11 +14,11 @@ if not defined SDE_PYTHON_CMD (
 :MENU
 cls
 echo ================================================================
-echo              SDE SWING - BROKER OPERATIONS
+echo              FTJ Community - BROKER OPERATIONS
 echo ================================================================
 echo.
-echo [1] Preview Broker Summary - diagnostic, tidak kirim Telegram
-echo [2] Preview Broker Multi-Day - diagnostic, tidak kirim Telegram
+echo [1] Preview Broker Summary
+echo [2] Preview Broker Multi-Day
 echo [3] Backfill Broker Portfolio
 echo [4] Cek status Broker Summary
 echo [5] Cek status Broker Multi-Day

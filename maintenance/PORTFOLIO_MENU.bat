@@ -8,7 +8,7 @@ rem Legacy label kept for compatibility checks: Backfill Broker Portfolio
 :MENU
 cls
 echo ================================================================
-echo             SDE SWING - PORTFOLIO OPERATIONS
+echo             FTJ Community - PORTFOLIO OPERATIONS
 echo ================================================================
 echo.
 echo [1] Register Semua BUY Mesin

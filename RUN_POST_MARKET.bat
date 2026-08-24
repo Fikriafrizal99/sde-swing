@@ -11,18 +11,18 @@ REM the same frozen engine against the last completed trading date.
 :MENU
 cls
 echo ================================================================
-echo                  SDE SWING - POST MARKET
+echo                  FTJ Community - POST MARKET
 echo ================================================================
 echo.
-echo [1] Normal - refresh teknikal dan kirim ringkasan ^(hari trading^)
-echo [2] Preview existing - sesi trading terakhir, read-only
-echo [3] Kirim ulang - delivery-only hasil hari trading terakhir
+echo [1] Normal Proses
+echo [2] Preview Existing
+echo [3] Kirim ulang hasil hari trading terakhir
 echo [4] Cek status Post Market
-echo [5] Normal + Post Market News - satu kali jalan
+echo [5] Normal + Post Market News
 echo [6] Post Market News Only
-echo [7] Preview Post Market News existing
-echo [8] Force Send Post Market News existing
-echo [9] Recovery sesi terakhir terlewat - jalankan Post Market tanpa Telegram
+echo [7] Preview Post Market News 
+echo [8] Force Send Post Market News 
+echo [9] Recovery Sesi Trading Terakhir
 echo [0] Kembali
 echo.
 set "MODE="

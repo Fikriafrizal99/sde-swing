@@ -19,7 +19,7 @@ REM Broker Period Bridge kemudian mengambil alih orchestration Final Watchlist t
 :MENU
 cls
 echo ================================================================
-echo              SDE SWING - DAILY OPERATIONS
+echo              FTJ Community - DAILY OPERATIONS
 echo ================================================================
 echo.
 echo [1] Full Daily + Portfolio Management

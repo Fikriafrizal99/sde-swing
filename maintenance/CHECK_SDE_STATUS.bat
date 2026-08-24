@@ -10,7 +10,7 @@ if not defined SDE_PYTHON_CMD (
   exit /b 9009
 )
 echo ================================================================
-echo                    STATUS SDE SWING
+echo                    STATUS FTJ Community
 echo ================================================================
 echo.
 %SDE_PYTHON_CMD% tools\print_job_status.py --jobs market_outlook post_market final_watchlist

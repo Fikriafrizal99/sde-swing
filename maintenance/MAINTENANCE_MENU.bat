@@ -6,7 +6,7 @@ cd /d "%~dp0.."
 :MENU
 cls
 echo ================================================================
-echo                 SDE SWING - MAINTENANCE
+echo                 FTJ Community - MAINTENANCE
 echo ================================================================
 echo [1] Install requirements
 echo [2] Reset runtime
