@@ -27,6 +27,7 @@ through environment variables; `config/telegram.json` contains no credentials.
 ## Canonical contracts
 
 - [`LIFECYCLE_PRESENTATION_CONTRACT.md`](LIFECYCLE_PRESENTATION_CONTRACT.md) — source of truth for Active Recommendations and Lifecycle Digest presentation.
+- [`FINAL_WATCHLIST_ACTION_CONTRACT.md`](FINAL_WATCHLIST_ACTION_CONTRACT.md) — action-line contract: explicit engine trigger first, entry-zone fallback, and S/R never promoted into an implicit trigger.
 - [`IDX_DISCLOSURE_WATCHER_ARCHITECTURE.md`](IDX_DISCLOSURE_WATCHER_ARCHITECTURE.md) — isolated IDX disclosure watcher architecture.
 - [`IDX_AI_DOCUMENT_READER.md`](IDX_AI_DOCUMENT_READER.md) — isolated AI reader contract for official IDX documents.
 - [`WATCHLIST_AI_ARCHITECTURE.md`](WATCHLIST_AI_ARCHITECTURE.md) — isolated Final Watchlist interpretation boundary.
