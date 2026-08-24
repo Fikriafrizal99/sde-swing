@@ -6,9 +6,11 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from modules.analytics.lifecycle_presentation import (
+    build_active_message,
+    build_lifecycle_message,
+)
 from modules.telegram.idx_price import fmt_idx_price, fmt_idx_zone, idx_price_fraction
-from tools.send_active_recommendations import build_active_message
-from tools.send_lifecycle_digest import build_lifecycle_message
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,7 +92,8 @@ def test_active_and_waiting_are_one_card_with_compact_mobile_tables() -> None:
     assert "1.465" not in text
     assert "4D" not in text
     assert "TP1 HIT · 🟢 TRAILING ACTIVE" in text
-    assert "Last Scan: LSIP 2 sesi lalu" in text
+    # Scan freshness remains in analytics state but is intentionally hidden from Telegram.
+    assert "Last Scan:" not in text
 
     # WAITING: compact entry zone and RANGE label.
     for token in ("BAIK", "760-770", "770", "RANGE", "REC", "AGE", "1x"):
