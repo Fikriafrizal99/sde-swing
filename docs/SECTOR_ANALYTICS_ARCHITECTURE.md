@@ -168,10 +168,12 @@ Canonical artifact:
 
 Each eligible sector belongs to exactly one quadrant.
 
-Market Outlook renders the four canonical terms directly:
+Market Outlook renders the four canonical terms directly. The existing report
+header is retained for compatibility and a subtitle explains the horizon:
 
 ```text
-🔄 ROTASI SEKTOR — SWING
+🔄 ROTASI SEKTOR
+Swing 5D/20D relatif terhadap IHSG
 🟢 LEADING
 🔵 IMPROVING
 🟠 WEAKENING
