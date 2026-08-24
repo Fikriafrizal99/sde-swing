@@ -297,15 +297,15 @@ def format_market_outlook(data: dict[str, Any]) -> str:
             lines += ["<b>📌 INTERPRETASI</b>", escape(interpretation)]
 
     sector_groups = [
-        ("🔥 LEADING", data.get("leading", [])),
-        ("🟢 ROTATING IN", data.get("rotating_in", [])),
-        ("🟡 WEAKENING", data.get("weakening", [])),
-        ("🔴 ROTATING OUT", data.get("rotating_out") or data.get("lagging", [])),
+        ("🟢 LEADING", data.get("leading", [])),
+        ("🔵 IMPROVING", data.get("improving") or data.get("rotating_in", [])),
+        ("🟠 WEAKENING", data.get("weakening", [])),
+        ("🔴 LAGGING", data.get("lagging") or data.get("rotating_out", [])),
     ]
     available_groups = [(title, _clean_items(values, 4)) for title, values in sector_groups]
     available_groups = [(title, values) for title, values in available_groups if values]
     if available_groups:
-        lines += ["", "<b>🔄 ROTASI SEKTOR</b>"]
+        lines += ["", "<b>🔄 ROTASI SEKTOR — SWING</b>"]
         for title, values in available_groups:
             lines += [f"<b>{escape(title)}</b>"]
             lines.extend(f"• {escape(item)}" for item in values)
@@ -317,7 +317,7 @@ def format_market_outlook(data: dict[str, Any]) -> str:
         # compact output
         "<b>Prioritas:</b>",
         # compact output
-        "• Cari setup dari sektor <b>LEADING / ROTATING IN</b>.",
+        "• Cari setup dari sektor <b>LEADING / IMPROVING</b>.",
         "• Technical Quality dan Entry Readiness harus kuat.",
         "• Utamakan broker accumulation / confirmation.",
         "• BUY CANDIDATE tetap menunggu trigger.",
