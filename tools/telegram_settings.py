@@ -37,8 +37,6 @@ TOPIC_KEYS: dict[str, tuple[str, ...]] = {
         "post_market",
         "broker_summary",
         "broker_summary_csv",
-        "broker_multiday",
-        "broker_multiday_csv",
     ),
     "final_watchlist": (
         "final_watchlist",

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-"""Broker multi-day output writer (section U).
+"""Legacy broker multi-day output writer (archive/shadow only).
 
 Writes the detail/summary/rotation/divergence/window-comparison CSVs plus a
-manifest into ``data/output/broker_multiday/``.  Each record carries provenance
-and quality status.  Also builds the compact Telegram summary — never a long
-broker table.
+manifest into ``data/output/broker_multiday/``. Each record carries provenance
+and quality status for audit compatibility. It is not a production Final
+Watchlist source and has no runtime delivery route.
 """
 
 from pathlib import Path

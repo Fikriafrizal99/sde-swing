@@ -44,7 +44,6 @@ def test_final_watchlist_uses_effective_trade_date_status_when_latest_is_later(t
         "market_outlook": _status("market_outlook", "SKIPPED", "2026-08-15"),
         "post_market": _status("post_market", "SKIPPED", "2026-08-15"),
         "broker_summary": _status("broker_summary", "SUCCESS_WITH_WARNING", "2026-08-14"),
-        "broker_multi_day": _status("broker_multi_day", "SUCCESS", "2026-08-14"),
     }
 
     result = validate_dependency_status(ctx, "final_watchlist", statuses)
@@ -62,7 +61,6 @@ def test_final_watchlist_does_not_resurrect_older_success_over_same_date_failure
         "market_outlook": _status("market_outlook", "FAILED", "2026-08-14"),
         "post_market": _status("post_market", "SUCCESS", "2026-08-14"),
         "broker_summary": _status("broker_summary", "SUCCESS", "2026-08-14"),
-        "broker_multi_day": _status("broker_multi_day", "SUCCESS", "2026-08-14"),
     }
 
     result = validate_dependency_status(ctx, "final_watchlist", statuses)
@@ -71,7 +69,7 @@ def test_final_watchlist_does_not_resurrect_older_success_over_same_date_failure
     assert result["dependencies"]["market_outlook"]["status"] == "FAILED"
 
 
-def test_other_jobs_keep_existing_latest_status_contract(tmp_path):
+def test_final_watchlist_dependency_set_is_exact_and_uses_current_status(tmp_path):
     ctx = _context(tmp_path)
     _write_dated(ctx, "broker_summary", _status("broker_summary", "SUCCESS", "2026-08-14"))
 
@@ -79,7 +77,12 @@ def test_other_jobs_keep_existing_latest_status_contract(tmp_path):
         "broker_summary": _status("broker_summary", "SKIPPED", "2026-08-15"),
     }
 
-    result = validate_dependency_status(ctx, "broker_multi_day", statuses)
+    statuses.update({
+        "market_outlook": _status("market_outlook", "SUCCESS", "2026-08-14"),
+        "post_market": _status("post_market", "SUCCESS", "2026-08-14"),
+    })
+    result = validate_dependency_status(ctx, "final_watchlist", statuses)
 
-    assert result["valid"] is False
-    assert result["dependencies"]["broker_summary"]["trade_date"] == "2026-08-15"
+    assert result["required"] == ["market_outlook", "post_market", "broker_summary"]
+    assert result["valid"] is True
+    assert result["dependencies"]["broker_summary"]["trade_date"] == "2026-08-14"

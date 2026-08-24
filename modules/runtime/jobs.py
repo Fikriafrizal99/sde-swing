@@ -4,8 +4,8 @@ from __future__ import annotations
 
 Broker production flow is intentionally single-path: ``broker_summary`` owns the
 operator-selected exact PRIMARY period and Final Watchlist may carry a separate
-exact TODAY 1D presentation pulse.  There is no rolling ``broker_multi_day``
-production dependency.
+exact TODAY 1D presentation pulse. There is no rolling, database-derived
+broker dependency in the production graph.
 """
 
 import json

@@ -37,7 +37,7 @@ def _row(symbol: str, decision: str, score: float) -> dict:
 def test_final_watchlist_sends_all_actionable_details_only(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         reports_module,
-        "_fw_generate_chart",
+        "generate_final_watchlist_chart",
         lambda *args, **kwargs: tmp_path / "chart.png",
     )
     builder = EnhancedDailyReportBuilder(

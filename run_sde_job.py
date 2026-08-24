@@ -18,7 +18,6 @@ from modules.job_runner.core import (
     run_interactive_broker_break,
     run_command,
     run_broker_fusion_from_snapshot,
-    run_broker_multiday_stage,
     run_post_market_technical_stage,
     run_zapi_enrichment,
     _universe_symbols,
@@ -61,7 +60,6 @@ from modules.job_runner.runtime import (
     read_json,
 )
 from modules.job_runner.enhanced_runtime_bridge import (
-    broker_multiday_payloads as enhanced_broker_multiday_payloads,
     broker_summary_payloads as enhanced_broker_summary_payloads,
     final_watchlist_payloads as enhanced_final_watchlist_payloads,
     lifecycle_payloads as enhanced_lifecycle_payloads,
@@ -510,7 +508,7 @@ def job_final_watchlist(ctx) -> int:
         append_job_log(
             ctx,
             "INTERACTIVE_BROKER_DEPENDENCY_RECOVERY",
-            json.dumps({"blocked_dependencies": ["broker_summary", "broker_multi_day"]}),
+            json.dumps({"blocked_dependencies": ["broker_summary"]}),
         )
         print("[2/6] Dependency broker belum siap; melanjutkan ke broker break interaktif...", flush=True)
         dependency = None
@@ -624,7 +622,6 @@ def job_full_manual(ctx) -> int:
             ("candidate_selection", job_candidate_selection),
             ("market_outlook", job_market_outlook),
             ("broker_summary", job_broker_summary),
-            ("broker_multi_day", job_broker_multi_day),
             ("final_watchlist", job_final_watchlist),
         )
         stage_results: list[dict] = []
@@ -673,7 +670,6 @@ def job_full_manual(ctx) -> int:
                 enhanced_market_outlook_payloads(ctx, global_snapshot, market_status)
                 + enhanced_post_market_payloads(ctx, run_manifest)
                 + enhanced_broker_summary_payloads(ctx)
-                + enhanced_broker_multiday_payloads(ctx)
                 + enhanced_final_watchlist_payloads(ctx, run_manifest)
                 + enhanced_lifecycle_payloads(ctx)
             )
@@ -837,7 +833,7 @@ def _interactive_broker_dependency_recovery_allowed(ctx, dependency: dict | None
     if not ctx.interactive_broker or not isinstance(dependency, dict):
         return False
     required = {str(item) for item in dependency.get("required", [])}
-    if not {"broker_summary", "broker_multi_day"}.issubset(required):
+    if "broker_summary" not in required:
         return False
     dependencies = dependency.get("dependencies", {})
     if not isinstance(dependencies, dict):
@@ -1063,52 +1059,6 @@ def job_broker_summary(ctx) -> int:
     })
 
 
-def job_broker_multi_day(ctx) -> int:
-    dependency = _require_integrated_dependencies(ctx, "broker_multi_day")
-    if dependency:
-        return _finish(ctx, "SKIPPED", "DEPENDENCY_VALIDATION", EXIT_SKIPPED, {"dependency_status": dependency})
-    metadata = _source_details(ctx, record_type="BrokerFlow")
-    if _official_runtime(ctx):
-        try:
-            result = run_broker_multiday_stage(ctx)
-        except ReportSourceValidationError as exc:
-            record_validation_error(ctx, exc)
-            return _finish(ctx, "FAILED", "BROKER_MULTI_DAY_VALIDATION", EXIT_FAILED, {
-                "report_type": exc.report_type,
-                "errors": exc.errors,
-                "input_paths": exc.input_paths,
-                "source_of_truth": exc.source_of_truth,
-                "details": exc.details,
-            })
-        except Exception as exc:
-            return _finish(ctx, "FAILED", "BROKER_MULTI_DAY", EXIT_FAILED, {
-                "errors": [f"BROKER_MULTI_DAY_ENGINE_FAILED:{exc}"],
-                **metadata,
-            })
-        quality = str(result.get("data_quality_status", "")).upper()
-        stage_status = "SUCCESS" if quality == "VALID" else "SUCCESS_WITH_WARNING"
-        warnings = [] if quality == "VALID" else [
-            f"MULTI_DAY_HISTORY_{quality or 'INSUFFICIENT_HISTORY'}: context tidak dipakai oleh Final Decision"
-        ]
-        return _finish(ctx, stage_status, "BROKER_MULTI_DAY", EXIT_SUCCESS, {
-            **metadata,
-            **result,
-            "date_range": {
-                "start": result.get("market_dates", [""])[0] if result.get("market_dates") else "",
-                "end": result.get("market_dates", [ctx.trade_date.isoformat()])[-1] if result.get("market_dates") else ctx.trade_date.isoformat(),
-            },
-            "coverage_ratio": result.get("coverage_ratio", 0.0),
-            "warnings": warnings,
-        })
-    return _finish(ctx, "NOT_CONFIGURED" if metadata.get("data_source_mode") == "NOT_CONFIGURED" else "SUCCESS_WITH_WARNING", "BROKER_MULTI_DAY", EXIT_SUCCESS, {
-        **metadata,
-        "date_range": {"start": "", "end": ctx.trade_date.isoformat()},
-        "missing_days": [],
-        "coverage_ratio": metadata.get("source_coverage_ratio", 0.0),
-        "warnings": ["MULTI_DAY_HISTORY_NOT_LOADED"] if metadata.get("data_source_mode") == "NOT_CONFIGURED" else [],
-    })
-
-
 def job_universe_selection(ctx) -> int:
     dependency = _require_integrated_dependencies(ctx, "universe_selection")
     if dependency:
@@ -1186,7 +1136,6 @@ JOBS: dict[str, Callable] = {
     "pre_market": job_pre_market,
     "technical_snapshot": job_technical_snapshot,
     "broker_summary": job_broker_summary,
-    "broker_multi_day": job_broker_multi_day,
     "universe_selection": job_universe_selection,
     "candidate_selection": job_candidate_selection,
     "final_decision": job_final_decision,

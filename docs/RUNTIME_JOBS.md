@@ -1,14 +1,19 @@
 # Runtime jobs
 
 The integrated registry contains `pre_market`, `market_outlook`, `post_market`,
-`technical_snapshot`, `broker_summary`, `broker_multi_day`,
+`technical_snapshot`, `broker_summary`,
 `universe_selection`, `candidate_selection`, `final_watchlist`,
 `final_decision`, `telegram_delivery`, and `job_status`.
 
 Final Watchlist requires current, successful status records for market outlook,
-post market/technical snapshot, broker summary, and broker multi-day. The
+post market/technical snapshot, and broker summary. The
 dependency validator rejects missing, stale trade dates, or mismatched config
 versions.
+
+Broker period ownership is defined in [BROKER_PERIOD_ARCHITECTURE.md](BROKER_PERIOD_ARCHITECTURE.md):
+Broker Fusion receives the operator-selected exact PRIMARY period, while an
+optional exact 1D TODAY capture is presentation context only. No local rolling
+broker-history calculation is a Final Watchlist dependency.
 
 ## Final Watchlist lifecycle presentation
 
@@ -169,7 +174,7 @@ with `Kirim ulang` only after the recovered artifact has been inspected.
 
 Final Watchlist recovery never bypasses its dependency contract. It may only be
 produced when the required Market Outlook, Post Market/technical snapshot,
-broker summary, and broker multi-day context for the same trade date are valid.
+and broker summary for the same trade date are valid.
 
 The Market Outlook historical recovery writes the same versioned status
 contract for the requested trade date, with `recovery_mode=HISTORICAL_AS_OF` and
@@ -196,7 +201,7 @@ Saturday/Sunday `2026-08-22` / `2026-08-23`:
 5. Both recovered reports should be inspected with `Preview existing` before
    any resend.
 6. Final Watchlist remains unavailable until Market Outlook, Post Market, and
-   all required Friday broker dependencies are valid for `2026-08-21`.
+   Broker Summary are valid for `2026-08-21`.
 
 This policy preserves the audited quant/engine freeze while making weekend
 operations usable for inspection, resend, and point-in-time-safe recovery.

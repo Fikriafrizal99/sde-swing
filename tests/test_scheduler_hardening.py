@@ -404,7 +404,7 @@ class SchedulerHardeningTests(unittest.TestCase):
                 config_provenance={"config_version": "1.7.1"},
             )
             dependency = {
-                "required": ["market_outlook", "post_market", "broker_summary", "broker_multi_day"],
+                "required": ["market_outlook", "post_market", "broker_summary"],
                 "valid": False,
                 "dependencies": {
                     "market_outlook": {
@@ -415,9 +415,6 @@ class SchedulerHardeningTests(unittest.TestCase):
                     },
                     "broker_summary": {
                         "status": "FAILED", "fresh": False, "date_match": True, "config_match": True,
-                    },
-                    "broker_multi_day": {
-                        "status": "SKIPPED", "fresh": False, "date_match": True, "config_match": True,
                     },
                 },
             }
@@ -442,7 +439,7 @@ class SchedulerHardeningTests(unittest.TestCase):
                 config_provenance={"config_version": "1.7.1"},
             )
             dependency = {
-                "required": ["market_outlook", "post_market", "broker_summary", "broker_multi_day"],
+                "required": ["market_outlook", "post_market", "broker_summary"],
                 "valid": False,
                 "dependencies": {
                     "market_outlook": {

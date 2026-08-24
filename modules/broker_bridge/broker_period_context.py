@@ -12,6 +12,8 @@ Important contracts:
 - Every accepted export is copied into an immutable snapshot directory before
   it can become the canonical Broker Summary input.
 - Historical snapshots are never deleted or merged arithmetically.
+- ``INTERNAL_DAILY_ROLLUP`` helpers remain archive/compatibility support only;
+  production Final Watchlist PRIMARY is an exact Stockbit export.
 """
 
 import hashlib

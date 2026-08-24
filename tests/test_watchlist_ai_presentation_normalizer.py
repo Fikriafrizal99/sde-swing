@@ -39,6 +39,7 @@ def _bbni_context() -> dict:
         "broker_alignment": "ALIGNED_POSITIVE",
         "broker_status": "INSUFFICIENT_DATA",
         "multi_day_flow": "INSUFFICIENT_DATA",
+        "flow_persistence": "STABLE_DOMINANCE",
         "broker_period_type": "3D",
         "broker_period_coverage": "3/3",
         "today_pulse_status": "AVAILABLE",
@@ -48,7 +49,8 @@ def _bbni_context() -> dict:
 
 
 def test_presentation_context_humanizes_bbni_raw_facts():
-    presentation = build_presentation_context(_bbni_context())
+    context = _bbni_context()
+    presentation = build_presentation_context(context)
     rendered = json.dumps(presentation, ensure_ascii=False)
 
     assert "3693.571428571429" not in rendered
@@ -67,6 +69,9 @@ def test_presentation_context_humanizes_bbni_raw_facts():
     assert presentation["broker"]["keselarasan"] == "broker searah positif"
     assert presentation["broker"]["status"] == "data belum cukup"
     assert presentation["hasil SDE"]["keputusan SDE"] == "BUY ON TRIGGER"
+    assert "multi_day_flow" not in context["facts"]
+    assert "flow_persistence" not in context["facts"]
+    assert "STABLE_DOMINANCE" not in rendered
 
 
 def test_humanized_numbers_remain_authorized_by_raw_plus_presentation_context():

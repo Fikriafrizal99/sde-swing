@@ -1,9 +1,10 @@
+import inspect
+
 from modules.job_runner.enhanced_runtime_bridge import (
-    _final_watchlist_broker_score,
     _final_watchlist_distance,
     _final_watchlist_plan_rr,
-    _final_watchlist_reason,
 )
+from modules.job_runner import enhanced_runtime_bridge
 
 
 def test_final_watchlist_rr_uses_executable_target_not_minor_resistance():
@@ -16,40 +17,27 @@ def test_final_watchlist_rr_uses_executable_target_not_minor_resistance():
     assert _final_watchlist_plan_rr(plan) == 2.0
 
 
-def test_final_watchlist_preserves_zero_multiday_confidence():
-    multiday = {"broker_score": 0.0, "broker_status": "INSUFFICIENT_DATA"}
-    raw = {"Broker_Score": 99.0, "Broker_Confidence_Final": 99.0}
-    assert _final_watchlist_broker_score(multiday, raw) == 0.0
+def test_final_watchlist_broker_score_stays_broker_fusion_owned():
+    source = inspect.getsource(enhanced_runtime_bridge.final_watchlist_payloads)
+    assert '"broker_score": _value(raw, "Broker_Score"' in source
+    assert 'primary.get("broker_score"' not in source
 
 
 def test_final_watchlist_distance_uses_visible_price_and_buy_cost_when_missing():
-    multiday = {
-        "bandar_buy_cost": 1790.0,
-        "distance_to_buy_cost": "ENGINE_DATA_NOT_AVAILABLE",
+    primary = {
+        "avg_buyer_price": 1790.0,
     }
     raw = {"Close": 1820.0}
-    assert _final_watchlist_distance(multiday, raw) == 1.676
+    assert _final_watchlist_distance(primary, raw) == 1.676
 
 
 def test_final_watchlist_distance_preserves_engine_value_when_present():
-    multiday = {
-        "bandar_buy_cost": 1790.0,
-        "distance_to_buy_cost": -0.55,
+    primary = {
+        "avg_buyer_price": 1790.0,
     }
-    raw = {"Close": 1820.0}
-    assert _final_watchlist_distance(multiday, raw) == -0.55
+    raw = {"Close": 1820.0, "Distance_To_Buy_Cost_Pct": -0.55}
+    assert _final_watchlist_distance(primary, raw) == -0.55
 
 
-def test_final_watchlist_reason_does_not_reuse_single_session_broker_fusion_reason():
-    raw = {
-        "Decision_Reasons": "trend kuat; net flow positif; buyer concentration dominan",
-    }
-    assert _final_watchlist_reason(raw) == ""
-
-
-def test_final_watchlist_keeps_explicit_engine_reason_when_available():
-    raw = {
-        "Main_Reason": "Setup teknikal valid dan konteks broker multi-day belum cukup data.",
-        "Decision_Reasons": "net flow positif",
-    }
-    assert _final_watchlist_reason(raw) == raw["Main_Reason"]
+def test_final_watchlist_distance_fails_closed_without_price_or_primary_cost():
+    assert _final_watchlist_distance({}, {}) == ""

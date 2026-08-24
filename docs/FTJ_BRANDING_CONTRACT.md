@@ -19,7 +19,6 @@ This contract owns report naming only. It does not own or change Technical, Brok
 | Market Outlook | `FTJ — MARKET PULSE` |
 | Post Market | `FTJ — CLOSING PULSE` |
 | Broker Summary | `FTJ — BROKER FLOW` |
-| Broker Multi-Day | `FTJ — SMART MONEY FLOW` |
 | Final Watchlist | `FTJ — SWING WATCHLIST` |
 | Active Recommendations | `FTJ — ACTIVE SETUPS` |
 | Lifecycle Digest / material lifecycle status | `FTJ — POSITION UPDATE` |

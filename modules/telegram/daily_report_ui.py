@@ -595,31 +595,6 @@ def format_broker_summary(data: dict[str, Any]) -> str:
     ]).strip()
 
 
-def format_broker_multiday(data: dict[str, Any]) -> str:
-    def rows(items: Any) -> list[str]:
-        result = []
-        for index, row in enumerate(items or [], 1):
-            if isinstance(row, Mapping):
-                result.append(
-                    f"{index}. {_safe(str(row.get('symbol') or '').upper(), 'emiten')} — "
-                    f"1D {_human(row.get('state_1d'))} | 3D {_human(row.get('state_3d'))} | 5D {_human(row.get('state_5d'))}"
-                )
-        return result or ["• Data tidak tersedia"]
-
-    return "\n".join([
-        "📚 <b>SDE SWING — BROKER MULTI-DAY</b>",
-        SEPARATOR,
-        f"📅 {escape_html(_date(data.get('trade_date')) or FORMAT_MISSING)} | POST MARKET",
-        f"<b>STATUS: {_status(data.get('process_status') or 'WAITING')}</b>",
-        "",
-        "<b>🔥 AKUMULASI KONSISTEN</b>",
-        *rows(data.get("top_accumulation")),
-        "",
-        "<b>🔴 DISTRIBUSI KONSISTEN</b>",
-        *rows(data.get("top_distribution")),
-    ]).strip()
-
-
 def format_final_watchlist_summary(data: dict[str, Any]) -> str:
     rows = [row for row in data.get("rows", []) or [] if isinstance(row, Mapping)]
     counts = data.get("decision_counts") if isinstance(data.get("decision_counts"), Mapping) else {}
@@ -689,7 +664,7 @@ def _fw_text(value):
     text = str(value if value is not None else "").strip()
     if not text or text.lower() in {"nan", "none", "null"}:
         return "ENGINE_DATA_NOT_AVAILABLE"
-    return _fw_escape(text.replace("_", " "))
+    return escape_html(text.replace("_", " "))
 
 
 def _fw_num(value):
@@ -768,17 +743,93 @@ def _fw_participants(value):
         else:
             value = []
     items = list(value or []) if isinstance(value, (list, tuple)) else []
-    lines = []
-    for index in range(3):
-        item = items[index] if index < len(items) and isinstance(items[index], dict) else {}
-        broker = _fw_text(item.get("broker"))
-        avg = _fw_price(item.get("avg_price"))
-        lines.append(f"{broker} @ {avg}")
-    return lines
+    lines: list[str] = []
+    for index, item in enumerate(items[:3], start=1):
+        if not isinstance(item, dict):
+            continue
+        broker = _fw_text(item.get("broker") or item.get("code") or item.get("name"))
+        if broker == "ENGINE_DATA_NOT_AVAILABLE":
+            continue
+        details: list[str] = []
+        value_label = _fw_money(item.get("value") or item.get("net_value") or item.get("amount"))
+        if value_label != "ENGINE_DATA_NOT_AVAILABLE":
+            details.append(value_label)
+        average = _fw_price(item.get("avg_price") or item.get("average_price") or item.get("avg"))
+        if average != "ENGINE_DATA_NOT_AVAILABLE":
+            details.append(f"Avg Rp{average}")
+        classification = _fw_text(
+            item.get("classification") or item.get("broker_type") or item.get("type")
+        )
+        if classification != "ENGINE_DATA_NOT_AVAILABLE":
+            details.append(classification.replace("_", " ").title())
+        suffix = f" — {' | '.join(details)}" if details else ""
+        lines.append(f"{index}. {broker}{suffix}")
+    return lines or ["• Data broker PRIMARY belum tersedia"]
+
+
+_FW_GENERIC_TRIGGER_CODES = {
+    "ENTRY_NOT_TRIGGERED",
+    "TRIGGER_NOT_MET",
+    "WAIT_FOR_CONFIRMATION",
+    "WAIT_FOR_ENTRY_TRIGGER",
+    "WAIT_FOR_ENTRY_ZONE",
+}
+
+
+def _fw_trigger_text(value):
+    candidate = str(value or "").strip().rstrip(" .")
+    if not candidate:
+        return ""
+    normalized = candidate.replace("-", "_").replace(" ", "_").upper()
+    if normalized in _FW_GENERIC_TRIGGER_CODES or normalized.startswith("ENGINE_DATA_"):
+        return ""
+    return candidate
+
+
+def _fw_execution_guidance(row):
+    """Keep the visible action tied to explicit engine facts or entry range."""
+    direct = _fw_trigger_text(_fw_pick(
+        row,
+        "trigger_description",
+        "Trigger_Description",
+        "Entry_Trigger",
+        "Execution_Trigger",
+        default="",
+    ))
+    if direct:
+        return f"⚠️ Trigger: {escape_html(direct)}. Jangan chase."
+
+    pending = _fw_pick(row, "waiting_triggers", "Waiting_Triggers", default=[])
+    if isinstance(pending, str) and pending.strip().startswith("["):
+        try:
+            pending = _fw_json.loads(pending)
+        except Exception:
+            pending = []
+    if not isinstance(pending, (list, tuple)):
+        pending = []
+    for item in pending:
+        if isinstance(item, dict):
+            item = item.get("description") or item.get("trigger") or item.get("condition")
+        trigger = _fw_trigger_text(item)
+        if trigger:
+            return f"⚠️ Trigger: {escape_html(trigger)}. Jangan chase."
+
+    current = _fw_num(_fw_pick(row, "last_price", "current_price", "Reference_Close", default=""))
+    low = _fw_num(_fw_pick(row, "entry_low", "Entry_Zone_Low", default=""))
+    high = _fw_num(_fw_pick(row, "entry_high", "Entry_Zone_High", default=""))
+    phase = str(_fw_pick(row, "phase", "execution_state", "Execution_Status", default="")).upper()
+    waiting = any(token in phase for token in ("WAIT", "NOT READY", "CONDITIONAL", "MONITOR"))
+    if current is not None and high is not None and current > high and low is not None:
+        return f"⚠️ Jangan chase. Tunggu pullback ke {_fw_price(low)}–{_fw_price(high)}."
+    if waiting and low is not None and high is not None:
+        return f"⚠️ Tunggu trigger valid di area {_fw_price(low)}–{_fw_price(high)}. Jangan chase."
+    if low is not None and high is not None:
+        return f"⚠️ Entry hanya di area {_fw_price(low)}–{_fw_price(high)}. Jangan chase."
+    return "⚠️ Tunggu setup tetap valid sebelum entry."
 
 
 def format_watchlist_detail(row):
-    """Canonical compact FINAL WATCHLIST card requested for Telegram."""
+    """Render one Final Watchlist card from PRIMARY facts and optional TODAY pulse."""
     symbol = _fw_text(_fw_pick(row, "symbol", "Symbol"))
     setup = _fw_text(_fw_pick(row, "setup", "Setup_Type"))
     analysis_date = _fw_text(_fw_pick(row, "analysis_date", "trade_date", "Trade_Date"))
@@ -794,32 +845,41 @@ def format_watchlist_detail(row):
 
     broker_signal = _fw_text(_fw_pick(row, "broker_status", "broker_signal", "Broker_Confirmation", "broker_direction"))
     broker_score = _fw_score(_fw_pick(row, "broker_score", "Broker_Score"))
-    net_flow = _fw_money(_fw_pick(row, "broker_net_flow", "net_flow", "cumulative_net_value"))
-    buy_days = _fw_text(_fw_pick(row, "buy_days"))
-    sell_days = _fw_text(_fw_pick(row, "sell_days"))
+    net_flow = _fw_money(_fw_pick(row, "broker_net_flow", "net_flow"))
     buyer_concentration = _fw_pct(_fw_pick(row, "buyer_concentration"), concentration=True)
     seller_concentration = _fw_pct(_fw_pick(row, "seller_concentration"), concentration=True)
     top_buy = _fw_participants(_fw_pick(row, "top_buyers", default=[]))
     top_sell = _fw_participants(_fw_pick(row, "top_sellers", default=[]))
-    broker_pattern = _fw_text(_fw_pick(row, "broker_pattern", "Broker_MultiDay_Context"))
     buy_cost = _fw_price(_fw_pick(row, "bandar_buy_cost", "avg_buyer_price", "weighted_broker_buy_cost"))
     vs_cost = _fw_pct(_fw_pick(row, "distance_to_buy_cost", "distance_to_buyer_avg_pct", "distance_to_buy_cost_pct"))
-    flow = _fw_text(_fw_pick(row, "multi_day_flow", "Broker_MultiDay_Context"))
-    persistence = _fw_text(_fw_pick(row, "flow_persistence", "Broker_Context_Alignment"))
+
+    primary_period = _fw_text(_fw_pick(row, "broker_period_type", default=""))
+    primary_source = _fw_text(_fw_pick(row, "broker_period_source", default=""))
+    primary_line = " | ".join(part for part in (primary_period, primary_source) if part and part != "ENGINE_DATA_NOT_AVAILABLE")
+    today_status = _fw_text(_fw_pick(row, "today_pulse_status", default=""))
+    today_available = str(today_status).upper() == "AVAILABLE"
+    today_flow = _fw_money(_fw_pick(row, "today_pulse_net_flow", default=""))
+    today_state = _fw_text(_fw_pick(row, "today_pulse_direction", "today_pulse_broker_state", default=""))
+    alignment = _fw_text(_fw_pick(row, "broker_alignment", default=""))
 
     trend = _fw_text(_fw_pick(row, "trend", "Technical_Regime"))
     phase = _fw_text(_fw_pick(row, "phase", "execution_state", "Execution_Status"))
     support = _fw_price(_fw_pick(row, "support", "Support_Level"))
     resistance = _fw_price(_fw_pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance"))
-    fib_status = _fw_text(_fw_pick(row, "fib_status", "Fibonacci_Status", "Fib_Status"))
-    reason = _fw_text(_fw_pick(row, "engine_final_reason", "main_reason", "Final_Reason"))
+    reason_raw = _fw_pick(row, "engine_final_reason", "main_reason", "Final_Reason")
+    reason = (
+        _fw_text(reason_raw)
+        if not isinstance(reason_raw, (list, tuple, set, dict))
+        else "ENGINE_DATA_NOT_AVAILABLE"
+    )
+    action = _fw_execution_guidance(row)
 
     lines = [
         "<b>📈 SDE SWING — FINAL WATCHLIST</b>",
-        "━━━━━━━━━━━━━━━━━━",
+        SEPARATOR,
         f"📌 <b>{symbol} | {setup}</b>",
         f"🕒 {analysis_date}",
-        "━━━━━━━━━━━━━━━━━━",
+        SEPARATOR,
         "",
         "<b>🎯 TRADE SETUP</b>",
         f"💰 Current {current} | Entry {entry_low}–{entry_high}",
@@ -827,27 +887,39 @@ def format_watchlist_detail(row):
         f"⚖️ RR 1:{rr}",
         f"📊 {technical_status} | 🧠 Confidence {confidence}",
         "",
-        "<b>🏦 BROKER SUMMARY</b>",
+        "<b>🏦 BROKER PRIMARY</b>",
         f"📌 {broker_signal} | Score {broker_score}/100",
-        f"💵 Net Flow {net_flow} | 📅 Buy/Sell {buy_days}/{sell_days}",
+        f"💵 Net Flow {net_flow}",
         f"🎯 Concentration B {buyer_concentration} | S {seller_concentration}",
-        "",
-        "<b>🟢 Top Buy</b>",
-        *top_buy,
-        "",
-        "<b>🔴 Top Sell</b>",
-        *top_sell,
-        "",
-        f"📊 Pattern {broker_pattern}",
-        f"💰 Buy Cost {buy_cost} | Vs Cost {vs_cost}",
-        f"🌊 Flow {flow} | Persistence {persistence}",
+        f"💰 Buy Cost {buy_cost} | Jarak Buy Avg {vs_cost}",
+    ]
+    if primary_line:
+        lines.append(f"🗂 PRIMARY {primary_line}")
+    lines.extend(["", "<b>🟢 Top Buy</b>", *top_buy, "", "<b>🔴 Top Sell</b>", *top_sell])
+    if today_available:
+        lines.extend([
+            "",
+            "<b>📍 TODAY PULSE (Exact 1D)</b>",
+            f"💵 Net Flow {today_flow} | {today_state}",
+        ])
+        if alignment and alignment != "ENGINE_DATA_NOT_AVAILABLE":
+            lines.append(f"↔️ Alignment PRIMARY vs TODAY: {alignment}")
+    elif primary_period.upper() in {"1D", "1DAY", "DAY"}:
+        lines.append("📍 TODAY pulse tidak dipisahkan: sama dengan PRIMARY 1D.")
+
+    lines.extend([
         "",
         "<b>📌 SETUP CONTEXT</b>",
         f"📈 {trend} | {phase}",
         f"🟢 Support {support} | 🔴 Resistance {resistance}",
-        f"📐 Fibonacci {fib_status}",
+        "",
+        "<b>Action:</b>",
+        action,
         "",
         "<b>Reason:</b>",
         reason,
-    ]
+    ])
     return "\n".join(lines).strip()
+
+
+__all__ = ["format_watchlist_detail"]

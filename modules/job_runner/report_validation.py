@@ -404,67 +404,6 @@ def validate_broker_summary_source(frame: pd.DataFrame, path: str | Path) -> dic
     return {"columns": columns, "rows": int(len(frame))}
 
 
-def validate_broker_multiday_source(frame: pd.DataFrame, path: str | Path) -> dict[str, Any]:
-    columns = require_columns(
-        frame,
-        {
-            "symbol": ("Symbol", "EMITEN", "Ticker"),
-            "context": ("Context", "Broker_MultiDay_Context", "Overall_State"),
-            "score": ("Score", "Broker_MultiDay_Score"),
-            "confidence": ("Confidence", "Broker_MultiDay_Confidence"),
-            "blocker": ("Blocker", "Broker_MultiDay_Blocker"),
-        },
-        "broker_multi_day",
-        input_paths=[path],
-        source_of_truth=[path],
-        require_values_for=("symbol", "context", "score", "confidence", "blocker"),
-    )
-    errors = [
-        f"FIELD_VALUE_EMPTY:{canonical}:rows={','.join(str(index) for index in frame.index[frame[column].map(is_missing)])}"
-        for canonical, column in columns.items()
-        if frame[column].map(is_missing).any()
-    ]
-    if errors:
-        raise ReportSourceValidationError(
-            "broker_multi_day",
-            errors,
-            input_paths=[path],
-            source_of_truth=[path],
-        )
-    quality_column = find_col(frame, "Data_Quality_Status", "data_status")
-    if quality_column is not None:
-        quality = frame[quality_column].astype(str).str.strip().str.upper()
-        if (~quality.eq("VALID")).any():
-            raise ReportSourceValidationError(
-                "broker_multi_day",
-                ["DATA_QUALITY_NOT_VALID"],
-                input_paths=[path],
-                source_of_truth=[path],
-                details={"quality_counts": quality.value_counts().to_dict()},
-            )
-    context_fields = {
-        "context_1d": ("Broker_Context_1D", "state_1d"),
-        "context_3d": ("Broker_Context_3D", "state_3d"),
-        "context_5d": ("Broker_Context_5D", "state_5d"),
-        "context_10d": ("Broker_Context_10D", "state_10d"),
-        "context_20d": ("Broker_Context_20D", "state_20d"),
-    }
-    context_errors: list[str] = []
-    for canonical, aliases in context_fields.items():
-        column = find_col(frame, *aliases)
-        if column is not None and frame[column].map(is_missing).any():
-            rows = ",".join(str(index) for index in frame.index[frame[column].map(is_missing)])
-            context_errors.append(f"FIELD_VALUE_EMPTY:{canonical}:rows={rows}")
-    if context_errors:
-        raise ReportSourceValidationError(
-            "broker_multi_day",
-            context_errors,
-            input_paths=[path],
-            source_of_truth=[path],
-        )
-    return {"columns": columns, "rows": int(len(frame))}
-
-
 def validate_final_watchlist_sources(
     decisions: pd.DataFrame,
     entry_plans: pd.DataFrame,

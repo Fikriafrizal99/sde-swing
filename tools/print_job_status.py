@@ -14,7 +14,6 @@ DEFAULT_JOBS = (
     "market_outlook",
     "post_market",
     "broker_summary",
-    "broker_multi_day",
     "final_watchlist",
     "full_manual",
 )

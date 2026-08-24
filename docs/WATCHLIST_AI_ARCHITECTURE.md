@@ -11,8 +11,8 @@ swing-trading setup.
 
 It is an **interpreter, not a decision engine**.
 
-It may connect technical structure, the generated chart, execution plan, broker
-summary/multi-day evidence, market context and risk into a natural Indonesian
+It may connect technical structure, the generated chart, execution plan, exact
+PRIMARY broker facts with an optional TODAY pulse, market context and risk into a natural Indonesian
 narrative. It may quote official SDE numbers in equivalent presentation forms,
 but it may not change or replace any SDE-owned result.
 
@@ -27,7 +27,7 @@ SDE engine / broker / decision / exit-plan stages
 validated Final Watchlist facts
         |
         v
-final_watchlist_ui.py
+daily_report_ui.py
         |
         v
 ReportPayload -> delivery.py -> Telegram Topic 9
@@ -115,11 +115,10 @@ The context builder exposes only approved Final Watchlist facts such as:
 - entry zone, stop loss, TP1, TP2 and RR;
 - trend, technical state/score/quality, momentum, RSI and volume facts;
 - support/resistance and phase when present in the official artifact;
-- broker state/score/net flow;
-- buyer/seller days and concentration;
+- broker PRIMARY state/score/net flow and concentration;
 - bandar/buyer cost and distance to cost;
-- top buyers/sellers;
-- multi-day broker flow, persistence and alignment;
+- exact PRIMARY top buyers/sellers and raw-status provenance;
+- optional exact 1D TODAY pulse and PRIMARY-vs-TODAY alignment;
 - broker period/coverage metadata;
 - market regime and sector state;
 - exchange status/veto/risk flags;
@@ -127,6 +126,11 @@ The context builder exposes only approved Final Watchlist facts such as:
 
 No independent web search or second market-data lookup is performed by
 Watchlist AI.
+
+Database-derived rolling windows, persistence, and synthetic broker scores are
+not part of the Watchlist AI contract. See
+[`BROKER_PERIOD_ARCHITECTURE.md`](BROKER_PERIOD_ARCHITECTURE.md) for the
+canonical lineage boundary.
 
 ## Chart contract
 

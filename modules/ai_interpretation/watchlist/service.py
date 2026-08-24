@@ -35,16 +35,20 @@ _ALLOWED_FACT_FIELDS = (
     "target_1", "target_2", "risk_reward", "support", "resistance",
     "phase", "fib_status", "swing_high", "swing_low", "broker_status",
     "broker_direction", "broker_confidence", "broker_score", "broker_state",
-    "broker_net_flow", "broker_buy_ratio", "broker_sell_ratio", "buy_days",
-    "sell_days", "buyer_concentration", "seller_concentration",
+    "broker_net_flow", "broker_buy_ratio", "broker_sell_ratio",
+    "buyer_concentration", "seller_concentration",
     "broker_pattern", "bandar_buy_cost", "distance_to_buy_cost",
     "distance_to_buyer_avg_pct", "top_buyers", "top_sellers",
-    "multi_day_flow", "flow_persistence", "broker_alignment",
+    "broker_alignment",
     "broker_period_type", "broker_period_start", "broker_period_end",
     "broker_trading_days", "broker_session_dates", "broker_period_source",
     "broker_coverage", "broker_period_coverage", "broker_coverage_text",
-    "broker_coverage_status", "broker_freshness_status",
+    "broker_coverage_status", "broker_freshness_status", "primary_raw_status",
+    "today_pulse_available", "today_pulse_date", "today_pulse_snapshot_id", "today_pulse_source",
     "today_pulse_status", "today_pulse_net_flow", "today_pulse_direction",
+    "today_pulse_broker_state", "today_pulse_avg_accdist",
+    "today_pulse_buyer_concentration", "today_pulse_seller_concentration",
+    "today_pulse_top_buyers", "today_pulse_top_sellers", "today_raw_status",
     "sector_state", "market_regime", "trigger_description", "waiting_triggers",
     "main_reason_technical", "main_reason_broker", "main_reason_entry",
     "engine_final_reason", "main_reason", "risk_items", "main_risk",
@@ -263,7 +267,7 @@ class WatchlistAIService:
             "support/resistance, RSI, dan angka lain persis atau dalam format ekuivalen dari data. "
             "Jangan mengubah nilai, jangan menciptakan level baru, jangan membuat AI Score, "
             "probability, atau AI Decision, dan jangan menggantikan keputusan SDE. Hubungkan chart, "
-            "technical, plan, broker, multi-day flow, market context, dan risiko secara natural bila "
+            "technical, plan, broker PRIMARY, TODAY pulse, market context, dan risiko secara natural bila "
             "datanya tersedia. Tulis Bahasa Indonesia dalam 2-4 paragraf yang benar-benar menjelaskan "
             "pemikiran, bukan daftar poin. Kesimpulan harus singkat. Keluarkan JSON valid dengan tepat "
             "dua key: analysis dan conclusion."

@@ -44,10 +44,10 @@ Current dedicated presentation modules are:
 
 - `market_outlook_ui.py`
 - `post_market_ui.py`
-- `final_watchlist_ui.py`
+- `daily_report_ui.py` (Final Watchlist canonical formatter)
 
-Shared operational presentation can remain in `daily_report_ui.py` where it is
-still used by active reports.
+`final_watchlist_ui.py` remains only as a compatibility import alias; it does
+not contain a second presentation implementation.
 
 ## Watchlist AI interpretation boundary
 
@@ -57,7 +57,7 @@ interpretation is invoked by the canonical Final Watchlist entrypoint.
 
 ```text
 validated Final Watchlist facts
-  |-> official builder -> final_watchlist_ui.py -> ReportPayload -> delivery -> Topic 9
+  |-> official builder -> daily_report_ui.py -> ReportPayload -> delivery -> Topic 9
   `-> after official success: tools/run_watchlist_ai.py
       -> modules/ai_interpretation/watchlist/WatchlistAIService
       -> provider #1 -> provider #2 -> provider #3
@@ -69,7 +69,8 @@ The legacy embedded Final Watchlist AI budget is disabled. This keeps AI network
 calls out of the official Final Watchlist builder while leaving unrelated legacy
 report-AI behavior available where still required.
 
-Watchlist AI may read chart, technical, plan, broker, multi-day, market, and
+Watchlist AI may read chart, technical, plan, exact PRIMARY broker facts,
+optional TODAY pulse, market, and
 validated engine facts and may quote official numbers unchanged. It may not
 create replacement engine levels, mutate official artifacts, create an AI
 Decision/Score, or write back into engine/lifecycle/canonical state.

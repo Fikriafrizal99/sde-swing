@@ -44,7 +44,6 @@ def _base_statuses():
         "market_outlook": _status("market_outlook", "SUCCESS", stage="MARKET_OUTLOOK"),
         "post_market": _status("post_market", "SUCCESS", stage="POST_MARKET"),
         "broker_summary": _status("broker_summary", "SUCCESS_WITH_WARNING", stage="BROKER_SUMMARY"),
-        "broker_multi_day": _status("broker_multi_day", "SUCCESS", stage="BROKER_MULTI_DAY"),
     }
 
 

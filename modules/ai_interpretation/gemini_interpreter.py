@@ -173,8 +173,6 @@ class GeminiInterpreter:
 
     @classmethod
     def _report_kind(cls, facts: dict[str, Any]) -> str:
-        if any(key in facts for key in ("state_1d", "state_3d", "state_5d")) and not facts.get("decision"):
-            return "BROKER_MULTIDAY"
         if facts.get("symbol") and facts.get("decision"):
             return "FINAL_WATCHLIST"
         if facts.get("market_regime") and any(

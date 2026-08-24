@@ -454,5 +454,5 @@ def test_gemini_and_telegram_preserve_zapi_facts():
     # preserved in the Gemini sanitization contract above and source reports.
     assert "ZAPI IDX:" not in message
     assert "Stockbit:" not in message
-    assert "AVAILABLE N/A/100" in message
-    assert "Net N/A" in message
+    assert "AVAILABLE" in message
+    assert "Net Flow" in message

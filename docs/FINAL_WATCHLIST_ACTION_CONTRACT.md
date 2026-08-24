@@ -31,7 +31,7 @@ The Final Watchlist formatter only explains already-produced facts.
 
 ## Canonical action-source precedence
 
-`modules/telegram/final_watchlist_ui.py` must resolve the action line in this order:
+`modules/telegram/daily_report_ui.py` must resolve the action line in this order:
 
 1. explicit `trigger_description` / equivalent engine-source trigger;
 2. explicit `waiting_triggers` / pending execution conditions;

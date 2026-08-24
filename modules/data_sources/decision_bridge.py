@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-"""Decision Engine integration bridge (section S) and shadow comparison (T).
+"""Legacy decision bridge and shadow comparison (archive/shadow only).
 
-The bridge attaches broker multi-day CONTEXT to decision rows.  It never
-computes or overrides Decision_Status_Final and never changes Stage-2
-thresholds.  Hierarchy: Technical is the primary engine, broker daily is
-timing, broker multi-day is confirmation context only.
-
-Shadow comparison evaluates alternative broker-window framings side by side so
-an operator can compare them — without any of them becoming production.
+It remains available to inspect historical results, but production Final
+Watchlist does not call this bridge or consume any context it emits. The Final
+Decision Engine consumes its published Broker Fusion source unchanged.
 """
 
 from dataclasses import dataclass

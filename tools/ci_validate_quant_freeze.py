@@ -20,6 +20,11 @@ if str(ROOT) not in sys.path:
 PIPELINE_PATH = ROOT / "config" / "pipeline.json"
 FREEZE_PATH = ROOT / "config" / "audit_quant_freeze.json"
 NON_QUANT_PIPELINE_METADATA_KEYS = frozenset({"config_version"})
+# The audit freeze faithfully records the legacy setting that existed at audit
+# time. It is no longer a quant/runtime control after Broker Multi-Day was
+# retired from Final Watchlist, so exclude this one named non-quant key while
+# retaining every decision, technical, and Broker Fusion parameter.
+RETIRED_NON_QUANT_BROKER_KEYS = frozenset({"minimum_multiday_sessions"})
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -133,6 +138,12 @@ def validate_quant_freeze(
     protected_pipeline = dict(freeze["pipeline_protected"])
     for metadata_key in NON_QUANT_PIPELINE_METADATA_KEYS:
         protected_pipeline.pop(metadata_key, None)
+    protected_broker = protected_pipeline.get("broker")
+    if isinstance(protected_broker, Mapping):
+        protected_broker = dict(protected_broker)
+        for retired_key in RETIRED_NON_QUANT_BROKER_KEYS:
+            protected_broker.pop(retired_key, None)
+        protected_pipeline["broker"] = protected_broker
 
     _compare_subset(
         protected_pipeline,

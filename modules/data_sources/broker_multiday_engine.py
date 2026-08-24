@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-"""Broker multi-day context engine (section S).
+"""Legacy broker multi-day context engine (archive/shadow only).
 
 Orchestrates: broker history -> windows -> features -> classification ->
 persistence -> acceleration -> divergence -> alignment.
 
-CRITICAL CONTRACT: this engine never produces BUY / WATCH / AVOID.  It returns
-only score, context, confidence, penalty, blocker, and trace.  The Final
-Decision Engine remains the sole owner of Decision_Status_Final.  Technical is
-the primary engine; broker daily is timing; broker multi-day is confirmation
-context only.
+It is intentionally retained for archive/audit experiments and compatibility
+tests. It is not imported by the production Final Watchlist runtime and must
+never create a secondary broker score, context, or decision input there.
 """
 
 from dataclasses import dataclass, field

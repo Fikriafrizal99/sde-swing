@@ -82,7 +82,6 @@ The current scheduler fallback is:
 | Market Outlook | 9 |
 | Post Market + heatmap | 9 |
 | Broker Summary / CSV | 9 |
-| Broker Multi-Day / CSV | 9 |
 | Final Watchlist Summary | 9 |
 | Final Watchlist Detail | 9 |
 | Final Watchlist CSV | 9 |

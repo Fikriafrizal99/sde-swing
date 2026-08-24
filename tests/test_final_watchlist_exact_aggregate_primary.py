@@ -143,6 +143,7 @@ def test_reuse_blocks_legacy_internal_rollup(monkeypatch):
 
 def test_main_no_longer_builds_scored_primary_from_internal_daily_copy():
     source = inspect.getsource(runner.main)
+    capture_source = inspect.getsource(runner.capture_exact_aggregate_primary)
     assert "persist_internal_rollup_snapshot" not in source
     assert "capture_exact_aggregate_primary(" in source
-    assert "STOCKBIT_AGGREGATE_EXPORT" in source
+    assert "STOCKBIT_AGGREGATE_EXPORT" in capture_source

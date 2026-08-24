@@ -129,22 +129,21 @@ def test_final_watchlist_uses_agreed_format_and_exports_active_rows(tmp_path: Pa
     # WATCH remain visible in the summary and complete CSV.
     assert len(detail) == 1
     text = detail[0].text
-    # FINAL WATCHLIST is the compact, one-card Telegram contract. The
-    # verbose bold section layout belongs to the retired formatter.
+    # PRIMARY broker presentation is the one canonical Telegram contract.
     required_sections = [
-        "<b>S2</b> | BUY CANDIDATE | 88%",
+        "S2 | BREAKOUT RETEST",
         "BREAKOUT RETEST",
-        "Entry 100",
-        "Net +Rp1,50B",
-        "Cost 102 (+0,98%)",
+        "Entry 100–105",
+        "Net Flow +Rp1,50 miliar",
+        "Buy Cost",
         "Trigger: Harga masuk area entry dan volume menguat.",
     ]
     for section in required_sections:
         assert section in text
-    assert "103 | Entry 100" in text
-    assert "95 |" in text and "115 / 120" in text
-    assert "AK 1B" in text
-    assert "TP 500M" in text
+    assert "Current 103 | Entry 100–105" in text
+    assert "TP1" in text and "TP2" in text
+    assert "AK" in text
+    assert "TP" in text
     assert "Yahoo: VALID" not in text
     assert "ZAPI IDX:" not in text
 
@@ -373,15 +372,17 @@ def test_gemini_request_budget_by_report_type(tmp_path: Path) -> None:
     })
     assert interpreter.requests == []
 
-    builder.build_broker_multiday({
+    summary, attachment = builder.build_broker_summary({
         "trade_date": "2026-08-05",
         "rows": [{
             "symbol": "BBCA",
-            "state_1d": "ACCUMULATION",
-            "state_3d": "ACCUMULATION",
-            "state_5d": "NEUTRAL",
+            "broker_state": "ACCUMULATION",
+            "broker_score": 78,
         }],
     })
+    assert summary.report_type == "broker_summary"
+    assert attachment.report_type == "broker_summary_csv"
+    assert not hasattr(builder, "build_broker_multiday")
     assert interpreter.requests == []
 
     market = {

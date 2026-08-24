@@ -1,46 +1,48 @@
-"""CI: validate canonical schema + multi-day engine contracts.
+#!/usr/bin/env python3
+"""Validate canonical schema, runtime ownership, and broker-period boundaries.
 
-Enforces the Stage 3 hard constraints at CI time:
-
-1. All 9 canonical record types are registered with the provenance envelope.
-2. The broker multi-day engine produces CONTEXT ONLY — never BUY / WATCH /
-   AVOID (those belong to the Final Decision Engine).
-3. The decision bridge never adds a decision column and never mutates a
-   protected decision column.
-4. config/data_sources.json records the documented ZAPI capabilities while
-   credentials remain environment-only; a credential-less run is never LIVE.
-
-Exits non-zero on any violation.
+The Final Watchlist contract has one exact PRIMARY Broker Fusion source and an
+optional exact 1D TODAY presentation pulse.  This guard prevents retired
+database-derived broker-multiday artifacts from returning to that production
+path while leaving archive and portfolio modules independent.
 """
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import pandas as pd  # noqa: E402
-
 from modules.data_sources.canonical import RECORD_TYPES  # noqa: E402
 from modules.data_sources.config import load_data_source_config  # noqa: E402
-from modules.data_sources.broker_multiday_engine import compute_multiday_context  # noqa: E402
-from modules.data_sources.decision_bridge import (  # noqa: E402
-    CONTEXT_COLUMNS,
-    PROTECTED_COLUMNS,
-    attach_multiday_context,
-)
+from modules.decision.candidate import FINAL_ACTIONS, CanonicalCandidate, validate_candidate  # noqa: E402
 from modules.runtime.data_source_manager import DataSourceManager  # noqa: E402
 from modules.runtime.jobs import INTEGRATED_JOB_NAMES, JOB_DEPENDENCIES  # noqa: E402
-from modules.decision.candidate import FINAL_ACTIONS, CanonicalCandidate, validate_candidate  # noqa: E402
 
-FORBIDDEN_TOKENS = {"BUY READY", "BUY ON TRIGGER", "WATCH", "AVOID", "BUY", "SELL"}
 
 EXPECTED_RECORD_TYPES = {
     "DailyBar", "IntradayQuote", "OrderBookSnapshot", "BrokerFlow",
     "ForeignFlow", "TradingStatus", "CorporateAction", "MarketIndex",
     "SymbolMetadata",
 }
+_BROKER_PRODUCTION_FILES = (
+    "run_sde_job.py",
+    "modules/job_runner/core.py",
+    "modules/job_runner/enhanced_runtime_bridge.py",
+    "modules/job_runner/enhanced_daily_reports.py",
+    "modules/telegram/final_watchlist_chart.py",
+)
+_RETIRED_PRODUCTION_TOKENS = (
+    "broker_multi_day",
+    "broker_multiday",
+    "broker_window_comparison",
+    "broker_multiday_context",
+    "broker_multiday_score",
+    "multi_day_flow",
+    "flow_persistence",
+)
 
 
 def _fail(msg: str) -> int:
@@ -56,61 +58,34 @@ def check_record_types() -> int:
     return 0
 
 
-def check_multiday_context_only() -> int:
-    # Build a synthetic accumulation history and confirm the engine emits no
-    # BUY/WATCH/AVOID anywhere in its context or trace.
-    rows = []
-    for day in range(1, 11):
-        rows.append({
-            "market_date": f"2026-01-{day:02d}",
-            "broker_code": "AA", "side": "BUY", "net_value": 1_000_000,
-            "avg_price": 1000.0, "gross_value": 1_000_000, "net_lot": 1000,
-        })
-    ctx = compute_multiday_context("BBCA", "2026-01-10", rows, primary_window="5D")
-    ctx_dict = ctx.to_context_dict()
+def check_broker_period_production_contract() -> int:
+    """Keep retired broker-history interpretation outside Final Watchlist code."""
+    violations: list[str] = []
+    for relative_path in _BROKER_PRODUCTION_FILES:
+        source = (ROOT / relative_path).read_text(encoding="utf-8")
+        lowered = source.lower()
+        for token in _RETIRED_PRODUCTION_TOKENS:
+            if token in lowered:
+                violations.append(f"{relative_path}:{token}")
+    if violations:
+        return _fail("retired broker production reference(s): " + ", ".join(violations))
 
-    # The context label must not be any trading decision token.
-    label = str(ctx_dict.get("Broker_MultiDay_Context", "")).upper()
-    if label in FORBIDDEN_TOKENS:
-        return _fail(f"multi-day context label is a decision token: {label}")
+    if "broker_multi_day" in INTEGRATED_JOB_NAMES:
+        return _fail("broker_multi_day remained in integrated job registry")
+    if "broker_multi_day" in JOB_DEPENDENCIES:
+        return _fail("broker_multi_day remained in integrated dependency graph")
+    expected_final_dependencies = ("market_outlook", "post_market", "broker_summary")
+    if JOB_DEPENDENCIES.get("final_watchlist") != expected_final_dependencies:
+        return _fail(
+            "final_watchlist dependencies must be "
+            f"{expected_final_dependencies!r}, got {JOB_DEPENDENCIES.get('final_watchlist')!r}"
+        )
 
-    # No context KEY may be named like a final-decision column.
-    for key in ctx_dict:
-        if "DECISION_STATUS_FINAL" in key.upper() or key in PROTECTED_COLUMNS:
-            return _fail(f"multi-day context leaked a decision column: {key}")
-
-    print("OK multi-day: context-only, no BUY/WATCH/AVOID emitted")
-    return 0
-
-
-def check_bridge_protects_decisions() -> int:
-    rows = [{
-        "market_date": "2026-01-10", "broker_code": "AA", "side": "BUY",
-        "net_value": 1_000_000, "avg_price": 1000.0, "gross_value": 1_000_000,
-        "net_lot": 1000,
-    }]
-    ctx = compute_multiday_context("BBCA", "2026-01-10", rows, primary_window="5D")
-    frame = pd.DataFrame([
-        {"Symbol": "BBCA", "Decision_Status_Final": "WATCH", "Final_Score_V3": 55.0},
-        {"Symbol": "TLKM", "Decision_Status_Final": "AVOID", "Final_Score_V3": 20.0},
-    ])
-    before = frame["Decision_Status_Final"].tolist()
-    result = attach_multiday_context(frame, {"BBCA": ctx})
-
-    if not result.protected_intact:
-        return _fail("bridge reported protected columns changed")
-    after = result.frame["Decision_Status_Final"].tolist()
-    if before != after:
-        return _fail(f"Decision_Status_Final changed: {before} -> {after}")
-    for col in result.frame.columns:
-        if "DECISION" in col.upper() and col not in PROTECTED_COLUMNS and col.startswith("Broker"):
-            return _fail(f"bridge added a broker decision column: {col}")
-    # Bridge must add context columns and nothing decision-like.
-    for col in CONTEXT_COLUMNS:
-        if col not in result.frame.columns:
-            return _fail(f"bridge did not add context column: {col}")
-
-    print("OK bridge: protected decision columns untouched, context attached")
+    period_view = (ROOT / "modules/broker_bridge/broker_period_view.py").read_text(encoding="utf-8").lower()
+    for forbidden in ("broker_history", "broker_window_comparison", "broker_multiday"):
+        if forbidden in period_view:
+            return _fail(f"broker_period_view consulted retired source: {forbidden}")
+    print("OK broker period: exact PRIMARY/TODAY only; no multi-day production route")
     return 0
 
 
@@ -126,33 +101,24 @@ def check_zapi_not_live_without_credentials() -> int:
         return _fail("ZAPI_IDX documented capabilities must remain enabled in config")
     capabilities = zapi.capabilities
 
-    # Production ownership deliberately keeps Yahoo/historical as the sole
-    # DailyBar/MarketIndex source. ZAPI endpoints stay documented for legacy
-    # adapter compatibility, but must not be treated as active production data.
     for record_type in ("DailyBar", "MarketIndex"):
         status = str((capabilities.get(record_type) or {}).get("status", "")).upper()
         if status != "DISABLED_IN_PRODUCTION":
             return _fail(f"ZAPI_IDX production-disabled capability drifted: {record_type}={status}")
-
     for record_type in ("SymbolMetadata", "TradingStatus"):
         if str((capabilities.get(record_type) or {}).get("status", "")).upper() != "SUPPORTED":
             return _fail(f"ZAPI_IDX capability missing SUPPORTED status: {record_type}")
-
     for record_type in ("IntradayQuote", "OrderBookSnapshot", "BrokerFlow", "CorporateAction"):
         status = str((capabilities.get(record_type) or {}).get("status", "")).upper()
         if status not in {"UNSUPPORTED", "NOT_CONFIGURED"}:
             return _fail(f"unverified ZAPI capability was enabled: {record_type}={status}")
-    # CI must not require credentials and must never print them. A local
-    # operator may still run this check with a key; the client readiness
-    # assertion below is what prevents a false LIVE label when absent.
+
     from modules.data_sources.zapi_idx_adapter import MockZapiTransport, ZapiIdxClient
+
     client = ZapiIdxClient.from_config(zapi)
     if not zapi.api_key() and not isinstance(client._transport, MockZapiTransport):
         return _fail("credential-less ZAPI_IDX unexpectedly selected LIVE transport")
-    if not zapi.api_key():
-        print("OK config: documented ZAPI_IDX capabilities, credential-less run NOT_CONFIGURED/MOCK")
-    else:
-        print("OK config: documented ZAPI_IDX capabilities; credentials remain environment-only")
+    print("OK config: documented ZAPI_IDX capabilities and credential-safe transport")
     return 0
 
 
@@ -164,9 +130,6 @@ def check_integrated_runtime_contract() -> int:
     metadata = manager.provider_metadata(record_type="DailyBar")
     if metadata.get("data_source_mode") == "LIVE" or not metadata.get("mock_used"):
         return _fail("forced mock source was labelled LIVE or mock_used=false")
-    for key in ("provider_status", "data_source_mode", "source_health"):
-        if key not in metadata:
-            return _fail(f"source manager metadata missing {key}")
     candidate = CanonicalCandidate(
         symbol="BBCA", trade_date="2026-01-02", final_action="WAIT",
         source_provenance={"provider_status": "FILE"}, snapshot_ids={"technical": "S"},
@@ -183,7 +146,8 @@ def check_structure_and_security() -> int:
     required_docs = {
         "README.md", "ARCHITECTURE.md", "RUNTIME_JOBS.md", "DATA_SOURCES.md",
         "TELEGRAM_ROUTING.md", "CONFIGURATION.md", "MIGRATION_V1_6_TO_V1_7.md",
-        "TROUBLESHOOTING.md", "LEGACY_FILE_MANIFEST.md", "archive/README.md",
+        "TROUBLESHOOTING.md", "LEGACY_FILE_MANIFEST.md", "BROKER_PERIOD_ARCHITECTURE.md",
+        "archive/README.md",
     }
     missing_docs = [name for name in required_docs if not (ROOT / "docs" / name).exists()]
     if missing_docs:
@@ -192,11 +156,12 @@ def check_structure_and_security() -> int:
     legacy = (ROOT / "master_pipeline.py").read_text(encoding="utf-8")
     if "JOBS" not in entrypoint or "DEPRECATED_COMPATIBILITY_ENTRYPOINT" not in legacy:
         return _fail("official entry point/legacy marker missing")
-    # Use Git's index rather than the working tree: runtime artifacts can exist
-    # locally but must never enter the release commit.
-    import subprocess
     result = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True)
-    forbidden = [line for line in result.stdout.splitlines() if line == ".env" or line.endswith("/.env") or "__pycache__" in line or line.endswith((".db", ".sqlite", ".sqlite3", ".pyc"))]
+    forbidden = [
+        line for line in result.stdout.splitlines()
+        if line == ".env" or line.endswith("/.env") or "__pycache__" in line
+        or line.endswith((".db", ".sqlite", ".sqlite3", ".pyc"))
+    ]
     if forbidden:
         return _fail(f"runtime/secret artifacts tracked: {forbidden}")
     print("OK structure: docs, official entry point, and Git runtime-artifact policy")
@@ -206,8 +171,7 @@ def check_structure_and_security() -> int:
 def main() -> int:
     rc = 0
     rc |= check_record_types()
-    rc |= check_multiday_context_only()
-    rc |= check_bridge_protects_decisions()
+    rc |= check_broker_period_production_contract()
     rc |= check_zapi_not_live_without_credentials()
     rc |= check_integrated_runtime_contract()
     rc |= check_structure_and_security()

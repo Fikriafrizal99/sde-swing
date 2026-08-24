@@ -744,7 +744,7 @@ def main() -> int:
         if rc != 0:
             return rc
 
-        # No broker_multi_day stage.  Final Watchlist consumes Broker Fusion's
+        # No legacy database-derived broker stage. Final Watchlist consumes Broker Fusion's
         # exact PRIMARY result; TODAY remains presentation context only.
         rc = run_stage(
             "final_watchlist",

@@ -4,344 +4,180 @@ import json
 from pathlib import Path
 
 import pandas as pd
-import pytest
 
-from modules.broker_bridge.broker_period_context import (
-    custom_period_spec,
-    fixed_period_spec,
-    list_reusable_snapshots,
-    persist_internal_rollup_snapshot,
-    persist_snapshot,
-    primary_context_metadata,
-    primary_pulse_alignment,
-    today_pulse_from_rows,
-)
-from modules.data_sources.broker_history import (
-    connect,
-    ingest_daily_capture_files,
-    init_schema,
-    read_daily_capture_rows,
-)
-from modules.data_sources.broker_multiday_engine import compute_multiday_context
-from modules.data_sources.decision_bridge import attach_multiday_context
-from modules.telegram.final_watchlist_ui import format_watchlist_detail
-from tools.run_final_watchlist_broker_period import (
-    active_sidecar_payload,
-    archive_daily_raw,
-    choose_primary_fallback,
+from modules.broker_bridge.broker_period_context import primary_pulse_alignment
+from modules.broker_bridge.broker_period_view import (
+    active_primary_raw_snapshot_path,
+    load_broker_period_view,
 )
 
 
-def _summary(path: Path, start: str, end: str) -> None:
+def _write_summary(path: Path, *, start: str, end: str, net_flow: float, buyer: str) -> None:
     pd.DataFrame([
         {
+            "EMITEN": "AAA",
             "FROM_DATE": start,
             "TO_DATE": end,
-            "EMITEN": "AAA",
-            "TOTAL_BUY": 100,
-            "TOTAL_SELL": 50,
-            "NET_FLOW": 50,
-            "TOP_BUYER_1": "AA",
-            "TOP_SELLER_1": "BB",
-            "BUYER_CONCENTRATION": 0.5,
-            "SELLER_CONCENTRATION": 0.5,
+            "TOTAL_BUY": max(net_flow, 0) + 2_000,
+            "TOTAL_SELL": max(-net_flow, 0) + 1_000,
+            "NET_FLOW": net_flow,
+            "BROKER_ACCDIST": "ACCUMULATION" if net_flow > 0 else "DISTRIBUTION",
+            "BUYER_CONCENTRATION": 0.61,
+            "SELLER_CONCENTRATION": 0.31,
+            "AVG_BUYER_PRICE": 1_010,
+            "AVG_SELLER_PRICE": 1_005,
+            "TOP_BUYER_1": buyer,
+            "TOP_SELLER_1": "SUMMARY_SELLER",
         }
     ]).to_csv(path, index=False)
 
 
-def _raw(path: Path, market_date: str, *, start: str | None = None) -> None:
-    start = start or market_date
+def _write_raw(path: Path, *, start: str, end: str, buyer: str, seller: str) -> None:
     pd.DataFrame([
         {
-            "SYMBOL": "AAA",
-            "FROM_DATE": start,
-            "TO_DATE": market_date,
-            "SIDE": "BUY",
-            "RANK": 1,
-            "BROKER_CODE": "AA",
-            "BROKER_TYPE": "DOMESTIK",
-            "NET_VALUE": 100.0,
-            "NET_LOT": 1.0,
-            "GROSS_VALUE": 100.0,
-            "GROSS_LOT": 1.0,
-            "FREQUENCY": 1,
-            "AVG_PRICE": 100.0,
+            "SYMBOL": "AAA", "FROM_DATE": start, "TO_DATE": end,
+            "SIDE": "BUY", "RANK": 1, "BROKER_CODE": buyer,
+            "BROKER_TYPE": "ASING", "NET_VALUE": 3_000_000,
+            "NET_LOT": 30, "GROSS_VALUE": 3_000_000,
+            "GROSS_LOT": 30, "FREQUENCY": 3, "AVG_PRICE": 1_010,
         },
         {
-            "SYMBOL": "AAA",
-            "FROM_DATE": start,
-            "TO_DATE": market_date,
-            "SIDE": "SELL",
-            "RANK": 1,
-            "BROKER_CODE": "BB",
-            "BROKER_TYPE": "DOMESTIK",
-            "NET_VALUE": 20.0,
-            "NET_LOT": 1.0,
-            "GROSS_VALUE": 20.0,
-            "GROSS_LOT": 1.0,
-            "FREQUENCY": 1,
-            "AVG_PRICE": 100.0,
+            "SYMBOL": "AAA", "FROM_DATE": start, "TO_DATE": end,
+            "SIDE": "SELL", "RANK": 1, "BROKER_CODE": seller,
+            "BROKER_TYPE": "DOMESTIK", "NET_VALUE": -1_000_000,
+            "NET_LOT": -10, "GROSS_VALUE": 1_000_000,
+            "GROSS_LOT": 10, "FREQUENCY": 2, "AVG_PRICE": 1_005,
         },
     ]).to_csv(path, index=False)
 
 
-def _daily_manifest(tmp_path: Path, market_date: str = "2026-08-12") -> dict:
-    summary = tmp_path / f"SUMMARY_{market_date}.csv"
-    raw = tmp_path / f"RAW_{market_date}.csv"
-    _summary(summary, market_date, market_date)
-    _raw(raw, market_date)
-    return persist_snapshot(
-        summary,
-        raw,
-        fixed_period_spec("1D", market_date),
-        {"rows": 1, "matched": 1, "expected": 1, "coverage": 1.0},
-        snapshot_root=tmp_path / "snapshots",
-        selected_by="DAILY_CAPTURE",
-    )
-
-
-@pytest.mark.parametrize("period_type", ["3D", "5D"])
-def test_complete_daily_primary_uses_internal_rollup_provenance(tmp_path: Path, period_type: str):
-    daily = _daily_manifest(tmp_path)
-    spec = fixed_period_spec(period_type, "2026-08-12")
-    primary = persist_internal_rollup_snapshot(daily, spec, snapshot_root=tmp_path / "snapshots")
-
-    assert primary["broker_period_source"] == "INTERNAL_DAILY_ROLLUP"
-    assert primary["broker_period_type"] == period_type
-    assert primary["broker_session_dates"] == list(spec.session_dates)
-    assert primary["aggregate_snapshot"] is True
-    assert primary["daily_history_eligible"] is False
-    assert primary["daily_source_snapshot_id"] == daily["snapshot_id"]
-    assert primary["broker_period_complete"] is True
-
-
-def test_complete_custom_daily_primary_uses_internal_rollup(tmp_path: Path):
-    daily = _daily_manifest(tmp_path)
-    spec = custom_period_spec("2026-08-10", "2026-08-12")
-    primary = persist_internal_rollup_snapshot(daily, spec, snapshot_root=tmp_path / "snapshots")
-    assert primary["broker_period_source"] == "INTERNAL_DAILY_ROLLUP"
-    assert primary["broker_trading_days"] == 3
-
-
-@pytest.mark.parametrize("period_type", ["3D", "5D", "CUSTOM"])
-def test_stockbit_aggregate_primary_is_not_daily_history_eligible(tmp_path: Path, period_type: str):
-    spec = (
-        custom_period_spec("2026-08-10", "2026-08-12")
-        if period_type == "CUSTOM"
-        else fixed_period_spec(period_type, "2026-08-12")
-    )
-    summary = tmp_path / f"AGGREGATE_{period_type}.csv"
-    _summary(summary, spec.period_start, spec.period_end)
-    aggregate = persist_snapshot(
-        summary,
-        None,
-        spec,
-        {"rows": 1, "matched": 1, "expected": 1, "coverage": 1.0},
-        snapshot_root=tmp_path / "snapshots",
-        selected_by="FINAL_WATCHLIST_AGGREGATE_FALLBACK",
-    )
-    assert aggregate["broker_period_source"] == "STOCKBIT_AGGREGATE_EXPORT"
-    assert aggregate["aggregate_snapshot"] is True
-    assert aggregate["daily_history_eligible"] is False
-
-
-def test_missing_session_fallback_is_interactive_and_fail_closed(monkeypatch):
-    monkeypatch.setattr("builtins.input", lambda _prompt: "1")
-    assert choose_primary_fallback(
-        period_type="3D",
-        missing_sessions=["2026-08-11"],
-        daily_manifest=None,
-    ) == "AGGREGATE"
-
-    monkeypatch.setattr("builtins.input", lambda _prompt: "2")
-    with pytest.raises(RuntimeError, match="TODAY_1D_NOT_AVAILABLE"):
-        choose_primary_fallback(
-            period_type="3D",
-            missing_sessions=["2026-08-11"],
-            daily_manifest=None,
-        )
-
-
-def test_sidecar_separates_primary_aggregate_from_daily_pulse_and_archive_is_idempotent(tmp_path: Path):
-    primary_raw = tmp_path / "PRIMARY_AGGREGATE_RAW.csv"
-    daily_raw = tmp_path / "REAL_1D_RAW.csv"
-    primary_raw.write_text("aggregate", encoding="utf-8")
-    daily_raw.write_text("daily", encoding="utf-8")
-    archive = archive_daily_raw(daily_raw, tmp_path / "archive", "2026-08-12")
-    assert archive == archive_daily_raw(daily_raw, tmp_path / "archive", "2026-08-12")
-
-    payload = active_sidecar_payload(
-        {
-            "snapshot_id": "PRIMARY-3D",
-            "broker_period_type": "3D",
-            "broker_period_source": "STOCKBIT_AGGREGATE_EXPORT",
-            "broker_period_start": "2026-08-10",
-            "broker_period_end": "2026-08-12",
-            "broker_trading_days": 3,
-            "broker_session_dates": ["2026-08-10", "2026-08-11", "2026-08-12"],
-            "broker_missing_sessions": [],
-            "broker_period_complete": True,
-            "summary_snapshot_path": str(primary_raw),
-            "raw_snapshot_path": str(primary_raw),
-        },
-        "RUN-1",
-        daily_manifest={
-            "snapshot_id": "DAILY-1D",
-            "broker_period_type": "1D",
-            "broker_period_end": "2026-08-12",
-            "raw_snapshot_path": str(daily_raw),
-        },
-        daily_archive_path=archive,
-    )
-    assert payload["broker_period_source"] == "STOCKBIT_AGGREGATE_EXPORT"
-    assert payload["primary_raw_snapshot_path"] == str(primary_raw)
-    assert payload["daily_capture_raw_snapshot_path"] == str(daily_raw)
-    assert payload["today_pulse_snapshot_id"] == "DAILY-1D"
-    assert payload["today_pulse_source"] == "STOCKBIT_1D"
-
-
-def test_daily_history_accepts_real_1d_and_rejects_aggregate(tmp_path: Path):
-    daily = tmp_path / "BROKER_RAW_2026-08-12.csv"
-    aggregate = tmp_path / "BROKER_RAW_2026-08-10_2026-08-12.csv"
-    _raw(daily, "2026-08-12")
-    _raw(aggregate, "2026-08-12", start="2026-08-10")
-
-    rows, dates = read_daily_capture_rows(daily)
-    aggregate_rows, aggregate_dates = read_daily_capture_rows(aggregate)
-    assert rows and dates == ["2026-08-12"]
-    assert all(row["source"] == "STOCKBIT_1D" for row in rows)
-    assert aggregate_rows == []
-    assert aggregate_dates == []
-
-
-def test_daily_history_exact_window_reports_missing_middle_without_shift(tmp_path: Path):
-    archive = tmp_path / "archive"
-    archive.mkdir()
-    for day in ("2026-08-10", "2026-08-12"):
-        path = archive / f"BROKER_RAW_{day}.csv"
-        _raw(path, day)
-    conn = connect(tmp_path / "history.db")
-    init_schema(conn)
-    try:
-        ingest_daily_capture_files(
-            conn,
-            sorted(archive.glob("*.csv")),
-            as_of_date="2026-08-12",
-        )
-        sessions = [row[0] for row in conn.execute("SELECT market_date FROM trading_sessions ORDER BY market_date")]
-    finally:
-        conn.close()
-    assert sessions == ["2026-08-10", "2026-08-12"]
-
-
-def test_today_pulse_requires_current_real_1d_and_never_uses_stale_rows():
-    rows = [{"market_date": "2026-08-11", "side": "BUY", "net_value": 100.0}]
-    stale = today_pulse_from_rows(rows, pulse_date="2026-08-12", snapshot_id="STALE")
-    current = today_pulse_from_rows(
-        rows + [{"market_date": "2026-08-12", "side": "BUY", "net_value": 75.0}],
-        pulse_date="2026-08-12",
-        snapshot_id="CURRENT",
-    )
-    assert stale["today_pulse_available"] is False
-    assert stale["today_pulse_status"] == "NOT_AVAILABLE"
-    assert current["today_pulse_available"] is True
-    assert current["today_pulse_date"] == "2026-08-12"
-    assert current["today_pulse_source"] == "STOCKBIT_1D"
-
-
-@pytest.mark.parametrize(
-    ("primary", "pulse", "expected"),
-    [
-        (100, 50, "ALIGNED_POSITIVE"),
-        (-100, -50, "ALIGNED_NEGATIVE"),
-        (100, -50, "NEGATIVE_DIVERGENCE"),
-        (-100, 50, "POSITIVE_DIVERGENCE"),
-    ],
-)
-def test_primary_pulse_alignment_is_deterministic(primary: float, pulse: float, expected: str):
-    assert primary_pulse_alignment(primary, pulse) == expected
-
-
-def test_pulse_changes_no_multiday_score_confidence_or_protected_trade_fields():
-    spec = fixed_period_spec("3D", "2026-08-12")
-    rows = [
-        {"market_date": day, "side": "BUY", "net_value": 100.0, "broker_code": "AA", "broker_type": "DOMESTIK"}
-        for day in spec.session_dates
-    ]
-    metadata = primary_context_metadata(spec, snapshot_id="PRIMARY", source="INTERNAL_DAILY_ROLLUP")
-    positive = compute_multiday_context(
-        "AAA", spec.period_end, rows, primary_window="3D", period_metadata=metadata,
-        today_pulse=today_pulse_from_rows(rows, pulse_date=spec.period_end, snapshot_id="PULSE"),
-    )
-    negative_pulse = dict(positive.today_pulse)
-    negative_pulse.update({"today_pulse_net_flow": -100.0, "today_pulse_direction": "NEGATIVE"})
-    negative = compute_multiday_context(
-        "AAA", spec.period_end, rows, primary_window="3D", period_metadata=metadata,
-        today_pulse=negative_pulse,
-    )
-    assert positive.broker_multiday_score == negative.broker_multiday_score
-    assert positive.broker_multiday_confidence == negative.broker_multiday_confidence
-
-    frame = pd.DataFrame([{
-        "Symbol": "AAA",
-        "Decision_Status_Final": "BUY",
-        "Decision_V3": "BUY READY",
-        "Final_Score_V3": 88,
-        "Entry_Zone_Low": 100,
-        "Initial_Stop": 90,
-        "Target_1": 115,
-        "Target_2": 125,
-    }])
-    result = attach_multiday_context(frame, {"AAA": positive})
-    for column in ("Decision_Status_Final", "Decision_V3", "Final_Score_V3", "Entry_Zone_Low", "Initial_Stop", "Target_1", "Target_2"):
-        assert result.frame.loc[0, column] == frame.loc[0, column]
-
-
-def test_internal_snapshot_committed_reuse_is_same_date_only(tmp_path: Path):
-    daily = _daily_manifest(tmp_path)
-    primary = persist_internal_rollup_snapshot(
-        daily,
-        fixed_period_spec("3D", "2026-08-12"),
-        snapshot_root=tmp_path / "snapshots",
-    )
-    path = Path(primary["manifest_path"])
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    payload.update({
-        "snapshot_state": "COMMITTED",
-        "final_watchlist_run_id": "RUN-PRIMARY",
-        "committed_at": "2026-08-12T18:00:00+07:00",
-    })
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    reusable = list_reusable_snapshots("2026-08-12", snapshot_root=tmp_path / "snapshots")
-    assert [item["snapshot_id"] for item in reusable] == [primary["snapshot_id"]]
-    assert list_reusable_snapshots("2026-08-11", snapshot_root=tmp_path / "snapshots") == []
-
-
-def test_final_watchlist_primary_1d_has_no_pulse_and_multiday_has_pulse_and_reason():
-    base = {
-        "symbol": "AAA", "setup": "BREAKOUT", "trade_date": "2026-08-12",
-        "last_price": 100, "entry_low": 95, "entry_high": 105,
-        "active_stop_loss": 90, "target_1": 115, "target_2": 125,
-        "risk_reward": 2, "technical_status": "VALID_SETUP", "confidence": 80,
-        "broker_status": "ACCUMULATION", "broker_score": 70, "broker_net_flow": 1000,
-        "buy_days": 2, "sell_days": 1, "top_buyers": [], "top_sellers": [],
-        "broker_period_start": "2026-08-10", "broker_period_end": "2026-08-12",
-        "broker_trading_days": 3, "broker_session_dates": ["2026-08-10", "2026-08-11", "2026-08-12"],
-        "broker_snapshot_id": "PRIMARY", "broker_period_source": "INTERNAL_DAILY_ROLLUP",
-        "broker_coverage_text": "3/3", "broker_period_complete": True,
-        "today_pulse_available": True, "today_pulse_date": "2026-08-12",
-        "today_pulse_snapshot_id": "PULSE", "today_pulse_source": "STOCKBIT_1D",
-        "today_pulse_status": "AVAILABLE", "today_pulse_net_flow": 500,
-        "today_pulse_buy_days": 1, "today_pulse_sell_days": 0,
-        "broker_alignment": "ALIGNED_POSITIVE", "trend": "UPTREND",
-        "phase": "WAIT_TRIGGER", "fib_status": "ENGINE_NOT_AVAILABLE_V1_7",
+def _write_selected_sidecar(
+    canonical: Path,
+    *,
+    period_type: str,
+    primary_summary: Path,
+    primary_raw: Path | None,
+    daily_summary: Path | None = None,
+    daily_raw: Path | None = None,
+) -> None:
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_text("EMITEN\nAAA\n", encoding="utf-8")
+    payload = {
+        "snapshot_id": f"PRIMARY-{period_type}",
+        "broker_period_type": period_type,
+        "broker_period_start": "2026-08-05" if period_type != "1D" else "2026-08-07",
+        "broker_period_end": "2026-08-07",
+        "broker_period_source": "STOCKBIT_AGGREGATE_EXPORT" if period_type != "1D" else "STOCKBIT_1D",
+        "primary_summary_snapshot_path": str(primary_summary),
+        "primary_raw_snapshot_path": str(primary_raw) if primary_raw else "",
+        "today_pulse_snapshot_id": "TODAY-1D" if period_type != "1D" else "",
+        "today_pulse_source": "STOCKBIT_1D" if period_type != "1D" else "",
+        "daily_capture_summary_snapshot_path": str(daily_summary) if daily_summary else "",
+        "daily_capture_raw_snapshot_path": str(daily_raw) if daily_raw else "",
     }
-    one_day = format_watchlist_detail(dict(base, broker_period_type="1D", broker_period_source="STOCKBIT_1D"))
-    multi = format_watchlist_detail(dict(base, broker_period_type="3D"))
-    assert "TODAY PULSE" not in one_day
-    assert "Alignment" not in one_day
-    assert "TODAY PULSE" not in multi
-    assert "STOCKBIT 1D" not in multi
-    assert "ALIGNED_POSITIVE" not in multi
-    assert "Net +Rp1,00K" in multi
-    assert len(multi) <= 1024
+    canonical.with_suffix(".manifest.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+
+def test_exact_3d_primary_facts_win_over_exact_today_pulse(tmp_path: Path) -> None:
+    primary_summary = tmp_path / "PRIMARY_3D_SUMMARY.csv"
+    primary_raw = tmp_path / "PRIMARY_3D_RAW.csv"
+    today_summary = tmp_path / "TODAY_1D_SUMMARY.csv"
+    today_raw = tmp_path / "TODAY_1D_RAW.csv"
+    canonical = tmp_path / "broker" / "BROKER_SUMMARY_LATEST.csv"
+    _write_summary(primary_summary, start="2026-08-05", end="2026-08-07", net_flow=9_000_000, buyer="PRIMARY_SUMMARY")
+    _write_raw(primary_raw, start="2026-08-05", end="2026-08-07", buyer="PX", seller="PS")
+    _write_summary(today_summary, start="2026-08-07", end="2026-08-07", net_flow=-2_000_000, buyer="TODAY_SUMMARY")
+    _write_raw(today_raw, start="2026-08-07", end="2026-08-07", buyer="TD", seller="TS")
+    _write_selected_sidecar(
+        canonical,
+        period_type="3D",
+        primary_summary=primary_summary,
+        primary_raw=primary_raw,
+        daily_summary=today_summary,
+        daily_raw=today_raw,
+    )
+    # A canonical raw file exists, but it is TODAY-like and must never replace
+    # the selected PRIMARY raw snapshot.
+    _write_raw(canonical.parent / "BROKER_RAW_LATEST.csv", start="2026-08-07", end="2026-08-07", buyer="WRONG", seller="WRONG")
+
+    view = load_broker_period_view(canonical, trade_date="2026-08-07", project_root=tmp_path)
+    facts = view.symbol("AAA")
+
+    assert facts["primary"]["net_flow"] == 9_000_000
+    assert facts["primary"]["top_buyers"][0]["broker"] == "PX"
+    assert facts["primary"]["top_sellers"][0]["broker"] == "PS"
+    assert facts["today"]["net_flow"] == -2_000_000
+    assert facts["today"]["top_buyers"][0]["broker"] == "TD"
+    assert facts["alignment"] == "NEGATIVE_DIVERGENCE"
+    assert facts["primary_raw_status"] == "AVAILABLE"
+    assert facts["today_raw_status"] == "AVAILABLE"
+    assert str(primary_raw.resolve()) in view.input_paths
+    assert all("WRONG" not in str(item) for item in facts["primary"]["top_buyers"])
+
+
+def test_primary_1d_suppresses_duplicate_today_context(tmp_path: Path) -> None:
+    primary_summary = tmp_path / "PRIMARY_1D_SUMMARY.csv"
+    primary_raw = tmp_path / "PRIMARY_1D_RAW.csv"
+    daily_summary = tmp_path / "TODAY_DUPLICATE_SUMMARY.csv"
+    daily_raw = tmp_path / "TODAY_DUPLICATE_RAW.csv"
+    canonical = tmp_path / "broker" / "BROKER_SUMMARY_LATEST.csv"
+    _write_summary(primary_summary, start="2026-08-07", end="2026-08-07", net_flow=1_000_000, buyer="PRIMARY_SUMMARY")
+    _write_raw(primary_raw, start="2026-08-07", end="2026-08-07", buyer="P1", seller="S1")
+    _write_summary(daily_summary, start="2026-08-07", end="2026-08-07", net_flow=-1_000_000, buyer="DUPLICATE")
+    _write_raw(daily_raw, start="2026-08-07", end="2026-08-07", buyer="DUPLICATE", seller="DUPLICATE")
+    _write_selected_sidecar(
+        canonical,
+        period_type="1D",
+        primary_summary=primary_summary,
+        primary_raw=primary_raw,
+        daily_summary=daily_summary,
+        daily_raw=daily_raw,
+    )
+
+    view = load_broker_period_view(canonical, trade_date="2026-08-07", project_root=tmp_path)
+    facts = view.symbol("AAA")
+
+    assert view.has_separate_today is False
+    assert facts["primary"]["top_buyers"][0]["broker"] == "P1"
+    assert facts["today"] == {}
+    assert facts["today_pulse_status"] == "NOT_APPLICABLE"
+    assert facts["alignment"] == ""
+
+
+def test_missing_or_wrong_date_primary_raw_fails_closed(tmp_path: Path) -> None:
+    primary_summary = tmp_path / "PRIMARY_SUMMARY.csv"
+    canonical = tmp_path / "broker" / "BROKER_SUMMARY_LATEST.csv"
+    _write_summary(primary_summary, start="2026-08-05", end="2026-08-07", net_flow=9_000_000, buyer="SUMMARY_ONLY")
+    _write_selected_sidecar(
+        canonical,
+        period_type="3D",
+        primary_summary=primary_summary,
+        primary_raw=None,
+    )
+    _write_raw(canonical.parent / "BROKER_RAW_LATEST.csv", start="2026-08-07", end="2026-08-07", buyer="WRONG", seller="WRONG")
+
+    missing = load_broker_period_view(canonical, trade_date="2026-08-07", project_root=tmp_path).symbol("AAA")
+    assert active_primary_raw_snapshot_path(canonical, trade_date="2026-08-07", project_root=tmp_path) is None
+    assert missing["primary_raw_status"] == "MISSING"
+    assert missing["primary"]["top_buyers"] == []
+    assert missing["primary"]["top_sellers"] == []
+
+    wrong_date_raw = tmp_path / "PRIMARY_WRONG_DATE_RAW.csv"
+    _write_raw(wrong_date_raw, start="2026-08-04", end="2026-08-06", buyer="STALE", seller="STALE")
+    _write_selected_sidecar(
+        canonical,
+        period_type="3D",
+        primary_summary=primary_summary,
+        primary_raw=wrong_date_raw,
+    )
+    mismatch = load_broker_period_view(canonical, trade_date="2026-08-07", project_root=tmp_path).symbol("AAA")
+    assert mismatch["primary_raw_status"] == "DATE_MISMATCH"
+    assert mismatch["primary"]["top_buyers"] == []
+
+
+def test_primary_today_alignment_is_context_only_and_deterministic() -> None:
+    assert primary_pulse_alignment(100, 50, pulse_status="AVAILABLE") == "ALIGNED_POSITIVE"
+    assert primary_pulse_alignment(-100, 50, pulse_status="AVAILABLE") == "POSITIVE_DIVERGENCE"
+    assert primary_pulse_alignment(100, None, pulse_status="NOT_AVAILABLE") == "INSUFFICIENT"

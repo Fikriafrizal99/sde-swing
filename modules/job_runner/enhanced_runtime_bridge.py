@@ -84,9 +84,11 @@ def _final_watchlist_distance(primary: Mapping[str, Any], raw: Mapping[str, Any]
     )
     if not _missing_final_fact(existing):
         return existing
-    buy_cost = _optional_float(
-        _value(raw, "Bandar_Buy_Cost", "AVG_BUYER_PRICE", "Average_Buyer_Price", default="")
-    )
+    buy_cost = _optional_float(primary.get("avg_buyer_price"))
+    if buy_cost is None:
+        buy_cost = _optional_float(
+            _value(raw, "Bandar_Buy_Cost", "AVG_BUYER_PRICE", "Average_Buyer_Price", default="")
+        )
     current_price = _optional_float(
         _value(raw, "Last_Price", "Current_Price", "Close", "Price", default="")
     )
@@ -452,9 +454,18 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             "seller_concentration": seller_concentration,
             "broker_pattern": primary.get("broker_accdist", _value(raw, "BROKER_ACCDIST", "Broker_AccDist", default="")),
             "avg_accdist": primary.get("avg_accdist", ""),
-            "bandar_buy_cost": _value(raw, "Bandar_Buy_Cost", "AVG_BUYER_PRICE", "Average_Buyer_Price", default=""),
-            "avg_buyer_price": _value(raw, "AVG_BUYER_PRICE", "Average_Buyer_Price", "Bandar_Buy_Cost", default=""),
-            "avg_seller_price": _value(raw, "AVG_SELLER_PRICE", "Average_Seller_Price", default=""),
+            "bandar_buy_cost": primary.get(
+                "avg_buyer_price",
+                _value(raw, "Bandar_Buy_Cost", "AVG_BUYER_PRICE", "Average_Buyer_Price", default=""),
+            ),
+            "avg_buyer_price": primary.get(
+                "avg_buyer_price",
+                _value(raw, "AVG_BUYER_PRICE", "Average_Buyer_Price", "Bandar_Buy_Cost", default=""),
+            ),
+            "avg_seller_price": primary.get(
+                "avg_seller_price",
+                _value(raw, "AVG_SELLER_PRICE", "Average_Seller_Price", default=""),
+            ),
             "distance_to_buy_cost": _final_watchlist_distance(primary, raw),
             "distance_to_buyer_avg_pct": _final_watchlist_distance(primary, raw),
             "top_buyers": top_buyers,
@@ -464,9 +475,12 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             # Exact TODAY 1D pulse. Empty/not-applicable for PRIMARY 1D.
             "today_pulse_available": bool(today),
             "today_pulse_date": ctx.trade_date.isoformat() if today else "",
+            "today_pulse_snapshot_id": str(period.get("today_pulse_snapshot_id") or "") if today else "",
+            "today_pulse_source": str(period.get("today_pulse_source") or "STOCKBIT_1D") if today else "",
             "today_pulse_status": "AVAILABLE" if today else ("NOT_APPLICABLE" if not period_view.has_separate_today else "NOT_AVAILABLE"),
             "today_pulse_net_flow": today.get("net_flow", ""),
             "today_pulse_broker_state": today.get("broker_accdist", ""),
+            "today_pulse_direction": today.get("broker_accdist", ""),
             "today_pulse_avg_accdist": today.get("avg_accdist", ""),
             "today_pulse_buyer_concentration": today.get("buyer_concentration", ""),
             "today_pulse_seller_concentration": today.get("seller_concentration", ""),

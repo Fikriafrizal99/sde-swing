@@ -1,5 +1,7 @@
 ## Broker Period Flow — Audit & Mapping
 
+> **SUPERSEDED by [docs/BROKER_PERIOD_ARCHITECTURE.md](../../BROKER_PERIOD_ARCHITECTURE.md).**
+>
 > Archived historical evidence. This file is retained for traceability and is
 > not current operational guidance. See `docs/README.md` for active documentation.
 
