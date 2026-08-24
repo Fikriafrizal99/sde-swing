@@ -14,8 +14,14 @@ if str(PROJECT_ROOT) not in sys.path:
 from modules.analytics import outcome_tracker as tracker
 from modules.analytics.lifecycle_presentation import (
     actionable_snapshot,
-    build_active_message,
+    build_active_message as _build_active_message,
 )
+from modules.branding import apply_ftj_branding
+
+
+def build_active_message(*args, **kwargs) -> str:
+    """Canonical lifecycle formatter plus the FTJ human-facing title."""
+    return apply_ftj_branding(_build_active_message(*args, **kwargs))
 
 
 def parse_args() -> argparse.Namespace:
