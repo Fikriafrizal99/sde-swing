@@ -7,7 +7,13 @@ from modules.news import news_monitor as base
 from modules.news import news_monitor_fresh_grouped as fresh
 
 
-def _item(*, age: str = "1h", score: float = 1.0, category: str = "GLOBAL_CATALYST", headline: str = "Market update") -> base.NewsItem:
+def _item(
+    *,
+    age: str = "1h",
+    score: float = 1.0,
+    category: str = "GLOBAL_CATALYST",
+    headline: str = "Market update",
+) -> base.NewsItem:
     return base.NewsItem(
         headline=headline,
         source="Reuters",
@@ -18,6 +24,16 @@ def _item(*, age: str = "1h", score: float = 1.0, category: str = "GLOBAL_CATALY
         category=category,
         score=score,
     )
+
+
+def _global_result(*, age: str = "1h") -> dict[str, str]:
+    return {
+        "title": "Federal Reserve holds rates as stocks rally",
+        "description": "The Fed held rates while Wall Street stocks rallied after the announcement.",
+        "url": "https://reuters.com/markets/fed-holds-rates",
+        "age": age,
+        "page_age": "",
+    }
 
 
 def test_recent_policy_rejects_articles_older_than_24_hours() -> None:
@@ -63,3 +79,54 @@ def test_category_label_is_rendered_once_for_multiple_articles() -> None:
     assert "Fed holds rates" in rendered
     assert "Dollar falls after Fed" in rendered
     assert "tidak memengaruhi keputusan SDE" in rendered
+
+
+def test_diagnostic_classifies_missing_event_category() -> None:
+    result = {
+        "title": "Stocks market morning update",
+        "description": "Broad market conditions remain mixed today.",
+        "url": "https://reuters.com/markets/morning-update",
+        "age": "1h",
+    }
+    reason = fresh._diagnose_market_rejection(result, scope="GLOBAL", symbols=[])
+    assert reason == "no_category"
+
+
+def test_strict_recent_records_freshness_without_changing_filter_contract() -> None:
+    fresh._reset_diagnostics()
+    accepted = fresh.strict_normalize_recent(_global_result(age="1h"), scope="GLOBAL", symbols=[])
+    assert accepted is not None
+    assert fresh._REJECTION_COUNTS == {}
+
+    rejected = fresh.strict_normalize_recent(_global_result(age="25h"), scope="GLOBAL", symbols=[])
+    assert rejected is None
+    assert fresh._REJECTION_COUNTS == {"freshness": 1}
+    assert fresh._REJECTION_SAMPLES[0]["reason"] == "freshness"
+
+
+def test_collection_diagnostics_are_added_to_meta(monkeypatch) -> None:
+    rejected_result = {
+        "title": "Stocks market morning update",
+        "description": "Broad market conditions remain mixed today.",
+        "url": "https://reuters.com/markets/morning-update",
+        "age": "1h",
+    }
+
+    def fake_collect(session: str, scheduler=None):
+        del scheduler
+        assert session == "morning"
+        assert fresh.strict_normalize_recent(rejected_result, scope="GLOBAL", symbols=[]) is None
+        return [], {
+            "session": session,
+            "raw_results": 1,
+            "normalized_results": 0,
+        }
+
+    monkeypatch.setattr(fresh, "_ORIGINAL_COLLECT", fake_collect)
+    items, meta = fresh.collect_market_news_with_diagnostics("morning")
+
+    assert items == []
+    assert meta["rejected_results"] == 1
+    assert meta["rejection_counts"] == {"no_category": 1}
+    assert meta["rejection_samples"][0]["reason"] == "no_category"
+    assert meta["rejection_samples"][0]["scope"] == "GLOBAL"
