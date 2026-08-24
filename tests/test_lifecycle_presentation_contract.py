@@ -55,10 +55,18 @@ def test_final_watchlist_entrypoint_sends_active_before_watchlist_ai() -> None:
     assert "Final Watchlist tetap sukses" in source
 
 
+def test_final_watchlist_active_send_skips_no_telegram_and_dry_run() -> None:
+    source = (ROOT / "tools/run_final_watchlist_entrypoint.py").read_text(encoding="utf-8")
+    assert 'if "--no-telegram" in forwarded:' in source
+    assert 'if "--dry-run" in forwarded:' in source
+    assert "--dry-run has no fresh persisted lifecycle state" in source
+
+
 def test_presentation_contract_document_exists_and_names_single_owner() -> None:
     path = ROOT / "docs/LIFECYCLE_PRESENTATION_CONTRACT.md"
     assert path.exists()
     text = path.read_text(encoding="utf-8")
     assert "modules/analytics/lifecycle_presentation.py" in text
     assert "single source of truth" in text.lower()
+    assert "Frozen baseline exception" in text
     assert "Last Scan" in text
