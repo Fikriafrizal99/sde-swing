@@ -5,6 +5,22 @@ import pytest
 from modules.telegram.post_market_ui import format_post_market
 
 
+def _daily_sector() -> dict:
+    return {
+        "status": "VALID",
+        "trade_date": "2026-08-12",
+        "data_date": "2026-08-12",
+        "sectors": [
+            {"sector": "ENERGY", "rank": 1, "median_return_1d": 1.50, "positive_breadth": 0.70},
+            {"sector": "BASIC", "rank": 2, "median_return_1d": 1.10, "positive_breadth": 0.65},
+            {"sector": "TECH", "rank": 3, "median_return_1d": 0.70, "positive_breadth": 0.60},
+            {"sector": "INFRA", "rank": 4, "median_return_1d": -0.20, "positive_breadth": 0.45},
+            {"sector": "HEALTH", "rank": 5, "median_return_1d": -0.60, "positive_breadth": 0.35},
+            {"sector": "FINANCE", "rank": 6, "median_return_1d": -1.00, "positive_breadth": 0.30},
+        ],
+    }
+
+
 def _payload(**overrides):
     payload = {
         "trade_date": "2026-08-12",
@@ -31,10 +47,9 @@ def _payload(**overrides):
         "broker_data_current": True,
         "broker_data_date": "2026-08-12",
         "broker_upstream_status": "CURRENT",
-        "sector_rotation_trade_date": "2026-08-12",
-        "sector_rotation_status": "VALID",
-        "leading": ["ENERGY"],
-        "rotating_in": ["BANKING"],
+        "daily_sector_trade_date": "2026-08-12",
+        "daily_sector_status": "VALID",
+        "daily_sector": _daily_sector(),
         "setup_distribution": {"PULLBACK": 41, "BREAKOUT": 28, "TREND_CONTINUATION": 19},
         "historical_status": "VALID",
         "zapi_status": "DEGRADED",
@@ -89,6 +104,23 @@ def test_breadth_classification_has_neutral_dominant_threshold() -> None:
         symbols_valid=100,
     ))
     assert "📊 Breadth : NEUTRAL DOMINANT" in text
+
+
+def test_daily_sector_block_uses_current_session_rows_only() -> None:
+    text = format_post_market(_payload())
+    assert "🔄 ROTASI SEKTOR HARI INI" in text
+    assert "🔥 ENERGY  +1,50% · Breadth 70%" in text
+    assert "🔻 FINANCE  -1,00% · Breadth 30%" in text
+    assert "LEADING" not in text
+    assert "ROTATING IN" not in text
+
+    stale = format_post_market(_payload(
+        daily_sector_trade_date="2026-08-11",
+        daily_sector_status="VALID",
+        daily_sector={**_daily_sector(), "trade_date": "2026-08-11", "data_date": "2026-08-11"},
+    ))
+    assert "🔥 ENERGY" not in stale
+    assert "Data sektor sesi berjalan belum cukup." in stale
 
 
 def _guidance_section(text: str) -> str:
@@ -180,8 +212,15 @@ def test_broker_ready_changes_guidance_only_not_report_shape() -> None:
 
 
 def test_html_escaping_is_applied_to_dynamic_values() -> None:
+    daily = _daily_sector()
+    daily["sectors"][0] = {
+        "sector": "Energy <Core> & Finance",
+        "rank": 1,
+        "median_return_1d": 1.5,
+        "positive_breadth": 0.7,
+    }
     text = format_post_market(_payload(
-        leading=["Energy <Core> & Finance"],
+        daily_sector=daily,
         run_id="RUN<&>",
     ))
     assert "Energy &lt;Core&gt; &amp; Finance" in text
@@ -203,7 +242,7 @@ def test_normal_post_market_contains_only_approved_sections() -> None:
     ):
         assert forbidden not in text.upper()
     assert "📊 MARKET PULSE" in text
-    assert "🔥 Sektor kuat" in text
+    assert "🔄 ROTASI SEKTOR HARI INI" in text
     assert "📈 TECHNICAL BREADTH" in text
     assert "🔥 SETUP DISTRIBUTION" in text
     assert "🧭 ARAHAN BESOK" in text
