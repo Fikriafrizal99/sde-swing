@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from zipfile import ZipFile
 
 import pandas as pd
 import pytest
@@ -134,8 +135,28 @@ def test_build_workbook_creates_ftj_dashboard_and_analysis(tmp_path: Path):
     assert set(score["Score_Bucket"]) == {"65-69", "70-74"}
 
     xlsx = load_workbook(output)
-    assert xlsx["Dashboard"]["A1"].value == "FTJ Performance Setup"
-    assert len(xlsx["Dashboard"]._charts) >= 4
+    try:
+        assert xlsx["Dashboard"]["A1"].value == "FTJ Performance Setup"
+        assert len(xlsx["Dashboard"]._charts) >= 4
+        assert all(not ws.tables for ws in xlsx.worksheets)
+    finally:
+        xlsx.close()
+
+    # The Excel-safe variant must not emit Structured Table XML and chart
+    # formulas must no longer reference analysis sheets across worksheets.
+    with ZipFile(output) as archive:
+        assert archive.testzip() is None
+        names = archive.namelist()
+        assert not any(name.startswith("xl/tables/") for name in names)
+        chart_xml = "\n".join(
+            archive.read(name).decode("utf-8")
+            for name in names
+            if name.startswith("xl/charts/chart") and name.endswith(".xml")
+        )
+        assert "'Setup Snapshot'!" not in chart_xml
+        assert "'Score Analysis'!" not in chart_xml
+        assert "'Equity Curve'!" not in chart_xml
+        assert "'Dashboard'!" in chart_xml
 
 
 def test_exporter_runs_directly_from_tools_path():
