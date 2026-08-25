@@ -160,6 +160,9 @@ def print_job_status(job: str, args: argparse.Namespace) -> int:
             suffix += f", via={copy_mode}" if copy_mode else ""
             suffix += ", force=true" if force is True else ""
             print(f"- {label}: {status}{suffix}")
+            fallback_reason = str(item.get("copy_fallback_reason") or "").strip()
+            if fallback_reason:
+                print(f"  copy fallback: {fallback_reason}")
             if item.get("error"):
                 print(f"  error: {item.get('error')}")
 
