@@ -9,7 +9,7 @@ from typing import Any
 
 import pandas as pd
 
-from swing_utils import find_col, read_json
+from swing_utils import file_sha256, find_col, read_json
 from modules.broker_bridge.broker_raw import validate_broker_raw
 from modules.telegram.professional_ui import (
     UiConfig,
@@ -27,7 +27,7 @@ from modules.telegram.professional_ui import (
 )
 from .report_validation import append_report_audit
 
-from .runtime import RunnerContext, latest_matching_file, resolve, write_json
+from .runtime import RunnerContext, latest_matching_file, now_wib, resolve, write_json
 
 
 @dataclass
@@ -107,27 +107,79 @@ def latest_date_from_csv(path: Path, *aliases: str) -> str:
     return parsed.max().date().isoformat() if not parsed.empty else ""
 
 
+def _preview_manifest_path(ctx: RunnerContext) -> Path:
+    return (
+        ctx.previews_root
+        / ctx.trade_date.isoformat()
+        / f"{ctx.run_id}_preview_manifest.json"
+    )
+
+
+def _safe_archive_name(value: str, fallback: str) -> str:
+    name = Path(str(value or "")).name.strip() or fallback
+    return "".join(char if char.isalnum() or char in {"-", "_", "."} else "_" for char in name)
+
+
 def write_payloads(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[Path]:
+    # Prepare once so preview, immutable archive, and live delivery share the
+    # exact same ordered payload list (including the Post Market heatmap).
+    from .delivery import delivery_preview_parts, prepare_delivery_payloads
+
+    prepared = prepare_delivery_payloads(ctx, payloads)
+    if prepared is not payloads:
+        payloads[:] = prepared
+
     folder = ctx.previews_root / ctx.trade_date.isoformat()
     folder.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
-    for payload in payloads:
+    run_scoped_written: list[Path] = []
+    payload_records: list[dict[str, Any]] = []
+    attachment_folder = folder / f"{ctx.run_id}_attachments"
+    max_len = int(ctx.scheduler_config.get("telegram", {}).get("maximum_message_length", 4000))
+    for sequence, payload in enumerate(payloads, start=1):
+        telegram_parts = delivery_preview_parts(payload, max_len=max_len)
+        preview_body = "\n\n".join(
+            str(part.get("text") or "")
+            for part in telegram_parts
+            if str(part.get("text") or "")
+        )
         header = [
             f"Run ID: {ctx.run_id}",
             f"Trade Date: {ctx.trade_date.isoformat()}",
             f"Report Type: {payload.report_type}",
             "",
         ]
-        text = "\n".join(header) + payload.text.strip() + "\n"
-        path = folder / payload.filename
+        text = "\n".join(header) + preview_body.strip() + "\n"
+        filename = _safe_archive_name(payload.filename, f"payload_{sequence:03d}.txt")
+        path = folder / filename
         path.write_text(text, encoding="utf-8")
-        run_scoped = folder / f"{ctx.run_id}_{payload.filename}"
+        run_scoped = folder / f"{ctx.run_id}_{filename}"
         run_scoped.write_text(text, encoding="utf-8")
         written.append(path)
+        run_scoped_written.append(run_scoped)
         audit_outputs = [path, run_scoped]
         attachment = getattr(payload, "attachment_path", None)
+        archived_attachment: Path | None = None
+        attachment_hash = ""
         if attachment:
-            audit_outputs.append(attachment)
+            attachment = Path(attachment)
+            if not attachment.exists() or not attachment.is_file():
+                raise FileNotFoundError(f"DELIVERY_ATTACHMENT_NOT_FOUND:{attachment}")
+            attachment_folder.mkdir(parents=True, exist_ok=True)
+            archive_name = _safe_archive_name(
+                attachment.name,
+                f"attachment_{sequence:03d}{attachment.suffix}",
+            )
+            archived_attachment = attachment_folder / f"{sequence:03d}" / archive_name
+            archived_attachment.parent.mkdir(parents=True, exist_ok=True)
+            if attachment.resolve() != archived_attachment.resolve():
+                shutil.copy2(attachment, archived_attachment)
+            attachment_hash = file_sha256(archived_attachment)
+            audit_outputs.extend([attachment, archived_attachment])
+            # Delivery consumes the immutable copy that was just previewed.
+            # Keeping the original basename also preserves Telegram's document
+            # filename while preventing a mutable LATEST file from drifting.
+            setattr(payload, "attachment_path", archived_attachment)
         append_report_audit(
             ctx,
             payload.report_type,
@@ -138,14 +190,71 @@ def write_payloads(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[Pa
             details=getattr(payload, "validation_details", None) or {},
             output_paths=audit_outputs,
         )
-    write_json(folder / f"{ctx.run_id}_preview_manifest.json", {
+        payload_records.append({
+            "sequence": sequence,
+            "report_type": payload.report_type,
+            "filename": filename,
+            "topic": payload.topic,
+            "symbol": payload.symbol,
+            "signal_status": payload.signal_status,
+            "signal_version": payload.signal_version,
+            "material_signature": payload.material_signature,
+            "signature": payload.signature,
+            "run_scoped_preview": str(run_scoped),
+            "preview_sha256": file_sha256(run_scoped),
+            "delivery_preview_body_sha256": hashlib.sha256(preview_body.encode("utf-8")).hexdigest(),
+            "telegram_parts": telegram_parts,
+            "explicit_caption": hasattr(payload, "caption"),
+            "caption": str(getattr(payload, "caption", "") or "") if hasattr(payload, "caption") else None,
+            "attachment_source": str(attachment or ""),
+            "attachment_archive": str(archived_attachment or ""),
+            "attachment_sha256": attachment_hash,
+            "input_paths": list(getattr(payload, "input_paths", ()) or ()),
+            "source_of_truth": list(getattr(payload, "source_of_truth", ()) or ()),
+            "row_count": getattr(payload, "row_count", None),
+            "validation_details": getattr(payload, "validation_details", None) or {},
+        })
+    write_json(_preview_manifest_path(ctx), {
+        "schema": "SDE_DELIVERY_PREVIEW_BUNDLE_V1",
         "run_id": ctx.run_id,
         "job": ctx.job,
         "trade_date": ctx.trade_date.isoformat(),
+        "state": "PREPARED",
+        "payload_count": len(payloads),
         "files": [str(path) for path in written],
+        "run_scoped_files": [str(path) for path in run_scoped_written],
         "report_types": [p.report_type for p in payloads],
+        "payloads": payload_records,
     })
     return written
+
+
+def mark_preview_manifest_delivery(ctx: RunnerContext, delivery: list[dict[str, Any]]) -> None:
+    """Finalize the immutable preview bundle with its actual send outcome."""
+    path = _preview_manifest_path(ctx)
+    manifest = read_json(path)
+    if not isinstance(manifest, dict) or not manifest:
+        return
+    statuses = [str(item.get("status") or "").upper() for item in delivery]
+    expected = int(manifest.get("payload_count") or 0)
+    complete = bool(expected) and len(delivery) == expected and all(status == "SENT" for status in statuses)
+    manifest.update({
+        "state": "DELIVERED" if complete else "DELIVERY_INCOMPLETE",
+        "delivery_complete": complete,
+        "delivered_at": now_wib().isoformat(timespec="seconds"),
+        "delivery": [
+            {
+                "sequence": item.get("delivery_sequence"),
+                "report_type": item.get("report_type"),
+                "status": item.get("status"),
+                "part_count": item.get("part_count"),
+                "telegram_message_ids": item.get("telegram_message_ids", []),
+                "message_thread_id": item.get("message_thread_id", ""),
+            }
+            for item in delivery
+        ],
+    })
+    write_json(path, manifest)
 
 
 def load_run_manifest(ctx: RunnerContext, run_id: str | None = None) -> dict[str, Any]:

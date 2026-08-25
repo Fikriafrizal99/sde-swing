@@ -15,8 +15,8 @@ echo                  FTJ Community - POST MARKET
 echo ================================================================
 echo.
 echo [1] Normal Proses
-echo [2] Preview Existing
-echo [3] Kirim ulang hasil hari trading terakhir
+echo [2] Preview existing - exact pesan terakhir, kunci source run
+echo [3] Kirim ulang - delivery-only exact preview terakhir, Telegram copy
 echo [4] Cek status Post Market
 echo [5] Normal + Post Market News
 echo [6] Post Market News Only
@@ -51,7 +51,7 @@ for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_
 if not defined PREVIEW_DATE goto PREVIEW_DATE_FAILED
 
 echo.
-echo Membuka preview Post Market trade date !PREVIEW_DATE! dari artifact existing...
+echo Membuka exact preview Post Market yang benar-benar sudah terkirim pada !PREVIEW_DATE!...
 %SDE_PYTHON_CMD% -u tools\resend_daily_report.py --job post_market --trade-date !PREVIEW_DATE! --preview-only
 set "RC=!ERRORLEVEL!"
 goto STATUS
@@ -67,7 +67,8 @@ echo RECOVERY POST MARKET - !RECOVERY_DATE!
 echo ================================================================
 echo Mesin/scoring tidak diubah. Runtime yang sama dijalankan dengan trade-date
 echo sesi terakhir yang sudah selesai dan Telegram dimatikan.
-echo Setelah berhasil, gunakan Preview Existing atau Kirim Ulang jika diperlukan.
+echo Preview recovery tersedia pada path/status run recovery ini.
+echo Preview existing/Kirim ulang exact hanya untuk pesan yang sebelumnya berstatus SENT.
 echo.
 %SDE_PYTHON_CMD% -u run_sde_job_integrated_market_first.py --job post_market --trade-date !RECOVERY_DATE! --no-telegram
 set "RC=!ERRORLEVEL!"
@@ -114,7 +115,7 @@ for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_
 if not defined RESEND_DATE goto RESEND_DATE_FAILED
 
 echo.
-echo Mengirim ulang Post Market trade date %RESEND_DATE% tanpa menjalankan engine...
+echo Menyalin exact preview Post Market yang terakhir disetujui untuk %RESEND_DATE%...
 %SDE_PYTHON_CMD% -u tools\resend_daily_report.py --job post_market --trade-date %RESEND_DATE%
 set "RC=!ERRORLEVEL!"
 goto STATUS

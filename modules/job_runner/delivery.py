@@ -90,6 +90,14 @@ def _expand_post_market_heatmap_payloads(
     """
     if not payloads:
         return payloads
+    # ``write_payloads`` prepares the exact outbound list before archiving the
+    # preview.  Delivery may receive that already-prepared list, so expansion
+    # must be idempotent.
+    if any(
+        str(payload.report_type or "").strip().lower() == "post_market_heatmap"
+        for payload in payloads
+    ):
+        return payloads
 
     expanded: list[ReportPayload] = []
     inserted = False
@@ -128,6 +136,14 @@ def _expand_post_market_heatmap_payloads(
                 inserted = True
         expanded.append(payload)
     return expanded
+
+
+def prepare_delivery_payloads(
+    ctx: RunnerContext,
+    payloads: list[ReportPayload],
+) -> list[ReportPayload]:
+    """Return the exact ordered payload list that the delivery loop will use."""
+    return _expand_post_market_heatmap_payloads(ctx, payloads)
 
 
 def _idempotency_store(
@@ -388,6 +404,11 @@ def _send_photo(ctx: RunnerContext, payload: ReportPayload, caption: str) -> dic
 
 def _photo_parts(payload: ReportPayload, max_len: int) -> tuple[str, list[str]]:
     full = normalize_telegram_text(payload.text)
+    # An explicit caption is the formatter-approved complete photo card.
+    # ``payload.text`` remains the audit/text-fallback representation and must
+    # not silently become a second Telegram card.
+    if hasattr(payload, "caption"):
+        return normalize_telegram_text(_attachment_caption(payload))[:1024], []
     if len(full) <= 1024:
         return _attachment_caption(payload), []
     caption = normalize_telegram_text(_attachment_caption(payload))
@@ -396,6 +417,24 @@ def _photo_parts(payload: ReportPayload, max_len: int) -> tuple[str, list[str]]:
     caption = caption[:1024]
     remainder = full[len(caption):].strip() if full.startswith(caption) else full
     return caption, split_telegram_text(remainder, max_len=max_len) if remainder else []
+
+
+def delivery_preview_parts(payload: ReportPayload, max_len: int = 4000) -> list[dict[str, str]]:
+    """Describe the exact outbound Telegram parts without sending anything."""
+    attachment = _attachment_path(payload)
+    if _is_photo_attachment(attachment):
+        caption, followups = _photo_parts(payload, max_len)
+        return [
+            {"kind": "photo", "text": caption},
+            *({"kind": "text", "text": part} for part in followups),
+        ]
+    if attachment is not None:
+        return [{"kind": "document", "text": _attachment_caption(payload)[:1024]}]
+    normalized = normalize_telegram_text(payload.text)
+    return [
+        {"kind": "text", "text": part}
+        for part in split_telegram_text(normalized, max_len=max_len)
+    ]
 
 
 def _record_successful_lifecycle_ack(
@@ -417,7 +456,7 @@ def _record_successful_lifecycle_ack(
 
 
 def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str, Any]]:
-    payloads = _expand_post_market_heatmap_payloads(ctx, payloads)
+    payloads = prepare_delivery_payloads(ctx, payloads)
     index_path, log_path = _state_paths(ctx)
     idempotency_store: DeliveryIdempotencyStore | None = None
     results: list[dict[str, Any]] = []
@@ -509,7 +548,10 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
                     renew_reservation()
                     response = _send_photo(ctx, payload, photo_caption)
                 except Exception as photo_exc:
-                    fallback_parts = split_telegram_text(normalized_text, max_len=max_len)
+                    fallback_text = photo_caption if hasattr(payload, "caption") else normalized_text
+                    fallback_parts = split_telegram_text(fallback_text, max_len=max_len)
+                    if not fallback_parts:
+                        raise
                     for idx, part in enumerate(fallback_parts, start=1):
                         renew_reservation()
                         response = _send_telegram(ctx, payload, text=part, part_index=idx, part_count=len(fallback_parts))
@@ -613,4 +655,20 @@ def deliver(ctx: RunnerContext, payloads: list[ReportPayload]) -> list[dict[str,
             event["idempotency_failure_recorded"] = state_recorded
             append_jsonl(log_path, event)
             results.append(event)
+    try:
+        from .reports import mark_preview_manifest_delivery
+
+        mark_preview_manifest_delivery(ctx, results)
+    except Exception as exc:
+        # Telegram delivery has already happened.  Preserve that outcome and
+        # make the archival problem visible without pretending the send failed.
+        append_jsonl(log_path, {
+            "time": now_wib().isoformat(timespec="seconds"),
+            "run_id": ctx.run_id,
+            "job": ctx.job,
+            "trade_date": ctx.trade_date.isoformat(),
+            "report_type": "delivery_bundle",
+            "status": "DELIVERY_BUNDLE_FINALIZE_FAILED",
+            "error": f"{type(exc).__name__}:{exc}",
+        })
     return results

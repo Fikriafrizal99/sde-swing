@@ -81,11 +81,18 @@ These preview paths:
 - do not refresh Yahoo/Zapi/broker data;
 - do not rerun the dependency graph;
 - do not send Telegram;
-- rebuild only the current presentation from already-existing, dated artifacts;
-- fail with `*_ARTIFACT_NOT_FOUND` when the requested session was never produced.
+- do not call a formatter or read mutable `LATEST` artifacts;
+- select only a non-resend source run whose target messages have status `SENT`;
+- expose the source run's immutable, run-scoped preview files;
+- persist a hash-locked preview receipt that pins the subsequent resend to that exact
+  source run and ordered Telegram message IDs;
+- fail closed when an exact delivered source or its run-scoped preview is absent.
 
-`Kirim ulang` uses the same dated artifacts but enables Telegram delivery. It
-remains delivery-only and must not mutate engine status or decision artifacts.
+`Kirim ulang` requires the preview receipt for the same job and trade date. It
+uses Telegram `copyMessage` on the pinned original message IDs, preserving the
+original text, entities, caption, media/document, topic, ordering, and message
+count. It does not rebuild a payload and must not mutate engine status or
+decision artifacts.
 
 ## Missed-session recovery policy
 
@@ -145,8 +152,9 @@ An authentic live Market Outlook snapshot created on the target trading day may
 be reused. A `LIVE` snapshot created after the target date is not accepted as a
 historical recovery source because it may contain future information.
 
-After recovery succeeds, use `Preview existing` first. `Kirim ulang` can send
-that recovered report later without rerunning recovery or any engine.
+Recovery writes its own preview paths for inspection. Because that output has
+never been delivered, it is intentionally not eligible for `Preview existing`
+or `Kirim ulang`; those controls replay only an earlier `SENT` delivery.
 
 ### Post Market
 
@@ -167,8 +175,9 @@ to that session's configured market close. The canonical DailyBar boundary then
 materializes data against the expected closed date before the frozen Technical
 Feature Engine receives it.
 
-Recovery should be followed by `Preview existing`; Telegram can then be sent
-with `Kirim ulang` only after the recovered artifact has been inspected.
+Recovery writes its own preview paths for inspection. It does not become a
+`Kirim ulang` source until an official delivery exists, because exact resend is
+not allowed to publish a newly built artifact.
 
 ### Final Watchlist
 
@@ -198,8 +207,8 @@ Saturday/Sunday `2026-08-22` / `2026-08-23`:
    technical/IHSG context and only global sessions knowable by that timestamp.
 4. If Post Market was missed, Post Market option `[9]` can recover the Friday
    close-session pipeline without Telegram.
-5. Both recovered reports should be inspected with `Preview existing` before
-   any resend.
+5. Inspect both recovery runs through their own preview paths. `Preview existing`
+   and `Kirim ulang` remain pinned to reports that were previously delivered.
 6. Final Watchlist remains unavailable until Market Outlook, Post Market, and
    Broker Summary are valid for `2026-08-21`.
 

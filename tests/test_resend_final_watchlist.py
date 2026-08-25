@@ -1,39 +1,26 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from types import SimpleNamespace
-
-from tools.resend_final_watchlist import _csv_last, find_existing_run_manifest
 
 
-def test_find_existing_run_manifest_selects_matching_trade_date(tmp_path: Path) -> None:
-    old = tmp_path / "SWING_RUN_MANIFEST_OLD.json"
-    target = tmp_path / "SWING_RUN_MANIFEST_TARGET.json"
-    old.write_text(json.dumps({"Technical_Date": "2026-08-06", "Pipeline_Status": "SUCCESS"}), encoding="utf-8")
-    target.write_text(json.dumps({"Technical_Date": "2026-08-07", "Pipeline_Status": "SUCCESS", "Run_ID": "TARGET"}), encoding="utf-8")
+def test_final_watchlist_resend_uses_exact_delivery_copy_only() -> None:
+    source = Path("tools/resend_final_watchlist.py").read_text(encoding="utf-8")
 
-    path, payload = find_existing_run_manifest(tmp_path, "2026-08-07")
-
-    assert path == target
-    assert payload["Run_ID"] == "TARGET"
-
-
-def test_find_existing_run_manifest_rejects_failed_run(tmp_path: Path) -> None:
-    failed = tmp_path / "SWING_RUN_MANIFEST_FAILED.json"
-    failed.write_text(json.dumps({"Technical_Date": "2026-08-07", "Pipeline_Status": "FAILED"}), encoding="utf-8")
-
-    path, payload = find_existing_run_manifest(tmp_path, "2026-08-07")
-
-    assert path is None
-    assert payload == {}
+    assert "find_existing_delivery" in source
+    assert "save_preview_selection" in source
+    assert "load_preview_selection" in source
+    assert "copy_existing_delivery" in source
+    assert "TELEGRAM_COPY_EXACT" in source
+    assert "enhanced_final_watchlist_payloads" not in source
+    assert "final_watchlist_payloads" not in source
+    assert "write_payloads" not in source
+    assert "deliver(ctx" not in source
 
 
-def test_csv_attachment_is_always_last() -> None:
-    csv_payload = SimpleNamespace(attachment_path=Path("final_watchlist.csv"))
-    chart_payload = SimpleNamespace(attachment_path=Path("ANTM_setup.png"))
-    text_payload = SimpleNamespace(attachment_path=None)
+def test_final_watchlist_menu_describes_exact_preview_receipt() -> None:
+    source = Path("RUN_FINAL_WATCHLIST.bat").read_text(encoding="utf-8-sig")
 
-    ordered = _csv_last([csv_payload, chart_payload, text_payload])
-
-    assert ordered == [chart_payload, text_payload, csv_payload]
+    assert "Preview exact pesan terakhir - kunci source run" in source
+    assert "Kirim exact preview terakhir - Telegram copy" in source
+    assert "tools\\resend_final_watchlist.py --trade-date !PREVIEW_DATE! --preview-only" in source
+    assert "tools\\resend_final_watchlist.py --trade-date !RESEND_DATE!" in source

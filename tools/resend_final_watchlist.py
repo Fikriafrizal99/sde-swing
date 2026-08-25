@@ -9,10 +9,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from modules.job_runner.delivery import deliver
-from modules.job_runner.enhanced_runtime_bridge import final_watchlist_payloads as enhanced_final_watchlist_payloads
-from modules.job_runner.reports import write_payloads
-from modules.job_runner.report_validation import ReportSourceValidationError
+from modules.job_runner.existing_delivery import (
+    ExactDeliveryError,
+    copy_existing_delivery,
+    find_existing_delivery,
+    load_preview_selection,
+    save_preview_selection,
+)
 from modules.job_runner.runtime import (
     EXIT_DELIVERY_FAILED,
     EXIT_FAILED,
@@ -21,70 +24,39 @@ from modules.job_runner.runtime import (
     JobAlreadyRunning,
     ResourceLocked,
     load_context,
-    read_json,
     write_status,
 )
 
 
-def _manifest_trade_date(payload: dict) -> str:
-    return str(
-        payload.get("Technical_Date")
-        or payload.get("trade_date")
-        or payload.get("Trade_Date")
-        or payload.get("snapshot_trade_date")
-        or ""
-    )
+def _delivery_status(delivery: list[dict]) -> tuple[str, str, int]:
+    if not delivery or any(str(item.get("status") or "").upper() != "SENT" for item in delivery):
+        return "FAILED", "FAILED", EXIT_DELIVERY_FAILED
+    return "SUCCESS", "SENT", EXIT_SUCCESS
 
 
-def find_existing_run_manifest(manifest_dir: Path, trade_date: str) -> tuple[Path | None, dict]:
-    matches: list[tuple[Path, dict]] = []
-    if manifest_dir.exists():
-        for path in manifest_dir.glob("SWING_RUN_MANIFEST_*.json"):
-            payload = read_json(path)
-            if not isinstance(payload, dict) or not payload:
+def _message_ids(delivery: list[dict]) -> list[int]:
+    result: list[int] = []
+    for item in delivery:
+        for value in item.get("telegram_message_ids", []) or []:
+            try:
+                result.append(int(value))
+            except (TypeError, ValueError):
                 continue
-            if _manifest_trade_date(payload) != trade_date:
-                continue
-            status = str(payload.get("Pipeline_Status", "")).upper()
-            if status and status not in {
-                "SUCCESS",
-                "SUCCESS_WITH_WARNING",
-                "SUCCESS_WITH_EXISTING_SNAPSHOT",
-            }:
-                continue
-            matches.append((path, payload))
-    if not matches:
-        return None, {}
-    return max(matches, key=lambda item: item[0].stat().st_mtime)
-
-
-def _csv_last(payloads):
-    normal = []
-    csv_payloads = []
-    for payload in payloads:
-        raw = getattr(payload, "attachment_path", None)
-        if raw and Path(raw).suffix.lower() == ".csv":
-            csv_payloads.append(payload)
-        else:
-            normal.append(payload)
-    return normal + csv_payloads
-
-
-def _delivery_status(delivery: list[dict]) -> tuple[str, int]:
-    if any(item.get("status") == "FAILED" for item in delivery):
-        return "FAILED", EXIT_DELIVERY_FAILED
-    return "SUCCESS", EXIT_SUCCESS
+    return result
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Preview/kirim ulang FINAL WATCHLIST dari artifact existing tanpa menjalankan engine/dependency graph"
+        description=(
+            "Preview/kirim ulang exact FINAL WATCHLIST yang sudah terkirim; "
+            "tidak menjalankan formatter, engine, atau membaca artifact LATEST"
+        )
     )
     parser.add_argument("--trade-date", required=True, help="Tanggal analisis YYYY-MM-DD")
     parser.add_argument(
         "--preview-only",
         action="store_true",
-        help="Bangun preview existing tanpa Telegram dan tanpa menjalankan engine",
+        help="Pilih dan tampilkan preview exact, lalu kunci run sumber untuk Kirim Ulang",
     )
     parser.add_argument("--config", default="config/pipeline.json")
     parser.add_argument("--scheduler-config", default="config/scheduler.json")
@@ -106,99 +78,67 @@ def main() -> int:
         interactive_broker=False,
     )
     setattr(ctx, "delivery_only", True)
-
-    manifest_dir = ctx.path("manifest_dir", "data/output/manifests")
-    manifest_path, manifest = find_existing_run_manifest(manifest_dir, ctx.trade_date.isoformat())
-    mode = "PREVIEW_EXISTING" if args.preview_only else "RESEND_EXISTING"
-    if manifest_path is None:
-        write_status(ctx, "FAILED", f"{mode}_ARTIFACT_DISCOVERY", EXIT_FAILED, {
-            "engine_status": "NOT_RUN",
-            "report_status": "NOT_RUN",
-            "delivery_status": "NOT_RUN",
-            "errors": [f"FINAL_WATCHLIST_ARTIFACT_NOT_FOUND:{ctx.trade_date.isoformat()}"],
-            "warnings": ["Artifact-only mode tidak menjalankan ulang engine."],
-        })
-        print(f"FINAL_WATCHLIST_ARTIFACT_NOT_FOUND:{ctx.trade_date.isoformat()}", file=sys.stderr)
-        return EXIT_FAILED
+    mode = "PREVIEW_EXACT_DELIVERY" if args.preview_only else "RESEND_EXACT_PREVIEW"
 
     write_status(ctx, "RUNNING", mode, EXIT_SUCCESS, {
         "engine_status": "NOT_RUN",
-        "report_status": "RUNNING",
+        "report_status": "REUSING_EXACT_DELIVERY",
         "delivery_status": "NOT_RUN",
-        "source_run_id": manifest.get("Run_ID", ""),
-        "source_manifest": str(manifest_path),
+        "warnings": ["FORMATTER_DISABLED; artifact LATEST tidak dibaca."],
     })
 
     try:
         with FileLock(ctx):
-            payloads = enhanced_final_watchlist_payloads(ctx, manifest)
-            payloads = _csv_last(payloads)
-            if not payloads:
-                write_status(ctx, "FAILED", f"{mode}_REPORT_BUILD", EXIT_FAILED, {
-                    "engine_status": "NOT_RUN",
-                    "report_status": "FAILED",
-                    "delivery_status": "NOT_RUN",
-                    "source_run_id": manifest.get("Run_ID", ""),
-                    "source_manifest": str(manifest_path),
-                    "errors": ["FINAL_WATCHLIST_PAYLOAD_EMPTY"],
-                })
-                return EXIT_FAILED
-
-            preview_paths = write_payloads(ctx, payloads)
             if args.preview_only:
-                write_status(ctx, "SUCCESS", "FINAL_WATCHLIST_PREVIEW_EXISTING", EXIT_SUCCESS, {
+                source = find_existing_delivery(ctx, "final_watchlist")
+                selection_path = save_preview_selection(ctx, source)
+                write_status(ctx, "SUCCESS", "FINAL_WATCHLIST_PREVIEW_EXACT", EXIT_SUCCESS, {
                     "engine_status": "NOT_RUN",
-                    "report_status": "SUCCESS",
+                    "report_status": "REUSED_EXACT",
                     "delivery_status": "SKIPPED_PREVIEW_ONLY",
                     "telegram_status": "SKIPPED",
-                    "source_run_id": manifest.get("Run_ID", ""),
-                    "source_manifest": str(manifest_path),
-                    "preview_paths": [str(path) for path in preview_paths],
-                    "warnings": ["PREVIEW_EXISTING_ARTIFACT_ONLY; tidak ada engine, dependency rerun, atau Telegram."],
+                    "preview_paths": [str(path) for path in source.preview_paths],
+                    "preview_selection": str(selection_path),
+                    **source.source_details(),
+                    "warnings": [
+                        "EXACT_PREVIEW_READ_ONLY; Kirim Ulang dikunci ke source_run_id ini."
+                    ],
                 })
-                for path in preview_paths:
+                print(f"SOURCE RUN: {source.source_run_id}")
+                for path in source.preview_paths:
                     print(path)
                 return EXIT_SUCCESS
 
-            delivery = deliver(ctx, payloads)
-            overall, code = _delivery_status(delivery)
-            telegram_status = (
-                "FAILED"
-                if any(item.get("status") == "FAILED" for item in delivery)
-                else "SENT"
-                if any(item.get("status") == "SENT" for item in delivery)
-                else "SKIPPED"
-            )
-            message_ids = []
-            for item in delivery:
-                if item.get("telegram_message_ids"):
-                    message_ids.extend(item.get("telegram_message_ids", []))
-                elif item.get("telegram_message_id"):
-                    message_ids.append(item.get("telegram_message_id"))
-            write_status(ctx, overall, "FINAL_WATCHLIST_RESEND", code, {
+            source = load_preview_selection(ctx, "final_watchlist")
+            delivery = copy_existing_delivery(ctx, source)
+            overall, telegram_status, code = _delivery_status(delivery)
+            ids = _message_ids(delivery)
+            write_status(ctx, overall, "FINAL_WATCHLIST_RESEND_EXACT", code, {
                 "engine_status": "NOT_RUN",
-                "report_status": "SUCCESS",
+                "report_status": "REUSED_EXACT",
                 "delivery_status": telegram_status,
                 "telegram_status": telegram_status,
-                "telegram_message_ids": message_ids,
-                "telegram_part_count": sum(int(item.get("part_count") or 0) for item in delivery),
-                "source_run_id": manifest.get("Run_ID", ""),
-                "source_manifest": str(manifest_path),
-                "preview_paths": [str(path) for path in preview_paths],
+                "telegram_message_ids": ids,
+                "telegram_part_count": len(ids),
+                "preview_paths": [str(path) for path in source.preview_paths],
                 "delivery": delivery,
-                "warnings": ["RESEND_EXISTING_ARTIFACT; engine tidak dijalankan ulang."],
+                **source.source_details(),
+                "warnings": [
+                    "TELEGRAM_COPY_EXACT; tidak ada formatter, rebuild, atau pembacaan artifact LATEST."
+                ],
             })
             return code
-    except ReportSourceValidationError as exc:
-        write_status(ctx, "FAILED", f"{mode}_SOURCE_VALIDATION", EXIT_FAILED, {
+    except ExactDeliveryError as exc:
+        write_status(ctx, "FAILED", f"{mode}_SOURCE", EXIT_FAILED, {
             "engine_status": "NOT_RUN",
-            "report_status": "FAILED",
+            "report_status": "NOT_RUN",
             "delivery_status": "NOT_RUN",
-            "source_run_id": manifest.get("Run_ID", ""),
-            "source_manifest": str(manifest_path),
-            "errors": list(exc.errors),
-            "warnings": ["Artifact ditemukan tetapi source final watchlist tidak lolos validasi."],
+            "errors": [str(exc)],
+            "warnings": [
+                "Jalankan Preview Existing terlebih dahulu; resend tidak boleh memilih atau membangun format sendiri."
+            ],
         })
+        print(str(exc), file=sys.stderr)
         return EXIT_FAILED
     except (JobAlreadyRunning, ResourceLocked) as exc:
         write_status(ctx, "SKIPPED", f"{mode}_LOCK", EXIT_FAILED, {
@@ -211,10 +151,8 @@ def main() -> int:
     except Exception as exc:
         write_status(ctx, "FAILED", f"{mode}_EXCEPTION", EXIT_FAILED, {
             "engine_status": "NOT_RUN",
-            "report_status": "FAILED",
-            "delivery_status": "NOT_RUN",
-            "source_run_id": manifest.get("Run_ID", ""),
-            "source_manifest": str(manifest_path),
+            "report_status": "REUSED_EXACT",
+            "delivery_status": "FAILED",
             "errors": [f"{type(exc).__name__}: {exc}"],
         })
         return EXIT_FAILED
