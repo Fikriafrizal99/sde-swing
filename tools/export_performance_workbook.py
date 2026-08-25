@@ -12,8 +12,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zipfile import BadZipFile, ZipFile
 
 import pandas as pd
+from openpyxl import load_workbook
 
 # When this file is executed directly (``python tools/export_performance_workbook.py``),
 # Python puts the ``tools`` directory on sys.path, not the repository root. Add the
@@ -54,6 +56,50 @@ REPORT_SPECS = (
     ("SIGNAL_RECOMMENDATION_HISTORY.csv", "Recommendation History", False),
     ("PORTFOLIO_POSITIONS.csv", "Actual Portfolio", False),
 )
+
+
+def _validate_written_workbook(path: Path) -> None:
+    """Fail fast if the produced XLSX is not structurally readable.
+
+    This does not recalculate any performance. It only validates that the
+    Office Open XML archive is intact and can be reopened by openpyxl after the
+    writer has fully closed it.
+    """
+    try:
+        with ZipFile(path, "r") as archive:
+            broken = archive.testzip()
+            if broken:
+                raise RuntimeError(f"XLSX archive rusak pada part: {broken}")
+            names = set(archive.namelist())
+            required_parts = {
+                "[Content_Types].xml",
+                "xl/workbook.xml",
+                "xl/styles.xml",
+                "xl/worksheets/sheet1.xml",
+            }
+            missing_parts = sorted(required_parts - names)
+            if missing_parts:
+                raise RuntimeError(f"XLSX kehilangan part wajib: {', '.join(missing_parts)}")
+
+            # Excel-safe report intentionally does not emit Structured Table
+            # definitions. The sheets remain filterable/formatted ranges.
+            table_parts = [name for name in names if name.startswith("xl/tables/")]
+            if table_parts:
+                raise RuntimeError(
+                    "XLSX masih mengandung Structured Table definition yang tidak diharapkan: "
+                    + ", ".join(sorted(table_parts)[:5])
+                )
+    except BadZipFile as exc:
+        raise RuntimeError(f"File hasil export bukan XLSX/ZIP yang valid: {path}") from exc
+
+    probe = load_workbook(path, read_only=False, data_only=False)
+    try:
+        if "Dashboard" not in probe.sheetnames:
+            raise RuntimeError("Sheet Dashboard tidak ditemukan setelah workbook dibuka ulang.")
+        if probe["Dashboard"]["A1"].value != BRAND_NAME:
+            raise RuntimeError("Header FTJ Performance Setup tidak valid setelah workbook dibuka ulang.")
+    finally:
+        probe.close()
 
 
 def build_workbook(
@@ -142,6 +188,7 @@ def build_workbook(
                 style_sheet(worksheet, table=(sheet != "Overview"))
         build_dashboard(writer, summary)
 
+    _validate_written_workbook(output_path)
     return output_path, pd.DataFrame(manifest_rows)
 
 
@@ -160,7 +207,7 @@ def main() -> int:
     path, manifest = build_workbook(args.input_dir, args.output_dir, output_path=args.output_file)
     included = int((manifest["Status"] == "INCLUDED").sum()) if not manifest.empty else 0
     missing = int((manifest["Status"] == "MISSING_OPTIONAL").sum()) if not manifest.empty else 0
-    print(f"{BRAND_NAME} berhasil dibuat.")
+    print(f"{BRAND_NAME} berhasil dibuat dan lolos validasi XLSX.")
     print(f"Included sections : {included}")
     print(f"Optional missing  : {missing}")
     print(f"File              : {path}")
