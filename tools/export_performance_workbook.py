@@ -8,11 +8,20 @@ not recalculated or changed.
 """
 
 import argparse
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+# When this file is executed directly (``python tools/export_performance_workbook.py``),
+# Python puts the ``tools`` directory on sys.path, not the repository root. Add the
+# project root explicitly so the package-style imports below work both from the
+# maintenance BAT menu and when imported by tests/other modules.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from tools.performance_report.analytics import (
     broker_snapshot,
@@ -23,7 +32,6 @@ from tools.performance_report.analytics import (
 from tools.performance_report.dashboard import BRAND_NAME, build_dashboard
 from tools.performance_report.styling import style_sheet
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT = PROJECT_ROOT / "data/output/analytics/performance"
 DEFAULT_OUTPUT = DEFAULT_INPUT / "exports"
 OUTPUT_PREFIX = "FTJ_PERFORMANCE_SETUP"
