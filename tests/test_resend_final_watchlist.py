@@ -31,15 +31,15 @@ def _event(report_type: str, sequence: int, message_ids: list[int], **extra) -> 
     }
 
 
-def test_final_watchlist_resend_uses_exact_delivery_copy_only() -> None:
+def test_final_watchlist_resend_reuses_exact_delivery_without_formatter() -> None:
     source = Path("tools/resend_final_watchlist.py").read_text(encoding="utf-8")
 
     assert "find_existing_delivery" in source
     assert "save_preview_selection" in source
     assert "load_preview_selection" in source
-    assert "copy_existing_delivery" in source
-    assert "TELEGRAM_COPY_EXACT_ONLY" in source
-    assert "_copy_message_only_source" in source
+    assert "copy_existing_delivery(ctx, source)" in source
+    assert "HASH_LOCKED_ARCHIVE_FALLBACK_ENABLED" in source
+    assert "_copy_message_only_source" not in source
     assert "enhanced_final_watchlist_payloads" not in source
     assert "final_watchlist_payloads" not in source
     assert "write_payloads" not in source
@@ -82,18 +82,17 @@ def test_duplicate_source_message_is_replayed_only_once() -> None:
     assert canonical.message_count == 2
 
 
-def test_copy_only_source_disables_archived_preview_reconstruction() -> None:
+def test_canonicalization_keeps_immutable_preview_receipt_for_exact_fallback() -> None:
     raw = _source([
         _event("final_watchlist_summary", 1, [101]),
     ])
+
     canonical, _, _ = resend._canonicalize_final_watchlist_source(raw)
 
-    strict = resend._copy_message_only_source(canonical)
-
-    assert strict.entries == canonical.entries
-    assert strict.preview_paths == ()
-    assert strict.preview_manifest is None
-    assert strict.signature == raw.signature
+    assert canonical.entries[0]["report_type"] == "final_watchlist_summary"
+    assert canonical.preview_paths == raw.preview_paths
+    assert canonical.preview_manifest == raw.preview_manifest
+    assert canonical.signature == raw.signature
 
 
 def test_final_watchlist_menu_describes_exact_preview_receipt() -> None:
