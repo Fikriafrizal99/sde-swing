@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -134,6 +136,21 @@ def test_build_workbook_creates_ftj_dashboard_and_analysis(tmp_path: Path):
     xlsx = load_workbook(output)
     assert xlsx["Dashboard"]["A1"].value == "FTJ Performance Setup"
     assert len(xlsx["Dashboard"]._charts) >= 4
+
+
+def test_exporter_runs_directly_from_tools_path():
+    project_root = Path(__file__).resolve().parents[1]
+    script = project_root / "tools" / "export_performance_workbook.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "FTJ Performance Setup" in result.stdout
 
 
 def test_build_workbook_requires_core_summary(tmp_path: Path):
