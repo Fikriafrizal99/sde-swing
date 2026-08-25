@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from swing_utils import file_sha256
 from modules.job_runner.existing_delivery import (
     ExactDeliveryError,
     copy_existing_delivery,
@@ -25,6 +26,8 @@ from modules.job_runner.runtime import (
     JobAlreadyRunning,
     ResourceLocked,
     load_context,
+    read_json,
+    resolve,
     write_status,
 )
 
@@ -144,10 +147,121 @@ def _canonicalize_final_watchlist_source(source):
             f"FINAL_WATCHLIST_CANONICAL_SOURCE_EMPTY:{source.source_run_id}:{family}"
         )
 
-    # Keep the original immutable preview receipt and signature. If Telegram's
-    # copyMessage cannot access an old source message, generic replay may use
-    # only the hash-locked archived telegram_parts for this canonical family.
     return replace(source, entries=tuple(canonical)), family, dropped
+
+
+def _preflight_exact_bundle(source) -> dict[str, int]:
+    """Require a complete immutable media fallback before sending anything.
+
+    Telegram has no read-only probe for copyMessage. Without this preflight an
+    old text summary can be sent successfully and a later photo can fail, leaving
+    a partial Final Watchlist. New source runs archive every attachment and its
+    SHA-256 before delivery, so they can be replayed atomically enough for this
+    workflow: every media payload has a verified fallback before message #1 is
+    attempted. Legacy media runs without that archive are blocked up front.
+    """
+    media_entries = [
+        entry for entry in source.entries
+        if str(entry.get("attachment_path") or "").strip()
+    ]
+    if not media_entries:
+        return {"media_entries": 0, "verified_media_entries": 0}
+
+    manifest_path = source.preview_manifest
+    if manifest_path is None or not manifest_path.exists():
+        raise ExactDeliveryError(
+            f"FINAL_WATCHLIST_ATOMIC_RESEND_BLOCKED_LEGACY_MEDIA:{source.source_run_id}:"
+            "IMMUTABLE_ATTACHMENT_ARCHIVE_MISSING"
+        )
+
+    manifest = read_json(manifest_path)
+    payloads = manifest.get("payloads") if isinstance(manifest, dict) else None
+    if not isinstance(payloads, list):
+        raise ExactDeliveryError(
+            f"FINAL_WATCHLIST_ATOMIC_RESEND_BLOCKED_LEGACY_MEDIA:{source.source_run_id}:"
+            "PAYLOAD_ARCHIVE_MANIFEST_MISSING"
+        )
+
+    records_by_sequence: dict[int, dict] = {}
+    for record in payloads:
+        if not isinstance(record, dict):
+            continue
+        try:
+            sequence = int(record.get("sequence") or 0)
+        except (TypeError, ValueError):
+            continue
+        if sequence > 0:
+            records_by_sequence[sequence] = record
+
+    approved_paths = {
+        str(path.resolve())
+        for path in source.preview_paths
+        if path.exists() and path.is_file()
+    }
+    verified = 0
+    for replay_sequence, entry in enumerate(source.entries, start=1):
+        if not str(entry.get("attachment_path") or "").strip():
+            continue
+        try:
+            source_sequence = int(entry.get("delivery_sequence") or replay_sequence)
+        except (TypeError, ValueError):
+            source_sequence = replay_sequence
+        record = records_by_sequence.get(source_sequence)
+        report_type = str(entry.get("report_type") or "").strip().lower()
+        if not isinstance(record, dict):
+            raise ExactDeliveryError(
+                f"FINAL_WATCHLIST_ATOMIC_RESEND_BLOCKED:{source.source_run_id}:"
+                f"{report_type}:{source_sequence}:ARCHIVE_RECORD_MISSING"
+            )
+
+        raw_archive = str(record.get("attachment_archive") or "").strip()
+        expected_hash = str(record.get("attachment_sha256") or "").strip()
+        if not raw_archive or not expected_hash:
+            raise ExactDeliveryError(
+                f"FINAL_WATCHLIST_ATOMIC_RESEND_BLOCKED_LEGACY_MEDIA:{source.source_run_id}:"
+                f"{report_type}:{source_sequence}:IMMUTABLE_ATTACHMENT_ARCHIVE_MISSING"
+            )
+
+        archive_path = resolve(raw_archive)
+        if not archive_path.exists() or not archive_path.is_file():
+            raise ExactDeliveryError(
+                f"FINAL_WATCHLIST_ATOMIC_RESEND_BLOCKED:{source.source_run_id}:"
+                f"{report_type}:{source_sequence}:ARCHIVE_FILE_MISSING"
+            )
+        if str(archive_path.resolve()) not in approved_paths:
+            raise ExactDeliveryError(
+                f"FINAL_WATCHLIST_ATOMIC_RESEND_BLOCKED:{source.source_run_id}:"
+                f"{report_type}:{source_sequence}:ARCHIVE_NOT_APPROVED"
+            )
+        if file_sha256(archive_path) != expected_hash:
+            raise ExactDeliveryError(
+                f"FINAL_WATCHLIST_ATOMIC_RESEND_BLOCKED:{source.source_run_id}:"
+                f"{report_type}:{source_sequence}:ARCHIVE_HASH_MISMATCH"
+            )
+
+        parts = record.get("telegram_parts")
+        kinds = {
+            str(part.get("kind") or "").strip().lower()
+            for part in parts
+            if isinstance(part, dict)
+        } if isinstance(parts, list) else set()
+        required_kind = "photo" if archive_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} else "document"
+        if required_kind not in kinds:
+            raise ExactDeliveryError(
+                f"FINAL_WATCHLIST_ATOMIC_RESEND_BLOCKED:{source.source_run_id}:"
+                f"{report_type}:{source_sequence}:TELEGRAM_PARTS_MISSING_{required_kind.upper()}"
+            )
+        verified += 1
+
+    return {"media_entries": len(media_entries), "verified_media_entries": verified}
+
+
+def _bundle_readiness(source) -> tuple[str, str, dict[str, int]]:
+    try:
+        details = _preflight_exact_bundle(source)
+        return "READY", "", details
+    except ExactDeliveryError as exc:
+        return "BLOCKED", str(exc), {"media_entries": 0, "verified_media_entries": 0}
 
 
 def _delivery_status(delivery: list[dict]) -> tuple[str, str, int]:
@@ -216,10 +330,17 @@ def main() -> int:
             if args.preview_only:
                 raw_source = find_existing_delivery(ctx, "final_watchlist")
                 source, family, dropped = _canonicalize_final_watchlist_source(raw_source)
-                # Receipt remains pinned to the complete append-only source;
-                # canonicalization is deterministically repeated during resend.
+                readiness, readiness_reason, readiness_details = _bundle_readiness(source)
                 selection_path = save_preview_selection(ctx, raw_source)
                 report_types = [str(item.get("report_type") or "") for item in source.entries]
+                warnings = [
+                    "EXACT_PREVIEW_READ_ONLY; Kirim Ulang dikunci ke source_run_id ini.",
+                    "FINAL_WATCHLIST_CANONICALIZED; format modern diprioritaskan dan message ID duplikat disuppress.",
+                ]
+                if readiness == "BLOCKED":
+                    warnings.append(
+                        "ATOMIC_RESEND_BLOCKED; source legacy media tidak punya immutable archive lengkap, sehingga resend tidak akan mengirim pesan parsial."
+                    )
                 write_status(ctx, "SUCCESS", "FINAL_WATCHLIST_PREVIEW_EXACT", EXIT_SUCCESS, {
                     "engine_status": "NOT_RUN",
                     "report_status": "REUSED_EXACT",
@@ -231,16 +352,19 @@ def main() -> int:
                     "canonical_report_types": report_types,
                     "canonical_message_count": source.message_count,
                     "duplicate_source_entries_suppressed": dropped,
+                    "exact_resend_readiness": readiness,
+                    "exact_resend_block_reason": readiness_reason,
+                    **readiness_details,
                     **source.source_details(),
-                    "warnings": [
-                        "EXACT_PREVIEW_READ_ONLY; Kirim Ulang dikunci ke source_run_id ini.",
-                        "FINAL_WATCHLIST_CANONICALIZED; format modern diprioritaskan dan message ID duplikat disuppress.",
-                    ],
+                    "warnings": warnings,
                 })
                 print(f"SOURCE RUN: {source.source_run_id}")
                 print(f"FORMAT FAMILY: {family}")
                 print(f"MESSAGE COUNT: {source.message_count}")
                 print("REPORT TYPES: " + ", ".join(report_types))
+                print(f"EXACT RESEND READY: {readiness}")
+                if readiness_reason:
+                    print(f"BLOCK REASON: {readiness_reason}")
                 if dropped:
                     print(f"DUPLICATE SOURCE ROWS SUPPRESSED: {dropped}")
                 for path in raw_source.preview_paths:
@@ -249,9 +373,10 @@ def main() -> int:
 
             raw_source = load_preview_selection(ctx, "final_watchlist")
             source, family, dropped = _canonicalize_final_watchlist_source(raw_source)
-            # Prefer Telegram copyMessage. If Telegram no longer exposes the old
-            # source message, replay only immutable/hash-locked archived parts
-            # from the approved run; no formatter or LATEST artifact is invoked.
+            # Atomic preflight happens before copyMessage #1. This prevents a
+            # legacy summary from being sent when a later media card has no
+            # immutable fallback and Telegram copyMessage turns out unavailable.
+            preflight = _preflight_exact_bundle(source)
             delivery = copy_existing_delivery(ctx, source)
             overall, telegram_status, code = _delivery_status(delivery)
             ids = _message_ids(delivery)
@@ -268,10 +393,12 @@ def main() -> int:
                 "canonical_report_types": [str(item.get("report_type") or "") for item in source.entries],
                 "canonical_message_count": source.message_count,
                 "duplicate_source_entries_suppressed": dropped,
+                "exact_resend_readiness": "READY",
+                **preflight,
                 **source.source_details(),
                 "warnings": [
                     "FINAL_WATCHLIST_CANONICAL_REPLAY; modern/legacy tidak dicampur dan message ID duplikat disuppress.",
-                    "HASH_LOCKED_ARCHIVE_FALLBACK_ENABLED; fallback hanya memakai telegram_parts immutable dari source run, tanpa formatter/LATEST.",
+                    "ATOMIC_MEDIA_PREFLIGHT_PASSED; semua media punya immutable hash-locked fallback sebelum pesan pertama dikirim.",
                 ],
             })
             return code
@@ -280,9 +407,11 @@ def main() -> int:
             "engine_status": "NOT_RUN",
             "report_status": "NOT_RUN",
             "delivery_status": "NOT_RUN",
+            "exact_resend_readiness": "BLOCKED",
             "errors": [str(exc)],
             "warnings": [
-                "Jalankan Preview Existing terlebih dahulu; resend tidak boleh memilih atau membangun format sendiri."
+                "RESEND_ABORTED_BEFORE_SEND; tidak ada pesan Telegram yang dikirim oleh attempt ini.",
+                "Jalankan Preview Existing untuk melihat readiness source run sebelum Kirim Ulang."
             ],
         })
         print(str(exc), file=sys.stderr)
