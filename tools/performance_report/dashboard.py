@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime
+from io import BytesIO
 from typing import Any
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import pandas as pd
-from openpyxl.chart import BarChart, LineChart, PieChart, Reference
+from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -13,6 +18,7 @@ from .styling import NAVY, SLATE, WHITE, status_fill
 
 BRAND_NAME = "FTJ Performance Setup"
 MUTED, BORDER = "64748B", "CBD5E1"
+BLUE, RED, AMBER, GREEN = "#4F81BD", "#C0504D", "#F2B134", "#9BBB59"
 
 
 def _column(ws, name: str) -> int | None:
@@ -58,89 +64,174 @@ def _card(ws, start: int, end: int, row: int, label: str, value: Any, fmt: str) 
             ws.cell(r, c).border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
 
-def _write_setup_helper(writer: pd.ExcelWriter, dashboard) -> int:
-    """Copy chart-ready setup values onto Dashboard hidden helper columns.
-
-    Keeping chart formulas on the same worksheet avoids cross-sheet chart
-    relationships, which are more fragile across desktop Excel versions.
-    Returns the last helper row written (including header).
-    """
+def _setup_data(writer: pd.ExcelWriter) -> tuple[list[str], list[float], list[float]]:
     source = writer.sheets.get("Setup Snapshot")
-    dashboard["S1"], dashboard["T1"], dashboard["U1"] = "Setup", "Average_Return_Pct", "Win_Rate_Pct"
     if source is None:
-        return 1
+        return [], [], []
     setup_col = _column(source, "Setup")
     avg_col = _column(source, "Average_Return_Pct")
     wr_col = _column(source, "Win_Rate_Pct")
     if not setup_col:
-        return 1
-    target = 2
+        return [], [], []
+    labels: list[str] = []
+    avg_values: list[float] = []
+    wr_values: list[float] = []
     for row in range(2, source.max_row + 1):
         setup = source.cell(row, setup_col).value
         if setup in (None, ""):
             continue
-        avg = source.cell(row, avg_col).value if avg_col else None
-        wr = source.cell(row, wr_col).value if wr_col else None
-        dashboard.cell(target, 19, setup)
-        dashboard.cell(target, 20, avg)
-        dashboard.cell(target, 21, wr)
-        target += 1
-    return target - 1
+        labels.append(str(setup))
+        avg_values.append(num(source.cell(row, avg_col).value) if avg_col else 0.0)
+        wr_values.append(num(source.cell(row, wr_col).value) if wr_col else 0.0)
+    return labels, avg_values, wr_values
 
 
-def _write_score_helper(writer: pd.ExcelWriter, dashboard) -> int:
+def _score_data(writer: pd.ExcelWriter) -> tuple[list[str], list[float]]:
     source = writer.sheets.get("Score Analysis")
-    dashboard["W1"], dashboard["X1"] = "Score_Bucket", "Average_Return_Pct"
     if source is None:
-        return 1
+        return [], []
     bucket_col = _column(source, "Score_Bucket")
     value_col = _column(source, "Average_Return_Pct")
     if not bucket_col or not value_col:
-        return 1
-    target = 2
+        return [], []
+    labels: list[str] = []
+    values: list[float] = []
     for row in range(2, source.max_row + 1):
         bucket = source.cell(row, bucket_col).value
         value = source.cell(row, value_col).value
         if bucket in (None, "") or not isinstance(value, (int, float)):
             continue
-        dashboard.cell(target, 23, bucket)
-        dashboard.cell(target, 24, value)
-        target += 1
-    return target - 1
+        labels.append(str(bucket))
+        values.append(float(value))
+    return labels, values
 
 
-def _write_equity_helper(writer: pd.ExcelWriter, dashboard) -> int:
+def _equity_data(writer: pd.ExcelWriter) -> tuple[list[str], list[float]]:
     source = writer.sheets.get("Equity Curve")
-    dashboard["Z1"], dashboard["AA1"] = "Exit_Date", "Exploratory_Index"
     if source is None:
-        return 1
+        return [], []
     date_col = _column(source, "Exit_Date")
     idx_col = _column(source, "Exploratory_Index")
     if not date_col or not idx_col:
-        return 1
-    target = 2
+        return [], []
+    dates: list[str] = []
+    values: list[float] = []
     for row in range(2, source.max_row + 1):
         date_value = source.cell(row, date_col).value
         index_value = source.cell(row, idx_col).value
         if date_value in (None, "") or not isinstance(index_value, (int, float)):
             continue
-        dashboard.cell(target, 26, date_value)
-        dashboard.cell(target, 27, index_value)
-        target += 1
-    return target - 1
+        dates.append(str(date_value))
+        values.append(float(index_value))
+    return dates, values
 
 
-def _bar_local(ws, category_col: int, value_col: int, max_row: int, title: str, horizontal: bool = False) -> BarChart | None:
-    if max_row < 2:
-        return None
-    chart = BarChart()
-    chart.type = "bar" if horizontal else "col"
-    chart.style = 10
-    chart.height, chart.width, chart.title = 7.2, 14.2, title
-    chart.add_data(Reference(ws, min_col=value_col, min_row=1, max_row=max_row), titles_from_data=True)
-    chart.set_categories(Reference(ws, min_col=category_col, min_row=2, max_row=max_row))
-    chart.legend = None
-    return chart
+def _style_axes(ax) -> None:
+    ax.grid(axis="y", alpha=0.18, linewidth=0.7)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#CBD5E1")
+    ax.spines["bottom"].set_color("#CBD5E1")
+    ax.tick_params(axis="both", colors="#475569", labelsize=8)
+    ax.title.set_color("#0F172A")
+
+
+def _add_figure(ws, fig, anchor: str, *, width: int, height: int) -> None:
+    buffer = BytesIO()
+    fig.savefig(buffer, format="png", dpi=135, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    buffer.seek(0)
+    image = XLImage(buffer)
+    image.width = width
+    image.height = height
+    ws.add_image(image, anchor)
+
+
+def _plot_outcomes(ws, row: pd.Series) -> None:
+    labels = ["Win", "Loss", "Ambiguous"]
+    values = [num(metric(row, label)) for label in labels]
+    fig, ax = plt.subplots(figsize=(4.8, 3.1))
+    if sum(values) > 0:
+        ax.pie(
+            values,
+            labels=labels,
+            autopct=lambda pct: f"{pct:.0f}%" if pct >= 3 else "",
+            startangle=90,
+            colors=[BLUE, RED, GREEN],
+            textprops={"fontsize": 8},
+        )
+    else:
+        ax.text(0.5, 0.5, "Belum ada closed outcome", ha="center", va="center", color="#64748B")
+        ax.axis("off")
+    ax.set_title("Canonical closed outcomes", fontsize=11, pad=10)
+    fig.tight_layout()
+    _add_figure(ws, fig, "A16", width=455, height=270)
+
+
+def _plot_setup_return(ws, labels: list[str], values: list[float]) -> None:
+    fig, ax = plt.subplots(figsize=(5.7, 3.1))
+    if labels:
+        ax.bar(labels, values, color=BLUE)
+        ax.axhline(0, linewidth=0.8, color="#94A3B8")
+        ax.tick_params(axis="x", rotation=20)
+        _style_axes(ax)
+    else:
+        ax.text(0.5, 0.5, "Setup data belum tersedia", ha="center", va="center", color="#64748B")
+        ax.axis("off")
+    ax.set_title("Average return by setup", fontsize=11, pad=10)
+    ax.set_ylabel("Return (%)", fontsize=8)
+    fig.tight_layout()
+    _add_figure(ws, fig, "H16", width=535, height=270)
+
+
+def _plot_setup_wr(ws, labels: list[str], values: list[float]) -> None:
+    fig, ax = plt.subplots(figsize=(5.7, 3.1))
+    if labels:
+        ax.bar(labels, values, color=BLUE)
+        ax.set_ylim(0, max(100, max(values) * 1.1 if values else 100))
+        ax.tick_params(axis="x", rotation=20)
+        _style_axes(ax)
+    else:
+        ax.text(0.5, 0.5, "Setup data belum tersedia", ha="center", va="center", color="#64748B")
+        ax.axis("off")
+    ax.set_title("Win rate by setup", fontsize=11, pad=10)
+    ax.set_ylabel("Win rate (%)", fontsize=8)
+    fig.tight_layout()
+    _add_figure(ws, fig, "A31", width=535, height=270)
+
+
+def _plot_score(ws, labels: list[str], values: list[float]) -> None:
+    fig, ax = plt.subplots(figsize=(5.7, 3.1))
+    if labels:
+        ax.barh(labels, values, color=BLUE)
+        ax.axvline(0, linewidth=0.8, color="#94A3B8")
+        _style_axes(ax)
+    else:
+        ax.text(0.5, 0.5, "Score bucket belum tersedia", ha="center", va="center", color="#64748B")
+        ax.axis("off")
+    ax.set_title("Exploratory return by score bucket", fontsize=11, pad=10)
+    ax.set_xlabel("Average return (%)", fontsize=8)
+    fig.tight_layout()
+    _add_figure(ws, fig, "H31", width=535, height=270)
+
+
+def _plot_equity(ws, dates: list[str], values: list[float]) -> None:
+    fig, ax = plt.subplots(figsize=(11.7, 3.2))
+    if len(values) >= 2:
+        x = list(range(len(values)))
+        ax.plot(x, values, linewidth=1.8, color=BLUE)
+        step = max(1, len(x) // 7)
+        ticks = x[::step]
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([dates[i] for i in ticks], rotation=20, ha="right")
+        _style_axes(ax)
+    else:
+        ax.text(0.5, 0.5, "Equity curve belum memiliki cukup data", ha="center", va="center", color="#64748B")
+        ax.axis("off")
+    ax.set_title("Exploratory raw-ledger equity curve (index 100)", fontsize=11, pad=10)
+    ax.set_ylabel("Index", fontsize=8)
+    fig.tight_layout()
+    _add_figure(ws, fig, "A46", width=1085, height=265)
 
 
 def build_dashboard(writer: pd.ExcelWriter, summary: pd.DataFrame) -> None:
@@ -189,48 +280,24 @@ def build_dashboard(writer: pd.ExcelWriter, summary: pd.DataFrame) -> None:
     ws["A14"].font = Font(color=SLATE, italic=True)
     ws["A14"].alignment = Alignment(horizontal="center")
 
-    # All chart sources live on Dashboard hidden helper columns. This avoids
-    # fragile cross-sheet chart formula relationships in desktop Excel.
-    ws["P1"], ws["Q1"] = "Outcome", "Count"
-    for r, name in enumerate(("Win", "Loss", "Ambiguous"), 2):
-        ws.cell(r, 16, name)
-        ws.cell(r, 17, metric(row, name))
+    setup_labels, setup_avg, setup_wr = _setup_data(writer)
+    score_labels, score_values = _score_data(writer)
+    equity_dates, equity_values = _equity_data(writer)
 
-    setup_last = _write_setup_helper(writer, ws)
-    score_last = _write_score_helper(writer, ws)
-    equity_last = _write_equity_helper(writer, ws)
-    for col in ("P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "AA"):
-        ws.column_dimensions[col].hidden = True
-
-    pie = PieChart()
-    pie.title, pie.style, pie.height, pie.width = "Canonical closed outcomes", 10, 7.2, 12
-    pie.add_data(Reference(ws, min_col=17, min_row=1, max_row=4), titles_from_data=True)
-    pie.set_categories(Reference(ws, min_col=16, min_row=2, max_row=4))
-    ws.add_chart(pie, "A16")
-
-    chart = _bar_local(ws, 19, 20, setup_last, "Average return by setup")
-    if chart:
-        ws.add_chart(chart, "H16")
-    chart = _bar_local(ws, 19, 21, setup_last, "Win rate by setup")
-    if chart:
-        ws.add_chart(chart, "A31")
-    chart = _bar_local(ws, 23, 24, score_last, "Exploratory return by score bucket", horizontal=True)
-    if chart:
-        ws.add_chart(chart, "H31")
-
-    if equity_last >= 3:
-        chart = LineChart()
-        chart.title, chart.style, chart.height, chart.width = "Exploratory raw-ledger equity curve (index 100)", 13, 7, 28.8
-        chart.y_axis.title, chart.x_axis.title = "Index", "Exit sequence"
-        chart.add_data(Reference(ws, min_col=27, min_row=1, max_row=equity_last), titles_from_data=True)
-        chart.set_categories(Reference(ws, min_col=26, min_row=2, max_row=equity_last))
-        chart.legend = None
-        ws.add_chart(chart, "A46")
+    # Render charts as PNG drawings instead of native Open XML chart parts.
+    # This keeps the dashboard visual while avoiding Excel desktop failures
+    # observed with xl/charts/*.xml generated by openpyxl on the production data.
+    _plot_outcomes(ws, row)
+    _plot_setup_return(ws, setup_labels, setup_avg)
+    _plot_setup_wr(ws, setup_labels, setup_wr)
+    _plot_score(ws, score_labels, score_values)
+    _plot_equity(ws, equity_dates, equity_values)
 
     ws.merge_cells("A61:N62")
     ws["A61"] = (
         "Catatan: KPI utama berasal dari canonical PERFORMANCE_SUMMARY. Score Analysis, Time Analysis, dan Equity Curve "
-        "berasal dari raw closed ledger dan bersifat exploratory; bukan pengganti canonical performance atau actual portfolio P&L."
+        "berasal dari raw closed ledger dan bersifat exploratory; bukan pengganti canonical performance atau actual portfolio P&L. "
+        "Grafik dashboard dirender sebagai gambar statis untuk kompatibilitas Excel desktop."
     )
     ws["A61"].font = Font(color=MUTED, italic=True, size=9)
     ws["A61"].alignment = Alignment(wrap_text=True)
