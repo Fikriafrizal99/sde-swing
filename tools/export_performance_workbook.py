@@ -61,9 +61,9 @@ REPORT_SPECS = (
 def _validate_written_workbook(path: Path) -> None:
     """Fail fast if the produced XLSX is not structurally readable.
 
-    This does not recalculate any performance. It only validates that the
-    Office Open XML archive is intact and can be reopened by openpyxl after the
-    writer has fully closed it.
+    This validates only the Excel artifact. It never recalculates trading
+    performance. The dashboard intentionally uses embedded PNG images instead
+    of native ``xl/charts`` parts for desktop Excel compatibility.
     """
     try:
         with ZipFile(path, "r") as archive:
@@ -81,13 +81,18 @@ def _validate_written_workbook(path: Path) -> None:
             if missing_parts:
                 raise RuntimeError(f"XLSX kehilangan part wajib: {', '.join(missing_parts)}")
 
-            # Excel-safe report intentionally does not emit Structured Table
-            # definitions. The sheets remain filterable/formatted ranges.
             table_parts = [name for name in names if name.startswith("xl/tables/")]
             if table_parts:
                 raise RuntimeError(
                     "XLSX masih mengandung Structured Table definition yang tidak diharapkan: "
                     + ", ".join(sorted(table_parts)[:5])
+                )
+
+            native_chart_parts = [name for name in names if name.startswith("xl/charts/")]
+            if native_chart_parts:
+                raise RuntimeError(
+                    "XLSX masih mengandung native chart parts; dashboard harus memakai image-safe charts: "
+                    + ", ".join(sorted(native_chart_parts)[:5])
                 )
     except BadZipFile as exc:
         raise RuntimeError(f"File hasil export bukan XLSX/ZIP yang valid: {path}") from exc
@@ -96,8 +101,13 @@ def _validate_written_workbook(path: Path) -> None:
     try:
         if "Dashboard" not in probe.sheetnames:
             raise RuntimeError("Sheet Dashboard tidak ditemukan setelah workbook dibuka ulang.")
-        if probe["Dashboard"]["A1"].value != BRAND_NAME:
+        dashboard = probe["Dashboard"]
+        if dashboard["A1"].value != BRAND_NAME:
             raise RuntimeError("Header FTJ Performance Setup tidak valid setelah workbook dibuka ulang.")
+        if len(dashboard._charts) != 0:
+            raise RuntimeError("Dashboard masih mengandung native Excel chart object.")
+        if len(dashboard._images) < 1:
+            raise RuntimeError("Dashboard tidak memiliki image chart setelah workbook dibuka ulang.")
     finally:
         probe.close()
 
@@ -207,7 +217,7 @@ def main() -> int:
     path, manifest = build_workbook(args.input_dir, args.output_dir, output_path=args.output_file)
     included = int((manifest["Status"] == "INCLUDED").sum()) if not manifest.empty else 0
     missing = int((manifest["Status"] == "MISSING_OPTIONAL").sum()) if not manifest.empty else 0
-    print(f"{BRAND_NAME} berhasil dibuat dan lolos validasi XLSX.")
+    print(f"{BRAND_NAME} berhasil dibuat dan lolos validasi XLSX Excel-safe.")
     print(f"Included sections : {included}")
     print(f"Optional missing  : {missing}")
     print(f"File              : {path}")
