@@ -31,6 +31,7 @@ echo [12] Kirim active recommendations
 echo [13] Preview lifecycle
 echo [14] Evaluasi Broker Period + Confidence x Period
 echo [15] Exit Efficiency + Data Integrity
+echo [16] Export performance lengkap (Excel)
 echo [0] Kembali
 echo.
 set "PERF_CHOICE="
@@ -51,6 +52,7 @@ if "%PERF_CHOICE%"=="12" goto SEND_ACTIVE
 if "%PERF_CHOICE%"=="13" goto PREVIEW_LIFECYCLE
 if "%PERF_CHOICE%"=="14" goto SHOW_BROKER_PERIOD
 if "%PERF_CHOICE%"=="15" goto SHOW_EXIT_EFFICIENCY
+if "%PERF_CHOICE%"=="16" goto EXPORT_FULL
 if "%PERF_CHOICE%"=="0" exit /b 0
 goto MENU
 
@@ -203,5 +205,49 @@ echo.
 set "RC=%ERRORLEVEL%"
 echo.
 if not "%RC%"=="0" echo Evaluasi Exit Efficiency gagal. Exit code %RC%.
+pause
+goto MENU
+
+:EXPORT_FULL
+cls
+echo ================================================================
+echo              EXPORT PERFORMANCE LENGKAP - EXCEL
+echo ================================================================
+echo.
+echo [1/4] Memperbarui core performance...
+%SDE_PYTHON_CMD% modules\analytics\outcome_tracker.py sync --bootstrap-db --decisions data\output\decision\FINAL_DECISION_V3.csv --entry-plans data\output\exit\ENTRY_PLANS.csv
+if errorlevel 1 (
+  echo.
+  echo Core performance gagal diperbarui. Export dibatalkan.
+  pause
+  goto MENU
+)
+
+echo.
+echo [2/4] Memperbarui Broker Period analytics...
+%SDE_PYTHON_CMD% tools\broker_period_performance.py show >nul
+if errorlevel 1 echo WARNING: Broker Period gagal diperbarui. Workbook tetap dibuat dari data yang tersedia.
+
+echo.
+echo [3/4] Memperbarui Exit Efficiency analytics...
+%SDE_PYTHON_CMD% -u modules\analytics\exit_efficiency.py --db data\database\sde_swing_history.db --output-dir data\output\analytics\performance >nul
+if errorlevel 1 echo WARNING: Exit Efficiency gagal diperbarui. Workbook tetap dibuat dari data yang tersedia.
+
+echo.
+echo [4/4] Membuat workbook Excel multi-sheet...
+%SDE_PYTHON_CMD% tools\export_performance_workbook.py --input-dir data\output\analytics\performance --output-dir data\output\analytics\performance\exports
+set "RC=%ERRORLEVEL%"
+echo.
+if not "%RC%"=="0" (
+  echo Export workbook gagal. Exit code %RC%.
+  echo Jika error menyebut openpyxl, jalankan maintenance\INSTALL_REQUIREMENTS.bat.
+  pause
+  goto MENU
+)
+
+echo.
+echo Export selesai.
+echo Folder: data\output\analytics\performance\exports
+start "" "data\output\analytics\performance\exports"
 pause
 goto MENU
