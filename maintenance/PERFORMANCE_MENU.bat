@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 chcp 65001 >nul
 cd /d "%~dp0\.."
-title SDE Swing - Performance and Evaluation
+title FTJ Community - Performance and Evaluation
 call tools\set_python_cmd.bat
 if not defined SDE_PYTHON_CMD (
   echo Python tidak ditemukan. Jalankan maintenance\INSTALL_REQUIREMENTS.bat.
@@ -31,7 +31,7 @@ echo [12] Kirim active recommendations
 echo [13] Preview lifecycle
 echo [14] Evaluasi Broker Period + Confidence x Period
 echo [15] Exit Efficiency + Data Integrity
-echo [16] Export performance lengkap (Excel)
+echo [16] FTJ Performance Setup (Excel)
 echo [0] Kembali
 echo.
 set "PERF_CHOICE="
@@ -211,7 +211,7 @@ goto MENU
 :EXPORT_FULL
 cls
 echo ================================================================
-echo              EXPORT PERFORMANCE LENGKAP - EXCEL
+echo                    FTJ PERFORMANCE SETUP - EXCEL
 echo ================================================================
 echo.
 echo [1/4] Memperbarui core performance...
@@ -234,19 +234,19 @@ echo [3/4] Memperbarui Exit Efficiency analytics...
 if errorlevel 1 echo WARNING: Exit Efficiency gagal diperbarui. Workbook tetap dibuat dari data yang tersedia.
 
 echo.
-echo [4/4] Membuat workbook Excel multi-sheet...
+echo [4/4] Membuat FTJ Performance Setup dengan dashboard dan chart...
 %SDE_PYTHON_CMD% tools\export_performance_workbook.py --input-dir data\output\analytics\performance --output-dir data\output\analytics\performance\exports
 set "RC=%ERRORLEVEL%"
 echo.
 if not "%RC%"=="0" (
-  echo Export workbook gagal. Exit code %RC%.
+  echo Export FTJ Performance Setup gagal. Exit code %RC%.
   echo Jika error menyebut openpyxl, jalankan maintenance\INSTALL_REQUIREMENTS.bat.
   pause
   goto MENU
 )
 
 echo.
-echo Export selesai.
+echo FTJ Performance Setup selesai.
 echo Folder: data\output\analytics\performance\exports
 start "" "data\output\analytics\performance\exports"
 pause
