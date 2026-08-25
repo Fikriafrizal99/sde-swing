@@ -144,20 +144,10 @@ def _canonicalize_final_watchlist_source(source):
             f"FINAL_WATCHLIST_CANONICAL_SOURCE_EMPTY:{source.source_run_id}:{family}"
         )
 
-    # Keep the original receipt signature. Preview approval is still pinned to
-    # the exact append-only source run; only its replay plan is canonicalized.
+    # Keep the original immutable preview receipt and signature. If Telegram's
+    # copyMessage cannot access an old source message, generic replay may use
+    # only the hash-locked archived telegram_parts for this canonical family.
     return replace(source, entries=tuple(canonical)), family, dropped
-
-
-def _copy_message_only_source(source):
-    """Disable reconstruction fallback for Final Watchlist resend.
-
-    `copyMessage` is the only operation that can guarantee the resend has the
-    exact Telegram formatting/media/caption of the approved original. Removing
-    preview fallback material means a non-copyable source fails closed instead
-    of silently producing a different format or a second text card.
-    """
-    return replace(source, preview_paths=(), preview_manifest=None)
 
 
 def _delivery_status(delivery: list[dict]) -> tuple[str, str, int]:
@@ -259,9 +249,10 @@ def main() -> int:
 
             raw_source = load_preview_selection(ctx, "final_watchlist")
             source, family, dropped = _canonicalize_final_watchlist_source(raw_source)
-            # Final Watchlist resend is deliberately copy-only. Do not let the
-            # generic replay layer rebuild old previews into a different card.
-            delivery = copy_existing_delivery(ctx, _copy_message_only_source(source))
+            # Prefer Telegram copyMessage. If Telegram no longer exposes the old
+            # source message, replay only immutable/hash-locked archived parts
+            # from the approved run; no formatter or LATEST artifact is invoked.
+            delivery = copy_existing_delivery(ctx, source)
             overall, telegram_status, code = _delivery_status(delivery)
             ids = _message_ids(delivery)
             write_status(ctx, overall, "FINAL_WATCHLIST_RESEND_EXACT", code, {
@@ -279,8 +270,8 @@ def main() -> int:
                 "duplicate_source_entries_suppressed": dropped,
                 **source.source_details(),
                 "warnings": [
-                    "TELEGRAM_COPY_EXACT_ONLY; formatter dan archived-preview reconstruction dinonaktifkan.",
-                    "Jika source Telegram tidak dapat di-copy, resend gagal tertutup agar format tidak berubah/double.",
+                    "FINAL_WATCHLIST_CANONICAL_REPLAY; modern/legacy tidak dicampur dan message ID duplikat disuppress.",
+                    "HASH_LOCKED_ARCHIVE_FALLBACK_ENABLED; fallback hanya memakai telegram_parts immutable dari source run, tanpa formatter/LATEST.",
                 ],
             })
             return code
