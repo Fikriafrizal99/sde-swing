@@ -56,6 +56,48 @@ def test_multi_job_status_matches_sequential_single_job_output(
     assert combined_output == market_output + "\n" + post_output
 
 
+def test_delivery_status_flag_reads_delivery_channel(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(print_job_status, "ROOT", tmp_path)
+    _status(tmp_path, "final_watchlist", "ENGINE-RUN")
+    delivery_path = (
+        tmp_path
+        / "data/output/job_status/final_watchlist_delivery_latest.json"
+    )
+    delivery_path.write_text(
+        json.dumps({
+            "run_id": "DELIVERY-RUN",
+            "trade_date": "2026-08-13",
+            "job_mode": "RESEND",
+            "status": "FAILED",
+            "current_stage": "FINAL_WATCHLIST_RESEND_EXACT",
+            "exit_code": 50,
+            "details": {
+                "engine_status": "NOT_RUN",
+                "report_status": "REUSED_EXACT",
+                "delivery_status": "FAILED",
+                "replay_mode": "TELEGRAM_COPY_WITH_HASH_LOCKED_ARCHIVE_FALLBACK",
+                "telegram_part_count": 0,
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    assert print_job_status.main(["--job", "final_watchlist", "--delivery"]) == 0
+    output = capsys.readouterr().out
+
+    assert "SDE Delivery Status: final_watchlist" in output
+    assert "Run ID       : DELIVERY-RUN" in output
+    assert "Delivery     : FAILED" in output
+    assert "Exit code    : 50" in output
+    assert "Replay       : TELEGRAM_COPY_WITH_HASH_LOCKED_ARCHIVE_FALLBACK" in output
+    assert "Telegram msgs: 0" in output
+    assert "ENGINE-RUN" not in output
+
+
 def test_status_batch_files_start_one_python_process() -> None:
     root_status = (ROOT / "CHECK_SDE_STATUS.bat").read_text(encoding="utf-8-sig")
     maintenance_status = (ROOT / "maintenance/CHECK_SDE_STATUS.bat").read_text(

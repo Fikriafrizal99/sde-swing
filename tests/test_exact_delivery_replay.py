@@ -181,6 +181,18 @@ def test_exact_copy_uses_original_message_ids_threads_and_order(monkeypatch, tmp
 
     monkeypatch.setattr(existing_delivery, "requests", Requests)
     monkeypatch.setattr(existing_delivery, "_credentials", lambda _ctx: ("TOKEN", "CHAT"))
+    heatmap_preview = tmp_path / "POST-SOURCE_post_market_heatmap.txt"
+    heatmap_preview.write_text(
+        "Run ID: POST-SOURCE\nTrade Date: 2026-08-07\n"
+        "Report Type: post_market_heatmap\nHEATMAP FALLBACK",
+        encoding="utf-8",
+    )
+    post_preview = tmp_path / "POST-SOURCE_post_market.txt"
+    post_preview.write_text(
+        "Run ID: POST-SOURCE\nTrade Date: 2026-08-07\n"
+        "Report Type: post_market\nPOST MARKET CARD",
+        encoding="utf-8",
+    )
     source = ExistingDelivery(
         requested_job="post_market",
         trade_date="2026-08-07",
@@ -193,7 +205,7 @@ def test_exact_copy_uses_original_message_ids_threads_and_order(monkeypatch, tmp
             {"report_type": "post_market", "delivery_sequence": 2,
              "message_thread_id": "9", "telegram_message_ids": [42]},
         ),
-        preview_paths=(Path("post_market.txt"),),
+        preview_paths=(heatmap_preview, post_preview),
         preview_manifest=None,
         signature="signature",
     )
@@ -215,6 +227,329 @@ def test_exact_copy_uses_original_message_ids_threads_and_order(monkeypatch, tmp
     audit = [json.loads(line) for line in delivery_log.read_text(encoding="utf-8").splitlines()]
     assert [item["source_telegram_message_ids"] for item in audit] == [[41], [42]]
     assert all(item["force_resend"] is True for item in audit)
+
+
+def test_unavailable_source_replays_hash_locked_photo_as_one_card(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    preview = tmp_path / "SOURCE_final_watchlist_detail_BBCA.txt"
+    preview.write_text(
+        "Run ID: SOURCE\nTrade Date: 2026-08-07\n"
+        "Report Type: final_watchlist_detail\nAPPROVED COMPACT CARD",
+        encoding="utf-8",
+    )
+    image = tmp_path / "BBCA_setup.png"
+    image.write_bytes(b"approved-image")
+    manifest = tmp_path / "SOURCE_preview_manifest.json"
+    manifest.write_text(
+        json.dumps({
+            "schema": "SDE_DELIVERY_PREVIEW_BUNDLE_V1",
+            "payloads": [{
+                "sequence": 1,
+                "report_type": "final_watchlist_detail",
+                "run_scoped_preview": str(preview),
+                "attachment_archive": str(image),
+                "telegram_parts": [{"kind": "photo", "text": "APPROVED COMPACT CARD"}],
+            }],
+        }),
+        encoding="utf-8",
+    )
+    delivery_log = tmp_path / "delivery.jsonl"
+    source = ExistingDelivery(
+        requested_job="final_watchlist",
+        trade_date="2026-08-07",
+        source_run_id="SOURCE",
+        source_job="final_watchlist",
+        source_time="2026-08-07T17:00:00+07:00",
+        entries=({
+            "report_type": "final_watchlist_detail",
+            "delivery_sequence": 1,
+            "message_thread_id": "6",
+            "telegram_message_ids": [41],
+            "attachment_path": str(image),
+        },),
+        preview_paths=(preview, image),
+        preview_manifest=manifest,
+        signature="signature",
+    )
+    ctx = SimpleNamespace(
+        run_id="REPLAY",
+        job="final_watchlist",
+        scheduler_config={
+            "delivery": {"delivery_log": str(delivery_log)},
+            "telegram": {"maximum_message_length": 4_000},
+        },
+    )
+    photos: list[tuple[Path, str, str]] = []
+
+    monkeypatch.setattr(existing_delivery, "_credentials", lambda _ctx: ("TOKEN", "CHAT"))
+
+    def unavailable_copy(*_args, **_kwargs):
+        raise RuntimeError("Bad Request: message to copy not found")
+
+    monkeypatch.setattr(existing_delivery, "_copy_request", unavailable_copy)
+
+    def send_photo(_ctx, payload, caption):
+        photos.append((
+            Path(getattr(payload, "attachment_path")),
+            caption,
+            getattr(payload, "_message_thread_id_override"),
+        ))
+        return {"ok": True, "result": {"message_id": 901}}
+
+    monkeypatch.setattr(existing_delivery, "_send_photo", send_photo)
+
+    def forbid_second_card(*_args, **_kwargs):
+        raise AssertionError("second card forbidden")
+
+    monkeypatch.setattr(existing_delivery, "_send_telegram", forbid_second_card)
+
+    result = copy_existing_delivery(ctx, source)
+
+    assert photos == [(image, "APPROVED COMPACT CARD", "6")]
+    assert result[0]["status"] == "SENT"
+    assert result[0]["copy_mode"] == "ARCHIVED_PREVIEW_EXACT"
+    assert result[0]["part_count"] == 1
+    assert result[0]["telegram_message_ids"] == [901]
+    assert "message to copy not found" in result[0]["copy_fallback_reason"]
+
+
+def test_unavailable_legacy_text_source_sends_exact_run_scoped_preview(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    preview = tmp_path / "SOURCE_final_watchlist_summary.txt"
+    preview.write_text(
+        "Run ID: SOURCE\nTrade Date: 2026-08-07\n"
+        "Report Type: final_watchlist_summary\n<b>APPROVED SUMMARY</b>",
+        encoding="utf-8",
+    )
+    delivery_log = tmp_path / "delivery.jsonl"
+    source = ExistingDelivery(
+        requested_job="final_watchlist",
+        trade_date="2026-08-07",
+        source_run_id="SOURCE",
+        source_job="final_watchlist",
+        source_time="2026-08-07T17:00:00+07:00",
+        entries=({
+            "report_type": "final_watchlist_summary",
+            "delivery_sequence": 1,
+            "message_thread_id": "6",
+            "telegram_message_ids": [41],
+        },),
+        preview_paths=(preview,),
+        preview_manifest=None,
+        signature="signature",
+    )
+    ctx = SimpleNamespace(
+        run_id="REPLAY",
+        job="final_watchlist",
+        scheduler_config={
+            "delivery": {"delivery_log": str(delivery_log)},
+            "telegram": {"maximum_message_length": 4_000},
+        },
+    )
+    messages: list[tuple[str, str]] = []
+
+    def unavailable_copy(*_args, **_kwargs):
+        raise RuntimeError("Bad Request: message to copy not found")
+
+    def send_message(_ctx, payload, *, text):
+        messages.append((text, getattr(payload, "_message_thread_id_override")))
+        return {"ok": True, "result": {"message_id": 901}}
+
+    monkeypatch.setattr(existing_delivery, "_credentials", lambda _ctx: ("TOKEN", "CHAT"))
+    monkeypatch.setattr(existing_delivery, "_copy_request", unavailable_copy)
+    monkeypatch.setattr(existing_delivery, "_send_telegram", send_message)
+
+    result = copy_existing_delivery(ctx, source)
+
+    assert messages == [("<b>APPROVED SUMMARY</b>", "6")]
+    assert result[0]["status"] == "SENT"
+    assert result[0]["copy_mode"] == "ARCHIVED_PREVIEW_EXACT"
+    assert result[0]["telegram_message_ids"] == [901]
+
+
+def test_unavailable_legacy_media_source_fails_closed(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    preview = tmp_path / "SOURCE_final_watchlist_detail_BBCA.txt"
+    preview.write_text(
+        "Run ID: SOURCE\nTrade Date: 2026-08-07\n"
+        "Report Type: final_watchlist_detail\nAPPROVED LEGACY CARD",
+        encoding="utf-8",
+    )
+    mutable_image = tmp_path / "BBCA_setup.png"
+    mutable_image.write_bytes(b"not-an-immutable-archive")
+    delivery_log = tmp_path / "delivery.jsonl"
+    source = ExistingDelivery(
+        requested_job="final_watchlist",
+        trade_date="2026-08-07",
+        source_run_id="SOURCE",
+        source_job="final_watchlist",
+        source_time="2026-08-07T17:00:00+07:00",
+        entries=({
+            "report_type": "final_watchlist_detail",
+            "delivery_sequence": 1,
+            "message_thread_id": "6",
+            "telegram_message_ids": [41],
+            "attachment_path": str(mutable_image),
+        },),
+        preview_paths=(preview,),
+        preview_manifest=None,
+        signature="signature",
+    )
+    ctx = SimpleNamespace(
+        run_id="REPLAY",
+        job="final_watchlist",
+        scheduler_config={
+            "delivery": {"delivery_log": str(delivery_log)},
+            "telegram": {"maximum_message_length": 4_000},
+        },
+    )
+
+    def unavailable_copy(*_args, **_kwargs):
+        raise RuntimeError("Bad Request: message to copy not found")
+
+    def forbid_direct_send(*_args, **_kwargs):
+        raise AssertionError("mutable legacy media must not be sent")
+
+    monkeypatch.setattr(existing_delivery, "_credentials", lambda _ctx: ("TOKEN", "CHAT"))
+    monkeypatch.setattr(existing_delivery, "_copy_request", unavailable_copy)
+    monkeypatch.setattr(existing_delivery, "_send_photo", forbid_direct_send)
+    monkeypatch.setattr(existing_delivery, "_send_telegram", forbid_direct_send)
+
+    result = copy_existing_delivery(ctx, source)
+
+    assert result[0]["status"] == "FAILED"
+    assert "ARCHIVED_REPLAY_ATTACHMENT_NOT_IMMUTABLE" in result[0]["error"]
+    assert result[0]["telegram_message_ids"] == []
+
+
+def test_copy_path_does_not_require_archive_fallback_content(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    preview = tmp_path / "SOURCE_post_market.txt"
+    preview.write_text(
+        "Run ID: SOURCE\nTrade Date: 2026-08-07\n"
+        "Report Type: post_market\nPOST MARKET",
+        encoding="utf-8",
+    )
+    source = ExistingDelivery(
+        requested_job="post_market",
+        trade_date="2026-08-07",
+        source_run_id="SOURCE",
+        source_job="post_market",
+        source_time="2026-08-07T17:00:00+07:00",
+        entries=({
+            "report_type": "post_market_heatmap",
+            "delivery_sequence": 1,
+            "message_thread_id": "6",
+            "telegram_message_ids": [41],
+            "attachment_path": str(tmp_path / "legacy-mutable-heatmap.png"),
+        },),
+        preview_paths=(preview,),
+        preview_manifest=None,
+        signature="signature",
+    )
+    ctx = SimpleNamespace(
+        run_id="REPLAY",
+        job="post_market",
+        scheduler_config={"delivery": {"delivery_log": str(tmp_path / "delivery.jsonl")}},
+    )
+
+    monkeypatch.setattr(existing_delivery, "_credentials", lambda _ctx: ("TOKEN", "CHAT"))
+    monkeypatch.setattr(
+        existing_delivery,
+        "_copy_request",
+        lambda *_args, **_kwargs: {"ok": True, "result": {"message_id": 901}},
+    )
+
+    result = copy_existing_delivery(ctx, source)
+
+    assert result[0]["status"] == "SENT"
+    assert result[0]["copy_mode"] == "TELEGRAM_COPY_EXACT"
+    assert result[0]["telegram_message_ids"] == [901]
+
+
+def test_partial_archive_fallback_records_sent_message_ids(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    preview = tmp_path / "SOURCE_market_outlook.txt"
+    preview.write_text(
+        "Run ID: SOURCE\nTrade Date: 2026-08-07\n"
+        "Report Type: market_outlook\nPART ONE\n\nPART TWO",
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "SOURCE_preview_manifest.json"
+    manifest.write_text(
+        json.dumps({
+            "schema": "SDE_DELIVERY_PREVIEW_BUNDLE_V1",
+            "payloads": [{
+                "sequence": 1,
+                "report_type": "market_outlook",
+                "run_scoped_preview": str(preview),
+                "telegram_parts": [
+                    {"kind": "text", "text": "PART ONE"},
+                    {"kind": "text", "text": "PART TWO"},
+                ],
+            }],
+        }),
+        encoding="utf-8",
+    )
+    delivery_log = tmp_path / "delivery.jsonl"
+    source = ExistingDelivery(
+        requested_job="market_outlook",
+        trade_date="2026-08-07",
+        source_run_id="SOURCE",
+        source_job="market_outlook",
+        source_time="2026-08-07T07:30:00+07:00",
+        entries=({
+            "report_type": "market_outlook",
+            "delivery_sequence": 1,
+            "message_thread_id": "6",
+            "telegram_message_ids": [41, 42],
+        },),
+        preview_paths=(preview,),
+        preview_manifest=manifest,
+        signature="signature",
+    )
+    ctx = SimpleNamespace(
+        run_id="REPLAY",
+        job="market_outlook",
+        scheduler_config={
+            "delivery": {"delivery_log": str(delivery_log)},
+            "telegram": {"maximum_message_length": 4_000},
+        },
+    )
+    attempts = 0
+
+    def unavailable_copy(*_args, **_kwargs):
+        raise RuntimeError("Bad Request: message to copy not found")
+
+    def send_message(_ctx, _payload, *, text):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            assert text == "PART ONE"
+            return {"ok": True, "result": {"message_id": 901}}
+        raise RuntimeError("network interrupted")
+
+    monkeypatch.setattr(existing_delivery, "_credentials", lambda _ctx: ("TOKEN", "CHAT"))
+    monkeypatch.setattr(existing_delivery, "_copy_request", unavailable_copy)
+    monkeypatch.setattr(existing_delivery, "_send_telegram", send_message)
+
+    result = copy_existing_delivery(ctx, source)
+
+    assert result[0]["status"] == "FAILED"
+    assert result[0]["copy_mode"] == "ARCHIVED_PREVIEW_EXACT"
+    assert result[0]["telegram_message_ids"] == [901]
+    assert result[0]["sent_parts_before_failure"] == 1
+    assert "message to copy not found" in result[0]["copy_fallback_reason"]
 
 
 def test_explicit_photo_caption_is_one_complete_card(tmp_path: Path) -> None:

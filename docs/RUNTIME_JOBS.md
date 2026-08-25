@@ -89,10 +89,14 @@ These preview paths:
 - fail closed when an exact delivered source or its run-scoped preview is absent.
 
 `Kirim ulang` requires the preview receipt for the same job and trade date. It
-uses Telegram `copyMessage` on the pinned original message IDs, preserving the
-original text, entities, caption, media/document, topic, ordering, and message
-count. It does not rebuild a payload and must not mutate engine status or
-decision artifacts.
+first uses Telegram `copyMessage` on the pinned original message IDs. If
+Telegram reports that a source message is no longer copyable, it can send only
+the immutable, hash-locked preview text/media approved in step `[2]` directly,
+without invoking a formatter or reading `LATEST`. Legacy mutable attachments
+are never used as an "exact" fallback; they fail closed if their Telegram
+source is unavailable. Both successful paths preserve the approved topic,
+ordering, and one-card boundary. Delivery-only results are written to
+`<job>_delivery_latest.json`; engine status remains separate.
 
 ## Missed-session recovery policy
 

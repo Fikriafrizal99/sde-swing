@@ -236,6 +236,9 @@ def telegram_route(ctx: RunnerContext, payload: ReportPayload) -> dict[str, Any]
 
 
 def _topic_id(ctx: RunnerContext, payload: ReportPayload) -> str:
+    override = getattr(payload, "_message_thread_id_override", None)
+    if override is not None:
+        return str(override or "").strip()
     return str(telegram_route(ctx, payload)["message_thread_id"] or "").strip()
 
 

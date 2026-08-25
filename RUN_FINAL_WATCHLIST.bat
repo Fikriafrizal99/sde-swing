@@ -12,12 +12,13 @@ echo ================================================================
 echo.
 echo [1] Normal - Broker Summary 1D / 3D / 5D / Custom / Reuse
 echo [2] Preview exact pesan terakhir - kunci source run
-echo [3] Kirim exact preview terakhir - Telegram copy
+echo [3] Kirim exact preview terakhir ke Telegram
 echo [4] Cek status Final Watchlist
 echo [0] Kembali
 echo.
 echo.
 set "MODE="
+set "STATUS_VIEW="
 set /p "MODE=Pilih mode: "
 if "%MODE%"=="0" exit /b 0
 call tools\set_python_cmd.bat
@@ -42,6 +43,7 @@ echo.
 echo Membuka exact preview Final Watchlist yang benar-benar sudah terkirim pada !PREVIEW_DATE!...
 %SDE_PYTHON_CMD% -u tools\resend_final_watchlist.py --trade-date !PREVIEW_DATE! --preview-only
 set "RC=!ERRORLEVEL!"
+set "STATUS_VIEW=--delivery"
 goto STATUS
 
 :RESEND
@@ -50,9 +52,10 @@ for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_
 if not defined RESEND_DATE goto RESEND_DATE_FAILED
 
 echo.
-echo Menyalin exact preview Final Watchlist yang terakhir disetujui untuk !RESEND_DATE!...
+echo Mengirim exact preview Final Watchlist yang terakhir disetujui untuk !RESEND_DATE! ke Telegram...
 %SDE_PYTHON_CMD% -u tools\resend_final_watchlist.py --trade-date !RESEND_DATE!
 set "RC=!ERRORLEVEL!"
+set "STATUS_VIEW=--delivery"
 goto STATUS
 
 :STATUS_ONLY
@@ -77,7 +80,7 @@ goto MENU
 
 :STATUS
 echo.
-%SDE_PYTHON_CMD% tools\print_job_status.py --job final_watchlist
+%SDE_PYTHON_CMD% tools\print_job_status.py --job final_watchlist !STATUS_VIEW!
 echo.
 echo Exit code: !RC!
 pause

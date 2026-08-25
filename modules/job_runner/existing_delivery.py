@@ -4,12 +4,15 @@ from __future__ import annotations
 
 The resend boundary is intentionally presentation-only.  It selects a source
 run from the append-only delivery log, exposes that run's immutable preview
-files, and replays the original Telegram messages with ``copyMessage``.  No
-report formatter, engine output, or ``LATEST`` artifact is read here.
+files, and replays the original Telegram messages with ``copyMessage``. When a
+source message is no longer copyable, it can send only immutable, hash-locked
+preview content directly; mutable legacy attachments fail closed. No report
+formatter, engine output, or ``LATEST`` artifact is read here.
 """
 
 import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +25,17 @@ except ImportError:  # pragma: no cover - handled by the live copy boundary
 
 from swing_utils import file_sha256
 
-from .delivery import _credentials, _response_json
+from .delivery import (
+    _credentials,
+    _is_photo_attachment,
+    _response_json,
+    _send_document,
+    _send_photo,
+    _send_telegram,
+    normalize_telegram_text,
+    split_telegram_text,
+)
+from .reports import ReportPayload
 from .runtime import RunnerContext, append_jsonl, now_wib, read_json, resolve, write_json
 
 
@@ -87,7 +100,7 @@ class ExistingDelivery:
             "source_delivery_signature": self.signature,
             "source_preview_manifest": str(self.preview_manifest or ""),
             "source_message_count": self.message_count,
-            "replay_mode": "TELEGRAM_COPY_EXACT",
+            "replay_mode": "TELEGRAM_COPY_WITH_HASH_LOCKED_ARCHIVE_FALLBACK",
         }
 
 
@@ -202,6 +215,10 @@ def _source_preview_paths(
     paths: list[Path] = []
     expected_hashes: dict[str, str] = {}
 
+    is_bundle = bool(
+        isinstance(manifest, dict)
+        and manifest.get("schema") == "SDE_DELIVERY_PREVIEW_BUNDLE_V1"
+    )
     if isinstance(manifest, dict) and manifest:
         manifest_run_id = str(manifest.get("run_id") or "").strip()
         manifest_job = str(manifest.get("job") or "").strip().lower()
@@ -214,7 +231,7 @@ def _source_preview_paths(
             raise ExactDeliveryError(
                 f"EXACT_PREVIEW_DATE_MISMATCH:{manifest_date}:{ctx.trade_date.isoformat()}"
             )
-        if manifest.get("schema") == "SDE_DELIVERY_PREVIEW_BUNDLE_V1":
+        if is_bundle:
             if manifest.get("state") != "DELIVERED" or manifest.get("delivery_complete") is not True:
                 raise ExactDeliveryError(f"EXACT_PREVIEW_BUNDLE_NOT_DELIVERED:{source_run_id}")
 
@@ -358,6 +375,195 @@ def load_preview_selection(ctx: RunnerContext, requested_job: str | None = None)
     return delivery
 
 
+def _read_preview_card(path: Path) -> tuple[str, str]:
+    text = path.read_text(encoding="utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    if (
+        len(lines) >= 3
+        and lines[0].startswith("Run ID:")
+        and lines[1].startswith("Trade Date:")
+        and lines[2].startswith("Report Type:")
+    ):
+        report_type = lines[2].split(":", 1)[1].strip().lower()
+        return report_type, "\n".join(lines[3:]).strip()
+    return "", text.strip()
+
+
+def _archive_replay_specs(delivery: ExistingDelivery) -> dict[int, dict[str, Any]]:
+    """Resolve only files covered by the approved Preview receipt."""
+    approved = {str(path.resolve()) for path in delivery.preview_paths}
+    manifest = read_json(delivery.preview_manifest) if delivery.preview_manifest else {}
+    records = manifest.get("payloads") if isinstance(manifest, dict) else None
+    records_by_sequence: dict[int, dict[str, Any]] = {}
+    if isinstance(records, list):
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            try:
+                sequence = int(record.get("sequence") or 0)
+            except (TypeError, ValueError):
+                continue
+            if sequence > 0:
+                records_by_sequence[sequence] = record
+
+    preview_queues: dict[str, list[tuple[Path, str]]] = {}
+    for path in delivery.preview_paths:
+        if path.suffix.lower() != ".txt":
+            continue
+        report_type, body = _read_preview_card(path)
+        if report_type:
+            preview_queues.setdefault(report_type, []).append((path, body))
+
+    specs: dict[int, dict[str, Any]] = {}
+    for replay_sequence, entry in enumerate(delivery.entries, start=1):
+        report_type = str(entry.get("report_type") or "").strip().lower()
+        try:
+            source_sequence = int(entry.get("delivery_sequence") or replay_sequence)
+        except (TypeError, ValueError):
+            source_sequence = replay_sequence
+        record = records_by_sequence.get(source_sequence, {})
+
+        preview_path: Path | None = None
+        body = ""
+        raw_preview = str(record.get("run_scoped_preview") or "").strip()
+        if raw_preview:
+            preview_path = resolve(raw_preview)
+            _, body = _read_preview_card(preview_path)
+            queue = preview_queues.get(report_type, [])
+            if queue and queue[0][0].resolve() == preview_path.resolve():
+                queue.pop(0)
+        else:
+            queue = preview_queues.get(report_type, [])
+            if queue:
+                preview_path, body = queue.pop(0)
+
+        raw_attachment = str(record.get("attachment_archive") or "").strip()
+        attachment = resolve(raw_attachment) if raw_attachment else None
+        for selected in (preview_path, attachment):
+            if selected is not None and str(selected.resolve()) not in approved:
+                raise ExactDeliveryError(
+                    f"ARCHIVED_REPLAY_FILE_NOT_APPROVED:{report_type}:{selected}"
+                )
+        telegram_parts = record.get("telegram_parts")
+        specs[replay_sequence] = {
+            "report_type": report_type,
+            "preview_path": preview_path,
+            "body": body,
+            "attachment": attachment,
+            "source_had_attachment": bool(str(entry.get("attachment_path") or "").strip()),
+            "telegram_parts": (
+                [dict(item) for item in telegram_parts if isinstance(item, dict)]
+                if isinstance(telegram_parts, list)
+                else []
+            ),
+        }
+    return specs
+
+
+def _telegram_message_id(response: dict[str, Any]) -> int:
+    message_id = int(response.get("result", {}).get("message_id") or 0)
+    if message_id <= 0:
+        raise RuntimeError(f"Telegram tidak mengembalikan message_id: {response}")
+    return message_id
+
+
+def _send_with_rate_limit_retry(sender: Any, *, max_retries: int = 3) -> dict[str, Any]:
+    for attempt in range(max_retries + 1):
+        try:
+            return sender()
+        except RuntimeError as exc:
+            match = re.search(r"retry_after['\"]?\s*:\s*(\d+)", str(exc))
+            if match is None or attempt >= max_retries:
+                raise
+            time.sleep(max(1, min(int(match.group(1)) + 1, 60)))
+    raise RuntimeError("Telegram archive replay retry exhausted")  # pragma: no cover
+
+
+def _send_archived_entry(
+    ctx: RunnerContext,
+    entry: dict[str, Any],
+    spec: dict[str, Any],
+    message_ids: list[int] | None = None,
+) -> list[int]:
+    """Send the approved bytes/text directly, without invoking a formatter."""
+    report_type = str(spec.get("report_type") or entry.get("report_type") or "")
+    if spec.get("source_had_attachment") and not isinstance(spec.get("attachment"), Path):
+        raise ExactDeliveryError(
+            f"ARCHIVED_REPLAY_ATTACHMENT_NOT_IMMUTABLE:{report_type}:"
+            f"{entry.get('delivery_sequence') or ''}"
+        )
+    preview_path = spec.get("preview_path")
+    payload = ReportPayload(
+        report_type=report_type,
+        filename=(preview_path.name if isinstance(preview_path, Path) else f"{report_type}.txt"),
+        text=str(spec.get("body") or ""),
+        topic="default",
+    )
+    setattr(payload, "_message_thread_id_override", str(entry.get("message_thread_id") or ""))
+    attachment = spec.get("attachment")
+    if isinstance(attachment, Path):
+        setattr(payload, "attachment_path", attachment)
+
+    configured_parts = spec.get("telegram_parts")
+    parts = configured_parts if isinstance(configured_parts, list) else []
+    if not parts:
+        body = normalize_telegram_text(payload.text)
+        if isinstance(attachment, Path):
+            kind = "photo" if _is_photo_attachment(attachment) else "document"
+            parts = [{"kind": kind, "text": body}]
+        else:
+            if not body:
+                raise ExactDeliveryError(f"ARCHIVED_REPLAY_TEXT_EMPTY:{report_type}")
+            max_len = int(
+                ctx.scheduler_config.get("telegram", {}).get("maximum_message_length", 4000)
+            )
+            parts = [
+                {"kind": "text", "text": text}
+                for text in split_telegram_text(body, max_len=max_len)
+            ]
+
+    sent_ids = message_ids if message_ids is not None else []
+    for part in parts:
+        kind = str(part.get("kind") or "text").strip().lower()
+        text = str(part.get("text") or "")
+        if kind == "photo":
+            if not isinstance(attachment, Path) or not _is_photo_attachment(attachment):
+                raise ExactDeliveryError(f"ARCHIVED_REPLAY_PHOTO_MISSING:{report_type}")
+            if len(text) > 1024:
+                raise ExactDeliveryError(f"ARCHIVED_REPLAY_PHOTO_CAPTION_TOO_LONG:{report_type}")
+            response = _send_with_rate_limit_retry(
+                lambda: _send_photo(ctx, payload, text)
+            )
+        elif kind == "document":
+            if not isinstance(attachment, Path) or _is_photo_attachment(attachment):
+                raise ExactDeliveryError(f"ARCHIVED_REPLAY_DOCUMENT_MISSING:{report_type}")
+            setattr(payload, "caption", text)
+            response = _send_with_rate_limit_retry(lambda: _send_document(ctx, payload))
+        elif kind == "text":
+            if not text:
+                raise ExactDeliveryError(f"ARCHIVED_REPLAY_TEXT_EMPTY:{report_type}")
+            response = _send_with_rate_limit_retry(
+                lambda: _send_telegram(ctx, payload, text=text)
+            )
+        else:
+            raise ExactDeliveryError(f"ARCHIVED_REPLAY_PART_UNSUPPORTED:{report_type}:{kind}")
+        sent_ids.append(_telegram_message_id(response))
+    return sent_ids
+
+
+def _source_message_unavailable(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "message to copy not found",
+            "message can't be copied",
+            "message cannot be copied",
+            "protected content",
+        )
+    )
+
+
 def _copy_request(
     token: str,
     data: dict[str, Any],
@@ -385,8 +591,9 @@ def _copy_request(
 
 
 def copy_existing_delivery(ctx: RunnerContext, delivery: ExistingDelivery) -> list[dict[str, Any]]:
-    """Copy the exact original Telegram messages in their original order."""
+    """Replay the approved messages in order, with a hash-locked archive fallback."""
     token, chat_id = _credentials(ctx)
+    archive_specs = _archive_replay_specs(delivery)
     results: list[dict[str, Any]] = []
     failed = False
     total = len(delivery.entries)
@@ -415,22 +622,42 @@ def copy_existing_delivery(ctx: RunnerContext, delivery: ExistingDelivery) -> li
             continue
 
         copied_ids: list[int] = []
+        copy_error = ""
+        replay_mode = "TELEGRAM_COPY_EXACT"
         try:
-            for source_message_id in source_ids:
-                data: dict[str, Any] = {
-                    "chat_id": chat_id,
-                    "from_chat_id": chat_id,
-                    "message_id": source_message_id,
-                }
-                thread_id = str(entry.get("message_thread_id") or "").strip()
-                if thread_id:
-                    data["message_thread_id"] = thread_id
-                response = _copy_request(token, data)
-                copied = int(response.get("result", {}).get("message_id") or 0)
-                if copied <= 0:
-                    raise RuntimeError(f"Telegram copyMessage tidak mengembalikan message_id: {response}")
-                copied_ids.append(copied)
-            event = {**base, "status": "SENT", "telegram_message_ids": copied_ids}
+            try:
+                for source_message_id in source_ids:
+                    data: dict[str, Any] = {
+                        "chat_id": chat_id,
+                        "from_chat_id": chat_id,
+                        "message_id": source_message_id,
+                    }
+                    thread_id = str(entry.get("message_thread_id") or "").strip()
+                    if thread_id:
+                        data["message_thread_id"] = thread_id
+                    response = _copy_request(token, data)
+                    copied_ids.append(_telegram_message_id(response))
+            except Exception as exc:
+                if copied_ids or not _source_message_unavailable(exc):
+                    raise
+                copy_error = f"{type(exc).__name__}: {exc}"
+                replay_mode = "ARCHIVED_PREVIEW_EXACT"
+                copied_ids = _send_archived_entry(
+                    ctx,
+                    entry,
+                    archive_specs[replay_sequence],
+                    message_ids=copied_ids,
+                )
+
+            event = {
+                **base,
+                "status": "SENT",
+                "copy_mode": replay_mode,
+                "part_count": len(copied_ids),
+                "telegram_message_ids": copied_ids,
+            }
+            if copy_error:
+                event["copy_fallback_reason"] = copy_error
             append_jsonl(_delivery_log_path(ctx), event)
             results.append(event)
         except Exception as exc:
@@ -438,10 +665,13 @@ def copy_existing_delivery(ctx: RunnerContext, delivery: ExistingDelivery) -> li
             event = {
                 **base,
                 "status": "FAILED",
+                "copy_mode": replay_mode,
                 "error": f"{type(exc).__name__}: {exc}",
                 "telegram_message_ids": copied_ids,
                 "sent_parts_before_failure": len(copied_ids),
             }
+            if copy_error:
+                event["copy_fallback_reason"] = copy_error
             append_jsonl(_delivery_log_path(ctx), event)
             results.append(event)
     return results

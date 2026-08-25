@@ -12,7 +12,7 @@ echo ================================================================
 echo.
 echo [1] Normal - refresh dan kirim Telegram ^(hari trading^)
 echo [2] Preview existing - exact pesan terakhir, read-only, kunci source run
-echo [3] Kirim ulang - delivery-only exact preview terakhir, Telegram copy
+echo [3] Kirim ulang - delivery-only exact preview terakhir ke Telegram
 echo [4] Cek status Market Outlook
 echo [5] Normal + Morning News - satu kali jalan
 echo [6] Morning News Only
@@ -25,6 +25,7 @@ echo Recovery Market Outlook memakai data point-in-time pada jam Outlook target,
 echo IHSG/technical context sesi sebelumnya, dan tidak menjalankan Decision Engine.
 echo.
 set "MODE="
+set "STATUS_VIEW="
 set /p "MODE=Pilih mode: "
 if "%MODE%"=="0" exit /b 0
 call tools\set_python_cmd.bat
@@ -53,6 +54,7 @@ echo.
 echo Membuka exact preview Market Outlook yang benar-benar sudah terkirim pada !PREVIEW_DATE!...
 %SDE_PYTHON_CMD% -u tools\resend_daily_report.py --job market_outlook --trade-date !PREVIEW_DATE! --preview-only
 set "RC=!ERRORLEVEL!"
+set "STATUS_VIEW=--delivery"
 goto STATUS
 
 :RECOVER_LAST_SESSION
@@ -109,9 +111,10 @@ for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_
 if not defined RESEND_DATE goto RESEND_DATE_FAILED
 
 echo.
-echo Menyalin exact preview Market Outlook yang terakhir disetujui untuk %RESEND_DATE%...
+echo Mengirim exact preview Market Outlook yang terakhir disetujui untuk %RESEND_DATE% ke Telegram...
 %SDE_PYTHON_CMD% -u tools\resend_daily_report.py --job market_outlook --trade-date %RESEND_DATE%
 set "RC=!ERRORLEVEL!"
+set "STATUS_VIEW=--delivery"
 goto STATUS
 
 :STATUS_ONLY
@@ -136,7 +139,7 @@ goto MENU
 
 :STATUS
 echo.
-%SDE_PYTHON_CMD% tools\print_job_status.py --job market_outlook
+%SDE_PYTHON_CMD% tools\print_job_status.py --job market_outlook !STATUS_VIEW!
 echo.
 echo Exit code: !RC!
 pause

@@ -72,7 +72,8 @@ def outside_current_root(text: str) -> bool:
 
 
 def print_job_status(job: str, args: argparse.Namespace) -> int:
-    path = ROOT / "data/output/job_status" / f"{job}_latest.json"
+    suffix = "_delivery_latest.json" if args.delivery else "_latest.json"
+    path = ROOT / "data/output/job_status" / f"{job}{suffix}"
     payload = load_json(path)
     if not payload:
         print(f"Status belum ada: {path}")
@@ -100,7 +101,8 @@ def print_job_status(job: str, args: argparse.Namespace) -> int:
         )
         return 0
     print("============================================================")
-    print(f"SDE Job Status: {job}")
+    channel = "Delivery Status" if args.delivery else "Job Status"
+    print(f"SDE {channel}: {job}")
     print("============================================================")
     if overall_status == "SUCCESS_WITH_WARNING":
         print("[OK WITH WARNING]")
@@ -115,6 +117,12 @@ def print_job_status(job: str, args: argparse.Namespace) -> int:
     print(f"Overall      : {overall_status}")
     print(f"Stage        : {payload.get('current_stage', '')}")
     print(f"Exit code    : {payload.get('exit_code', '')}")
+    replay_mode = str(details.get("replay_mode") or "").strip()
+    if replay_mode:
+        print(f"Replay       : {replay_mode}")
+    telegram_parts = details.get("telegram_part_count")
+    if telegram_parts is not None:
+        print(f"Telegram msgs: {telegram_parts}")
 
     reason = details.get("reason") or payload.get("broker_readiness_status") or details.get("status") or ""
     if reason:
@@ -139,7 +147,7 @@ def print_job_status(job: str, args: argparse.Namespace) -> int:
     if delivery:
         print("")
         print("Delivery:")
-        for item in delivery[:10]:
+        for item in delivery:
             if not isinstance(item, dict):
                 print(f"- {item}")
                 continue
@@ -147,7 +155,9 @@ def print_job_status(job: str, args: argparse.Namespace) -> int:
             status = item.get("status", "")
             parts = item.get("part_count", "")
             force = item.get("force_resend", "")
+            copy_mode = str(item.get("copy_mode") or "").strip()
             suffix = f", parts={parts}" if parts != "" else ""
+            suffix += f", via={copy_mode}" if copy_mode else ""
             suffix += ", force=true" if force is True else ""
             print(f"- {label}: {status}{suffix}")
             if item.get("error"):
@@ -190,6 +200,11 @@ def main(argv: list[str] | None = None) -> int:
     selection.add_argument("--all", action="store_true")
     parser.add_argument("--status-only", action="store_true")
     parser.add_argument("--log-fields", action="store_true")
+    parser.add_argument(
+        "--delivery",
+        action="store_true",
+        help="Read <job>_delivery_latest.json instead of the engine status channel",
+    )
     args = parser.parse_args(argv)
 
     jobs = list(DEFAULT_JOBS) if args.all else list(args.jobs or [args.job])

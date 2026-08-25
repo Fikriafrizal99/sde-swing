@@ -127,7 +127,7 @@ def main() -> int:
                 "delivery": delivery,
                 **source.source_details(),
                 "warnings": [
-                    "TELEGRAM_COPY_EXACT; tidak ada formatter, rebuild, atau pembacaan artifact LATEST."
+                    "TELEGRAM_EXACT_REPLAY; copyMessage diprioritaskan, dengan fallback preview hash-locked tanpa formatter."
                 ],
             })
             return code
