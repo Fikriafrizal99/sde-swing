@@ -136,27 +136,22 @@ def test_build_workbook_creates_ftj_dashboard_and_analysis(tmp_path: Path):
 
     xlsx = load_workbook(output)
     try:
-        assert xlsx["Dashboard"]["A1"].value == "FTJ Performance Setup"
-        assert len(xlsx["Dashboard"]._charts) >= 4
+        dashboard = xlsx["Dashboard"]
+        assert dashboard["A1"].value == "FTJ Performance Setup"
+        assert len(dashboard._charts) == 0
+        assert len(dashboard._images) >= 5
         assert all(not ws.tables for ws in xlsx.worksheets)
     finally:
         xlsx.close()
 
-    # The Excel-safe variant must not emit Structured Table XML and chart
-    # formulas must no longer reference analysis sheets across worksheets.
+    # Desktop-Excel-safe variant: no Structured Table XML and no native
+    # xl/charts parts. Dashboard visuals are embedded PNG media instead.
     with ZipFile(output) as archive:
         assert archive.testzip() is None
         names = archive.namelist()
         assert not any(name.startswith("xl/tables/") for name in names)
-        chart_xml = "\n".join(
-            archive.read(name).decode("utf-8")
-            for name in names
-            if name.startswith("xl/charts/chart") and name.endswith(".xml")
-        )
-        assert "'Setup Snapshot'!" not in chart_xml
-        assert "'Score Analysis'!" not in chart_xml
-        assert "'Equity Curve'!" not in chart_xml
-        assert "'Dashboard'!" in chart_xml
+        assert not any(name.startswith("xl/charts/") for name in names)
+        assert len([name for name in names if name.startswith("xl/media/")]) >= 5
 
 
 def test_exporter_runs_directly_from_tools_path():
