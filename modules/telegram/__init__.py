@@ -15,12 +15,15 @@ import logging
 logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
 from . import daily_report_ui as _daily_report_ui
+from .final_watchlist_compact_ui import format_watchlist_detail as _final_watchlist_formatter
 from .market_outlook_ui import format_market_outlook as _market_outlook_formatter
 from .post_market_ui import format_post_market as _post_market_formatter
 
-# Final Watchlist has one canonical formatter in ``daily_report_ui``. Keep a
-# named compatibility alias without rebinding it to a second implementation.
-_daily_report_ui.format_final_watchlist_detail = _daily_report_ui.format_watchlist_detail
+# Final Watchlist detail is intentionally rebound to the locked compact Telegram
+# contract. Summary/CSV building and all engine-owned calculations stay in their
+# existing paths; this override changes presentation only.
+_daily_report_ui.format_watchlist_detail = _final_watchlist_formatter
+_daily_report_ui.format_final_watchlist_detail = _final_watchlist_formatter
 _daily_report_ui.format_market_outlook = _market_outlook_formatter
 _daily_report_ui.format_post_market = _post_market_formatter
 
