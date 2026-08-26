@@ -40,9 +40,9 @@ def _install_final_watchlist_presentation_contract() -> None:
 
     Presentation-only rules:
     - detail cards are actionable BUY READY / BUY CANDIDATE variants only;
-    - at most 10 detail cards are generated and emitted;
-    - WATCH/WAIT/AVOID stay in summary/CSV and never consume chart-card slots;
-    - the legacy summary sentence is aligned with the 10-card contract.
+    - Telegram emits at most 10 detail cards and every emitted detail has a chart;
+    - chart failures remain visible in logs/CSV but never become text-only cards;
+    - WATCH/WAIT/AVOID stay in summary/CSV and never consume chart-card slots.
 
     No score, decision, trade-plan, broker, or engine calculation is changed.
     """
@@ -65,27 +65,35 @@ def _install_final_watchlist_presentation_contract() -> None:
     @wraps(original_build)
     def locked_build(self, data):
         configured_limit = int(getattr(self, "max_watchlist_messages", 0) or 0)
-        effective_limit = (
-            FINAL_WATCHLIST_MAX_DETAIL_CARDS
-            if configured_limit <= 0
-            else min(configured_limit, FINAL_WATCHLIST_MAX_DETAIL_CARDS)
-        )
-        self.max_watchlist_messages = effective_limit
+        # Build all actionable candidates so a chart failure in a higher-ranked
+        # row can be replaced by the next chart-backed candidate. Only the
+        # presentation result is capped; engine facts and CSV remain complete.
+        self.max_watchlist_messages = 0
         try:
             artifacts = list(original_build(self, data))
         finally:
             self.max_watchlist_messages = configured_limit
 
-        for index, artifact in enumerate(artifacts):
-            if str(getattr(artifact, "report_type", "") or "").lower() != "final_watchlist_summary":
+        result = []
+        chart_detail_count = 0
+        for artifact in artifacts:
+            report_type = str(getattr(artifact, "report_type", "") or "").lower()
+            if report_type == "final_watchlist_summary":
+                updated_text = str(artifact.text or "").replace(
+                    "📌 5 kartu berikut adalah 5 saham terbaik berdasarkan status eksekusi dan Final Score.",
+                    "📌 Maksimal 10 chart-card berikut memuat BUY READY / BUY CANDIDATE terbaik berdasarkan status eksekusi dan Final Score.",
+                )
+                result.append(replace(artifact, text=updated_text) if updated_text != artifact.text else artifact)
                 continue
-            updated_text = str(artifact.text or "").replace(
-                "📌 5 kartu berikut adalah 5 saham terbaik berdasarkan status eksekusi dan Final Score.",
-                "📌 Maksimal 10 chart-card berikut memuat BUY READY / BUY CANDIDATE terbaik berdasarkan status eksekusi dan Final Score.",
-            )
-            if updated_text != artifact.text:
-                artifacts[index] = replace(artifact, text=updated_text)
-        return artifacts
+            if report_type == "final_watchlist_detail":
+                attachment = getattr(artifact, "attachment_path", None)
+                if attachment in (None, ""):
+                    continue
+                if chart_detail_count >= FINAL_WATCHLIST_MAX_DETAIL_CARDS:
+                    continue
+                chart_detail_count += 1
+            result.append(artifact)
+        return result
 
     builder_class.build_final_watchlist = locked_build
     builder_class._final_watchlist_contract_installed = True
