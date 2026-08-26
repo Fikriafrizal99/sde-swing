@@ -7,6 +7,7 @@ filenames; only the final payload presentation is adjusted here.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from functools import wraps
 
 from modules.branding import apply_ftj_branding
@@ -75,12 +76,15 @@ def _install_final_watchlist_presentation_contract() -> None:
         finally:
             self.max_watchlist_messages = configured_limit
 
-        for artifact in artifacts:
-            if str(getattr(artifact, "report_type", "") or "").lower() == "final_watchlist_summary":
-                artifact.text = str(artifact.text or "").replace(
-                    "📌 5 kartu berikut adalah 5 saham terbaik berdasarkan status eksekusi dan Final Score.",
-                    "📌 Maksimal 10 chart-card berikut memuat BUY READY / BUY CANDIDATE terbaik berdasarkan status eksekusi dan Final Score.",
-                )
+        for index, artifact in enumerate(artifacts):
+            if str(getattr(artifact, "report_type", "") or "").lower() != "final_watchlist_summary":
+                continue
+            updated_text = str(artifact.text or "").replace(
+                "📌 5 kartu berikut adalah 5 saham terbaik berdasarkan status eksekusi dan Final Score.",
+                "📌 Maksimal 10 chart-card berikut memuat BUY READY / BUY CANDIDATE terbaik berdasarkan status eksekusi dan Final Score.",
+            )
+            if updated_text != artifact.text:
+                artifacts[index] = replace(artifact, text=updated_text)
         return artifacts
 
     builder_class.build_final_watchlist = locked_build
