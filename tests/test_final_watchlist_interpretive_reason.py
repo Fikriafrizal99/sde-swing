@@ -33,18 +33,19 @@ def _row() -> dict:
     }
 
 
-def test_package_runtime_and_compatibility_alias_use_one_formatter() -> None:
+def test_package_runtime_and_compatibility_alias_use_one_compact_formatter() -> None:
     assert _daily_report_ui.format_watchlist_detail is format_watchlist_detail
     text = format_watchlist_detail(_row())
-    assert "BROKER PRIMARY" in text
-    assert "Buy/Sell" not in text
+    assert "🏦 STRONG ACCUMULATION 64/100" in text
+    assert "Net +Rp22,62B" in text
+    assert "BROKER PRIMARY" not in text
     assert "Persistence" not in text
 
 
-def test_waiting_state_keeps_action_connected_to_entry_zone() -> None:
+def test_waiting_state_uses_resistance_trigger_in_compact_card() -> None:
     text = format_watchlist_detail(_row())
-    assert "Tunggu trigger valid di area 840–860. Jangan chase." in text
-    assert "break >880" not in text
+    assert "Tunggu break >880. Jangan chase." in text
+    assert "Tunggu trigger valid di area" not in text
 
 
 def test_explicit_engine_trigger_wins_over_entry_and_resistance() -> None:
@@ -55,9 +56,9 @@ def test_explicit_engine_trigger_wins_over_entry_and_resistance() -> None:
     assert "break >880" not in text
 
 
-def test_generic_machine_trigger_codes_fall_back_to_entry_zone() -> None:
+def test_generic_machine_trigger_codes_fall_back_to_resistance_trigger() -> None:
     row = _row()
     row["waiting_triggers"] = ["WAIT_FOR_ENTRY_TRIGGER", "WAIT_FOR_ENTRY_ZONE"]
     text = format_watchlist_detail(row)
     assert "WAIT_FOR_" not in text
-    assert "Tunggu trigger valid di area 840–860. Jangan chase." in text
+    assert "Tunggu break >880. Jangan chase." in text
