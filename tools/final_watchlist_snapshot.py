@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
         description="Preview/copy the last completed Final Watchlist presentation without rerunning the trading engine."
     )
     parser.add_argument("--trade-date", required=True)
-    parser.add_argument("--config", default="config/config.json")
+    parser.add_argument("--config", default="config/pipeline.json")
     parser.add_argument("--scheduler-config", default="config/scheduler.json")
     parser.add_argument("--preview-only", action="store_true")
     return parser.parse_args()
