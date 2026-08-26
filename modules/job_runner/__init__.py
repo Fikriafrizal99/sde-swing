@@ -39,7 +39,7 @@ def _install_final_watchlist_presentation_contract() -> None:
 
     Presentation-only rules:
     - detail cards are actionable BUY READY / BUY CANDIDATE variants only;
-    - at most 10 detail cards are emitted;
+    - at most 10 detail cards are generated and emitted;
     - WATCH/WAIT/AVOID stay in summary/CSV and never consume chart-card slots;
     - the legacy summary sentence is aligned with the 10-card contract.
 
@@ -63,22 +63,25 @@ def _install_final_watchlist_presentation_contract() -> None:
 
     @wraps(original_build)
     def locked_build(self, data):
-        artifacts = list(original_build(self, data))
-        result = []
-        detail_count = 0
+        configured_limit = int(getattr(self, "max_watchlist_messages", 0) or 0)
+        effective_limit = (
+            FINAL_WATCHLIST_MAX_DETAIL_CARDS
+            if configured_limit <= 0
+            else min(configured_limit, FINAL_WATCHLIST_MAX_DETAIL_CARDS)
+        )
+        self.max_watchlist_messages = effective_limit
+        try:
+            artifacts = list(original_build(self, data))
+        finally:
+            self.max_watchlist_messages = configured_limit
+
         for artifact in artifacts:
-            report_type = str(getattr(artifact, "report_type", "") or "").lower()
-            if report_type == "final_watchlist_detail":
-                if detail_count >= FINAL_WATCHLIST_MAX_DETAIL_CARDS:
-                    continue
-                detail_count += 1
-            elif report_type == "final_watchlist_summary":
+            if str(getattr(artifact, "report_type", "") or "").lower() == "final_watchlist_summary":
                 artifact.text = str(artifact.text or "").replace(
                     "📌 5 kartu berikut adalah 5 saham terbaik berdasarkan status eksekusi dan Final Score.",
                     "📌 Maksimal 10 chart-card berikut memuat BUY READY / BUY CANDIDATE terbaik berdasarkan status eksekusi dan Final Score.",
                 )
-            result.append(artifact)
-        return result
+        return artifacts
 
     builder_class.build_final_watchlist = locked_build
     builder_class._final_watchlist_contract_installed = True
