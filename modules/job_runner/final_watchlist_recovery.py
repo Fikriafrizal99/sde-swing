@@ -5,9 +5,16 @@ from __future__ import annotations
 Normal exact resend intentionally selects only fully delivered source runs.  This
 module covers the different recovery case where the report bundle was prepared
 and archived successfully but every Telegram delivery attempt failed before any
-message_id was returned.  Recovery replays only immutable, hash-locked run-scoped
+message_id was returned. Recovery replays only immutable, hash-locked run-scoped
 preview/archive files; it never invokes a formatter, engine, or mutable LATEST
 artifact.
+
+Recovery is resumable. Confirmed SENT entries are checkpointed and never sent a
+second time. A read timeout after an outbound request is deliberately treated as
+DELIVERY_STATE_UNCERTAIN instead of being retried automatically because Telegram
+may have accepted the message even though the client did not receive the HTTP
+response. Later entries remain eligible so one ambiguous request cannot suppress
+the rest of an otherwise valid bundle.
 """
 
 import json
@@ -23,6 +30,7 @@ from .runtime import RunnerContext, append_jsonl, now_wib, read_json, write_json
 
 
 RECOVERY_SELECTION_SCHEMA = "SDE_FINAL_WATCHLIST_RECOVERY_SELECTION_V1"
+_RECOVERY_COPY_MODE = "ARCHIVED_PREVIEW_EXACT_RECOVERY"
 _MODERN_TYPES = {
     "final_watchlist_summary",
     "final_watchlist_detail",
@@ -39,6 +47,63 @@ def _safe_error(exc: Exception) -> str:
     # Requests exceptions can embed the Telegram bot token in the request URL.
     text = f"{type(exc).__name__}: {exc}"
     return re.sub(r"/bot[^/\s]+/", "/bot***REDACTED***/", text)
+
+
+def _looks_like_ambiguous_read_timeout(value: Any) -> bool:
+    text = str(value or "").lower()
+    return "readtimeout" in text or "read timed out" in text
+
+
+def _recovery_checkpoint(
+    ctx: RunnerContext,
+    source: ExistingDelivery,
+) -> tuple[dict[int, list[int]], set[int]]:
+    """Return confirmed-sent and timeout-uncertain sequences from prior attempts.
+
+    A confirmed Telegram message_id is authoritative for suppression. An older
+    FAILED row that contains ReadTimeout is upgraded to uncertainty here so the
+    first recovery implementation can be resumed safely without re-sending the
+    request whose remote outcome is unknown.
+    """
+    log_path = exact._delivery_log_path(ctx)
+    try:
+        events = exact._read_delivery_events(log_path)
+    except ExactDeliveryError:
+        return {}, set()
+
+    confirmed: dict[int, list[int]] = {}
+    uncertain: set[int] = set()
+    for event in events:
+        if not bool(event.get("force_resend")):
+            continue
+        if str(event.get("copy_mode") or "") != _RECOVERY_COPY_MODE:
+            continue
+        if str(event.get("source_run_id") or "") != source.source_run_id:
+            continue
+        event_signature = str(event.get("source_delivery_signature") or "")
+        if event_signature and event_signature != source.signature:
+            continue
+        try:
+            sequence = int(event.get("delivery_sequence") or 0)
+        except (TypeError, ValueError):
+            continue
+        if sequence <= 0:
+            continue
+
+        status = str(event.get("status") or "").upper()
+        message_ids = exact._message_ids(event)
+        if status in {"SENT", "RECOVERY_ALREADY_SENT"} and message_ids:
+            confirmed[sequence] = message_ids
+            uncertain.discard(sequence)
+            continue
+        if sequence in confirmed:
+            continue
+        if status == "DELIVERY_STATE_UNCERTAIN" or (
+            status == "FAILED" and _looks_like_ambiguous_read_timeout(event.get("error"))
+        ):
+            uncertain.add(sequence)
+
+    return confirmed, uncertain
 
 
 def _candidate_groups(ctx: RunnerContext) -> list[tuple[str, list[dict[str, Any]]]]:
@@ -94,7 +159,7 @@ def _canonical_failed_entries(
         raise ExactDeliveryError(f"FINAL_WATCHLIST_RECOVERY_SUMMARY_MISSING:{run_id}:{family}")
 
     # Recovery is allowed only when Telegram gave us zero acknowledgement for
-    # the whole logical bundle.  Any message_id means a resend could duplicate
+    # the original logical bundle. Any message_id means a resend could duplicate
     # content, so fail closed and require manual investigation instead.
     acknowledged = [
         message_id
@@ -361,15 +426,22 @@ def replay_recoverable_final_watchlist(
     ctx: RunnerContext,
     source: ExistingDelivery,
 ) -> list[dict[str, Any]]:
-    """Send the selected immutable archive directly; no copyMessage is possible."""
+    """Resume-safe replay of the selected immutable archive.
+
+    Confirmed prior sends are suppressed. Read-timeout ambiguity is never
+    retried automatically and does not block later sequences.
+    """
     specs = exact._archive_replay_specs(source)
+    confirmed, uncertain = _recovery_checkpoint(ctx, source)
     results: list[dict[str, Any]] = []
-    failed = False
+    hard_failed = False
     total = len(source.entries)
     log_path = exact._delivery_log_path(ctx)
 
     for replay_sequence, entry in enumerate(source.entries, start=1):
         report_type = str(entry.get("report_type") or "").strip().lower()
+        spec = specs[replay_sequence]
+        preview_path = spec.get("preview_path")
         base = {
             "time": now_wib().isoformat(timespec="seconds"),
             "run_id": ctx.run_id,
@@ -381,13 +453,46 @@ def replay_recoverable_final_watchlist(
             "message_thread_id": str(entry.get("message_thread_id") or ""),
             "delivery_sequence": replay_sequence,
             "delivery_total": total,
-            "copy_mode": "ARCHIVED_PREVIEW_EXACT_RECOVERY",
+            "copy_mode": _RECOVERY_COPY_MODE,
             "force_resend": True,
             "source_delivery_signature": source.signature,
             "source_delivery_mode": "RECOVERABLE_UNSENT",
+            "recovery_preview_path": str(preview_path or ""),
         }
-        if failed:
-            event = {**base, "status": "SKIPPED_AFTER_RECOVERY_FAILURE", "telegram_message_ids": []}
+
+        if replay_sequence in confirmed:
+            ids = confirmed[replay_sequence]
+            event = {
+                **base,
+                "status": "RECOVERY_ALREADY_SENT",
+                "part_count": len(ids),
+                "telegram_message_ids": ids,
+                "checkpoint_reused": True,
+            }
+            append_jsonl(log_path, event)
+            results.append(event)
+            continue
+
+        if replay_sequence in uncertain:
+            event = {
+                **base,
+                "status": "DELIVERY_STATE_UNCERTAIN",
+                "part_count": 0,
+                "telegram_message_ids": [],
+                "automatic_retry_blocked": True,
+                "manual_verification_required": True,
+                "reason": "PRIOR_READ_TIMEOUT_REMOTE_OUTCOME_UNKNOWN",
+            }
+            append_jsonl(log_path, event)
+            results.append(event)
+            continue
+
+        if hard_failed:
+            event = {
+                **base,
+                "status": "SKIPPED_AFTER_RECOVERY_FAILURE",
+                "telegram_message_ids": [],
+            }
             append_jsonl(log_path, event)
             results.append(event)
             continue
@@ -397,7 +502,7 @@ def replay_recoverable_final_watchlist(
             exact._send_archived_entry(
                 ctx,
                 entry,
-                specs[replay_sequence],
+                spec,
                 message_ids=sent_ids,
             )
             event = {
@@ -409,14 +514,35 @@ def replay_recoverable_final_watchlist(
             append_jsonl(log_path, event)
             results.append(event)
         except Exception as exc:
-            failed = True
-            event = {
-                **base,
-                "status": "FAILED",
-                "part_count": len(sent_ids),
-                "telegram_message_ids": sent_ids,
-                "error": _safe_error(exc),
-            }
+            safe_error = _safe_error(exc)
+            ambiguous = bool(sent_ids) or _looks_like_ambiguous_read_timeout(safe_error)
+            if ambiguous:
+                event = {
+                    **base,
+                    "status": "DELIVERY_STATE_UNCERTAIN",
+                    "part_count": len(sent_ids),
+                    "telegram_message_ids": sent_ids,
+                    "error": safe_error,
+                    "automatic_retry_blocked": True,
+                    "manual_verification_required": True,
+                    "reason": (
+                        "PARTIAL_ACK_THEN_FAILURE"
+                        if sent_ids
+                        else "READ_TIMEOUT_REMOTE_OUTCOME_UNKNOWN"
+                    ),
+                }
+                # Do not make a remote-ack ambiguity suppress unrelated later
+                # payloads. They can still be sent exactly once from the same
+                # immutable bundle.
+            else:
+                hard_failed = True
+                event = {
+                    **base,
+                    "status": "FAILED",
+                    "part_count": 0,
+                    "telegram_message_ids": [],
+                    "error": safe_error,
+                }
             append_jsonl(log_path, event)
             results.append(event)
     return results
