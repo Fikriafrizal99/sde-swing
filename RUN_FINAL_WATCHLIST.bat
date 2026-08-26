@@ -43,7 +43,7 @@ echo.
 echo Membuat preview format FINAL dari hasil trading terakhir !PREVIEW_DATE!...
 echo Engine, scoring, decision, dan broker calculation TIDAK dijalankan ulang.
 rem Legacy compatibility reference: tools\resend_final_watchlist.py --trade-date !PREVIEW_DATE! --preview-only
-%SDE_PYTHON_CMD% -u tools\final_watchlist_snapshot.py --trade-date !PREVIEW_DATE! --preview-only
+%SDE_PYTHON_CMD% -u tools\final_watchlist_snapshot.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date !PREVIEW_DATE! --preview-only
 set "RC=!ERRORLEVEL!"
 set "STATUS_VIEW=--delivery"
 goto STATUS
@@ -56,7 +56,7 @@ if not defined RESEND_DATE goto RESEND_DATE_FAILED
 echo.
 echo Mengirim snapshot Final Watchlist yang terakhir dicek di [2] untuk !RESEND_DATE!...
 rem Legacy compatibility reference: tools\resend_final_watchlist.py --trade-date !RESEND_DATE!
-%SDE_PYTHON_CMD% -u tools\final_watchlist_snapshot.py --trade-date !RESEND_DATE!
+%SDE_PYTHON_CMD% -u tools\final_watchlist_snapshot.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date !RESEND_DATE!
 set "RC=!ERRORLEVEL!"
 set "STATUS_VIEW=--delivery"
 goto STATUS
