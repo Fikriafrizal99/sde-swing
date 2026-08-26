@@ -40,12 +40,8 @@ def _row(*, period_type: str = "3D") -> dict:
         "today_pulse_direction": "DISTRIBUTION",
         "today_pulse_top_buyers": [{"broker": "TD"}],
         "broker_alignment": "NEGATIVE_DIVERGENCE",
-        # These retired keys deliberately prove that the canonical formatter
-        # does not render legacy reconstructed interpretation.
         "buy_days": 4,
         "sell_days": 1,
-        "multi_day_flow": "DISTRIBUTION",
-        "flow_persistence": "STABLE_DOMINANCE",
         "trend": "BULLISH",
         "phase": "WAIT_TRIGGER",
         "support": 3_370,
@@ -55,27 +51,26 @@ def _row(*, period_type: str = "3D") -> dict:
     }
 
 
-def test_detail_uses_primary_facts_and_today_only_as_labeled_context() -> None:
+def test_detail_uses_locked_compact_primary_facts() -> None:
     text = format_watchlist_detail(_row())
 
-    assert "BROKER PRIMARY" in text
-    assert "PRIMARY 3D | STOCKBIT AGGREGATE EXPORT" in text
-    assert "PX" in text and "PS" in text
-    assert "TODAY PULSE (Exact 1D)" in text
-    assert "NEGATIVE DIVERGENCE" in text
-    assert "Buy/Sell" not in text
-    assert "Persistence" not in text
-    assert "STABLE DOMINANCE" not in text
-    assert "<b>Action:</b>" in text
-    assert "Tunggu trigger valid di area 3.820–3.900. Jangan chase." in text
+    assert "📈 <b>TINS | BUY ON TRIGGER | 82%</b>" in text
+    assert "🏦 ACCUMULATION 78/100" in text
+    assert "Net +Rp9M | B/S 4/1" in text
+    assert "Cost 3.804 (+0,74%)" in text
+    assert "🟢 PX 9M" in text and "🔴 PS 2M" in text
+    assert "Tunggu break >3.980. Jangan chase." in text
+    assert "BROKER PRIMARY" not in text
+    assert "TODAY PULSE" not in text
+    assert "NEGATIVE DIVERGENCE" not in text
 
 
-def test_primary_1d_does_not_render_a_second_today_fact() -> None:
+def test_primary_1d_does_not_add_duplicate_context_to_compact_card() -> None:
     text = format_watchlist_detail(_row(period_type="1D"))
 
-    assert "TODAY PULSE (Exact 1D)" not in text
-    assert "sama dengan PRIMARY 1D" in text
-    assert "NEGATIVE DIVERGENCE" not in text
+    assert "TODAY PULSE" not in text
+    assert "PRIMARY 1D" not in text
+    assert "🏦 ACCUMULATION 78/100" in text
 
 
 def test_compatibility_module_is_an_alias_not_second_formatter() -> None:
