@@ -113,7 +113,7 @@ def test_actual_buy_resolves_signal_as_of_buy_date_not_latest_active(tmp_path: P
         )
         assert tracker.upsert_signal(conn, historical) == "INSERTED"
         conn.execute(
-            "UPDATE signal_outcome_ledger SET current_status='CLOSED', exit_date='2026-08-20' WHERE signal_id=?",
+            "UPDATE signal_outcome_ledger SET current_status='CLOSED', exit_date='2026-08-13' WHERE signal_id=?",
             (historical["signal_id"],),
         )
         conn.commit()
