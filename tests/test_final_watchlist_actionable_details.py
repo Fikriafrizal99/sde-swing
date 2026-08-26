@@ -34,11 +34,13 @@ def _row(symbol: str, decision: str, score: float) -> dict:
     }
 
 
-def test_final_watchlist_sends_all_actionable_details_only(tmp_path, monkeypatch) -> None:
+def test_final_watchlist_sends_actionable_buy_ready_and_candidate_details_only(tmp_path, monkeypatch) -> None:
+    chart = tmp_path / "chart.png"
+    chart.write_bytes(b"chart")
     monkeypatch.setattr(
         reports_module,
         "generate_final_watchlist_chart",
-        lambda *args, **kwargs: tmp_path / "chart.png",
+        lambda *args, **kwargs: chart,
     )
     builder = EnhancedDailyReportBuilder(
         output_root=tmp_path / "output",
@@ -71,20 +73,20 @@ def test_final_watchlist_sends_all_actionable_details_only(tmp_path, monkeypatch
     details = [item for item in artifacts if item.report_type == "final_watchlist_detail"]
     detail_symbols = [item.symbol for item in details]
 
-    assert len(details) == 8
+    assert len(details) == 9
     assert set(detail_symbols) == {
+        "READY1",
         "BOT1", "BOT2", "BOT3", "BOT4",
         "BC1", "BC2", "BC3", "BC4",
     }
-    assert "READY1" not in detail_symbols
     assert "WATCH1" not in detail_symbols
     assert "WATCH2" not in detail_symbols
     assert "AVOID1" not in detail_symbols
+    assert all(item.attachment_path is not None for item in details)
 
     summary = next(item for item in artifacts if item.report_type == "final_watchlist_summary")
-    assert "READY1" not in summary.text
-    assert "WATCH1" not in summary.text
-    assert "WATCH2" not in summary.text
+    assert "READY1" in summary.text
+    assert "Maksimal 10 chart-card" in summary.text
 
     csv_artifact = next(item for item in artifacts if item.report_type == "final_watchlist_csv")
     with csv_artifact.attachment_path.open("r", encoding="utf-8-sig", newline="") as handle:
