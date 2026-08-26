@@ -40,7 +40,7 @@ def _write_fixture(root: Path) -> tuple[Path, Path, Path]:
 
     dates = pd.bdate_range(end="2026-08-24", periods=35)
     benchmark = pd.DataFrame({
-        "Date": dates,
+        "Date": dates.strftime("%Y-%m-%d"),
         "Close": [1000 + index * 5 for index in range(len(dates))],
     })
     # Simulate Yahoo exposing an in-progress 26 Aug daily candle while the
