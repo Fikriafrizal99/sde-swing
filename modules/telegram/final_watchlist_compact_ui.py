@@ -14,6 +14,13 @@ from typing import Any, Mapping
 
 
 _MISSING = {"", "nan", "none", "null", "engine_data_not_available", "data_not_available", "n/a"}
+_GENERIC_TRIGGER_CODES = {
+    "ENTRY_NOT_TRIGGERED",
+    "TRIGGER_NOT_MET",
+    "WAIT_FOR_CONFIRMATION",
+    "WAIT_FOR_ENTRY_TRIGGER",
+    "WAIT_FOR_ENTRY_ZONE",
+}
 
 
 def _raw(value: Any) -> str:
@@ -82,11 +89,11 @@ def _compact_number(value: float, decimals: int = 2) -> str:
     return rendered.replace(".", ",")
 
 
-def _money(value: Any, *, with_rp: bool = True) -> str:
+def _money(value: Any, *, with_rp: bool = True, signed: bool = True) -> str:
     number = _num(value)
     if number is None:
         return "N/A"
-    sign = "+" if number > 0 else "-" if number < 0 else ""
+    sign = "+" if signed and number > 0 else "-" if signed and number < 0 else ""
     amount = abs(number)
     if amount >= 1_000_000_000:
         body = f"{_compact_number(amount / 1_000_000_000)}B"
@@ -149,7 +156,11 @@ def _participants(value: Any) -> str:
         code = _enum(item.get("broker") or item.get("code") or item.get("name"), "", upper=True)
         if not code:
             continue
-        amount = _money(item.get("value") or item.get("net_value") or item.get("amount"), with_rp=False)
+        amount = _money(
+            item.get("value") or item.get("net_value") or item.get("amount"),
+            with_rp=False,
+            signed=False,
+        )
         rendered.append(f"{html.escape(code)} {html.escape(amount)}" if amount != "N/A" else html.escape(code))
     return " • ".join(rendered) if rendered else "N/A"
 
@@ -163,7 +174,46 @@ def _buy_sell_days(row: Mapping[str, Any]) -> tuple[str, str]:
     )
 
 
+def _explicit_trigger(row: Mapping[str, Any]) -> str:
+    candidate = _raw(_pick(
+        row,
+        "trigger_description",
+        "Trigger_Description",
+        "Entry_Trigger",
+        "Execution_Trigger",
+        default="",
+    )).rstrip(" .")
+    if candidate:
+        normalized = candidate.replace("-", "_").replace(" ", "_").upper()
+        if normalized not in _GENERIC_TRIGGER_CODES and not normalized.startswith("ENGINE_DATA_"):
+            return candidate
+
+    pending = _pick(row, "waiting_triggers", "Waiting_Triggers", default=[])
+    if isinstance(pending, str) and pending.strip().startswith("["):
+        try:
+            pending = json.loads(pending)
+        except Exception:
+            pending = []
+    if not isinstance(pending, (list, tuple)):
+        return ""
+    for item in pending:
+        if isinstance(item, Mapping):
+            item = item.get("description") or item.get("trigger") or item.get("condition")
+        candidate = _raw(item).rstrip(" .")
+        if not candidate:
+            continue
+        normalized = candidate.replace("-", "_").replace(" ", "_").upper()
+        if normalized in _GENERIC_TRIGGER_CODES or normalized.startswith("ENGINE_DATA_"):
+            continue
+        return candidate
+    return ""
+
+
 def _action(row: Mapping[str, Any]) -> str:
+    explicit = _explicit_trigger(row)
+    if explicit:
+        return f"⚠️ Trigger: {html.escape(explicit)}. Jangan chase."
+
     resistance = _num(_pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance"))
     current = _num(_pick(row, "last_price", "current_price", "Reference_Close"))
     low = _num(_pick(row, "entry_low", "Entry_Zone_Low"))
@@ -202,7 +252,7 @@ def format_watchlist_detail(row: Mapping[str, Any]) -> str:
 
     broker = html.escape(_enum(_pick(row, "broker_status", "broker_signal", "Broker_Confirmation", "broker_direction"), "INSUFFICIENT DATA", upper=True))
     broker_score = _score(_pick(row, "broker_score", "Broker_Score"))
-    net_flow = html.escape(_money(_pick(row, "broker_net_flow", "net_flow", "NET_FLOW"), with_rp=True))
+    net_flow = html.escape(_money(_pick(row, "broker_net_flow", "net_flow", "NET_FLOW"), with_rp=True, signed=True))
     buy_days, sell_days = _buy_sell_days(row)
     buy_cost = _price(_pick(row, "bandar_buy_cost", "avg_buyer_price", "weighted_broker_buy_cost"))
     vs_cost = html.escape(_pct(_pick(row, "distance_to_buy_cost", "distance_to_buyer_avg_pct", "distance_to_buy_cost_pct")))
