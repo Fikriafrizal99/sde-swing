@@ -72,9 +72,9 @@ if not "!REFRESH_RC!"=="0" (
 echo.
 echo [2/2] Jalankan Position Management...
 if "!ROUTE_RC!"=="0" (
-  %SDE_PYTHON_CMD% -u modules\portfolio\position_management_runtime.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date "!TRADE_DATE!" --telegram !FORCE_ARG!
+  %SDE_PYTHON_CMD% -u modules\portfolio\position_management_runtime_integrity.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date "!TRADE_DATE!" --telegram !FORCE_ARG!
 ) else (
-  %SDE_PYTHON_CMD% -u modules\portfolio\position_management_runtime.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date "!TRADE_DATE!" --no-telegram
+  %SDE_PYTHON_CMD% -u modules\portfolio\position_management_runtime_integrity.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date "!TRADE_DATE!" --no-telegram
 )
 set "RC=!ERRORLEVEL!"
 if "!ROUTE_RC!"=="0" %SDE_PYTHON_CMD% -u modules\portfolio\portfolio_delivery_status.py
