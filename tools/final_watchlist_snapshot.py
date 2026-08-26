@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ if str(ROOT) not in sys.path:
 
 from modules.ai_interpretation import GeminiInterpreter
 from modules.job_runner import enhanced_runtime_bridge as bridge
+from modules.job_runner import final_watchlist_snapshot as snapshot_runtime
 from modules.job_runner.enhanced_daily_reports import EnhancedDailyReportBuilder
 from modules.job_runner.existing_delivery import ExactDeliveryError
 from modules.job_runner.final_watchlist_snapshot import (
@@ -78,6 +80,43 @@ def _restore_canonical_csv(path: Path, existed: bool, backup: bytes | None) -> N
             pass
 
 
+def _decision_manifest_hint(ctx) -> dict[str, str]:
+    """Bind Preview to the exact existing Decision Engine run, never preview run-id."""
+    decisions_path = ctx.path("decision_output_dir", "data/output/decision") / "FINAL_DECISION_V3.csv"
+    if not decisions_path.exists() or not decisions_path.is_file() or decisions_path.stat().st_size <= 0:
+        raise ExactDeliveryError(f"FINAL_WATCHLIST_DECISION_SOURCE_NOT_FOUND:{decisions_path}")
+
+    with decisions_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    if not rows:
+        raise ExactDeliveryError("FINAL_WATCHLIST_DECISION_SOURCE_EMPTY")
+
+    run_ids = {
+        str(row.get("Run_ID") or "").strip()
+        for row in rows
+        if str(row.get("Run_ID") or "").strip()
+    }
+    if len(run_ids) != 1:
+        rendered = ",".join(sorted(run_ids)) if run_ids else "MISSING"
+        raise ExactDeliveryError(f"FINAL_WATCHLIST_DECISION_RUN_ID_AMBIGUOUS:{rendered}")
+    run_id = next(iter(run_ids))
+
+    date_aliases = ("Trade_Date", "Technical_Date", "Analysis_Date", "Data_Date", "Date")
+    observed_dates: set[str] = set()
+    for row in rows:
+        for key in date_aliases:
+            value = str(row.get(key) or "").strip()[:10]
+            if len(value) == 10 and value[4:5] == "-" and value[7:8] == "-":
+                observed_dates.add(value)
+    if observed_dates and ctx.trade_date.isoformat() not in observed_dates:
+        raise ExactDeliveryError(
+            "FINAL_WATCHLIST_DECISION_DATE_MISMATCH:"
+            + ",".join(sorted(observed_dates))
+            + f":{ctx.trade_date.isoformat()}"
+        )
+    return {"Run_ID": run_id}
+
+
 def _delivery_summary(delivery: list[dict]) -> tuple[str, str, int]:
     statuses = [str(item.get("status") or "").upper() for item in delivery]
     if statuses and all(status in {"SENT", "SNAPSHOT_ALREADY_SENT"} for status in statuses):
@@ -130,13 +169,19 @@ def main() -> int:
         with FileLock(ctx):
             if args.preview_only:
                 original_builder = bridge._builder
+                original_snapshot_payload_builder = snapshot_runtime.final_watchlist_payloads
                 canonical_csv = _canonical_csv_path(ctx)
                 csv_existed = canonical_csv.exists() and canonical_csv.is_file()
                 csv_backup = canonical_csv.read_bytes() if csv_existed else None
+                source_manifest = _decision_manifest_hint(ctx)
                 bridge._builder = _preview_builder
+                snapshot_runtime.final_watchlist_payloads = (
+                    lambda preview_ctx: original_snapshot_payload_builder(preview_ctx, source_manifest)
+                )
                 try:
                     snapshot = create_snapshot(ctx)
                 finally:
+                    snapshot_runtime.final_watchlist_payloads = original_snapshot_payload_builder
                     bridge._builder = original_builder
                     _restore_canonical_csv(canonical_csv, csv_existed, csv_backup)
 
@@ -152,6 +197,7 @@ def main() -> int:
                     "preview_selection": snapshot.get("selection_path"),
                     "snapshot_run_id": snapshot.get("snapshot_run_id"),
                     "snapshot_signature": snapshot.get("snapshot_signature"),
+                    "source_decision_run_id": source_manifest.get("Run_ID"),
                     "canonical_report_types": report_types,
                     "snapshot_message_count": len(report_types),
                     "detail_card_count": detail_count,
@@ -161,12 +207,14 @@ def main() -> int:
                     "warnings": [
                         "PREVIEW_CURRENT_PRESENTATION; formatter compact terbaru diterapkan ke hasil trading yang sudah ada.",
                         "NO_ENGINE_RERUN; Final Decision, entry plan, broker facts, dan score tidak dihitung ulang.",
+                        "SOURCE_RUN_LOCKED; Preview memakai Run_ID yang tertanam di FINAL_DECISION_V3.csv.",
                         "NO_AI_RERUN; Preview tidak memanggil interpreter AI.",
                         "CANONICAL_OUTPUT_PRESERVED; chart preview run-scoped dan CSV canonical dikembalikan setelah snapshot dibekukan.",
                         "PREVIEW_SEND_LOCKED; menu [3] hanya mengirim snapshot hash-locked yang dibuat oleh preview ini.",
                     ],
                 })
                 print(f"TRADE DATE: {ctx.trade_date.isoformat()}")
+                print(f"SOURCE DECISION RUN: {source_manifest.get('Run_ID')}")
                 print(f"SNAPSHOT RUN: {snapshot.get('snapshot_run_id')}")
                 print("BUNDLE: 1 summary + " + str(detail_count) + " chart-card + 1 CSV")
                 print(f"DETAIL LIMIT: {MAX_DETAIL_CARDS}")
