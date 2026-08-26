@@ -127,6 +127,12 @@ def write_failed_bundle(tmp: Path, *, partial_ack: bool = False) -> str:
     return run_id
 
 
+def append_recovery_event(tmp: Path, event: dict) -> None:
+    log = tmp / "state" / "delivery.jsonl"
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
 class FinalWatchlistFailedDeliveryRecoveryTests(unittest.TestCase):
     def test_failed_without_any_telegram_ack_is_recoverable(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -142,7 +148,7 @@ class FinalWatchlistFailedDeliveryRecoveryTests(unittest.TestCase):
             self.assertEqual(len(source.entries), 3)
             self.assertTrue(all(path.exists() for path in source.preview_paths))
 
-    def test_any_partial_telegram_ack_blocks_recovery(self) -> None:
+    def test_any_partial_telegram_ack_blocks_initial_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             ctx = make_ctx(tmp)
@@ -200,10 +206,133 @@ class FinalWatchlistFailedDeliveryRecoveryTests(unittest.TestCase):
             self.assertTrue(all(item["status"] == "SENT" for item in result))
             self.assertTrue(all(item["copy_mode"] == "ARCHIVED_PREVIEW_EXACT_RECOVERY" for item in result))
 
+    def test_confirmed_recovery_send_is_checkpointed_and_not_sent_twice(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            ctx = make_ctx(tmp)
+            run_id = write_failed_bundle(tmp)
+            source, _, _ = find_recoverable_final_watchlist(ctx)
+            append_recovery_event(tmp, {
+                "time": "2026-08-26T20:00:00+07:00",
+                "run_id": "RECOVERY-OLD",
+                "job": "final_watchlist",
+                "trade_date": "2026-08-26",
+                "report_type": "final_watchlist_summary",
+                "source_run_id": run_id,
+                "delivery_sequence": 1,
+                "delivery_total": 3,
+                "copy_mode": "ARCHIVED_PREVIEW_EXACT_RECOVERY",
+                "force_resend": True,
+                "source_delivery_signature": source.signature,
+                "status": "SENT",
+                "telegram_message_ids": [7001],
+            })
+            calls: list[int] = []
+
+            def fake_send(_ctx, entry, _spec, message_ids=None):
+                calls.append(int(entry.get("delivery_sequence") or 0))
+                message_ids.append(8000 + len(calls))
+                return message_ids
+
+            with patch(
+                "modules.job_runner.existing_delivery._send_archived_entry",
+                side_effect=fake_send,
+            ):
+                result = replay_recoverable_final_watchlist(ctx, source)
+
+            self.assertEqual(calls, [2, 3])
+            self.assertEqual(result[0]["status"], "RECOVERY_ALREADY_SENT")
+            self.assertEqual(result[0]["telegram_message_ids"], [7001])
+            self.assertEqual(result[1]["status"], "SENT")
+            self.assertEqual(result[2]["status"], "SENT")
+
+    def test_prior_read_timeout_is_not_retried_and_later_entries_continue(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            ctx = make_ctx(tmp)
+            run_id = write_failed_bundle(tmp)
+            source, _, _ = find_recoverable_final_watchlist(ctx)
+            append_recovery_event(tmp, {
+                "time": "2026-08-26T20:00:00+07:00",
+                "run_id": "RECOVERY-OLD",
+                "job": "final_watchlist",
+                "trade_date": "2026-08-26",
+                "report_type": "final_watchlist_summary",
+                "source_run_id": run_id,
+                "delivery_sequence": 1,
+                "delivery_total": 3,
+                "copy_mode": "ARCHIVED_PREVIEW_EXACT_RECOVERY",
+                "force_resend": True,
+                "source_delivery_signature": source.signature,
+                "status": "SENT",
+                "telegram_message_ids": [7001],
+            })
+            append_recovery_event(tmp, {
+                "time": "2026-08-26T20:01:00+07:00",
+                "run_id": "RECOVERY-OLD",
+                "job": "final_watchlist",
+                "trade_date": "2026-08-26",
+                "report_type": "final_watchlist_detail",
+                "source_run_id": run_id,
+                "delivery_sequence": 2,
+                "delivery_total": 3,
+                "copy_mode": "ARCHIVED_PREVIEW_EXACT_RECOVERY",
+                "force_resend": True,
+                "source_delivery_signature": source.signature,
+                "status": "FAILED",
+                "telegram_message_ids": [],
+                "error": "ReadTimeout: HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out. (read timeout=60)",
+            })
+            calls: list[int] = []
+
+            def fake_send(_ctx, entry, _spec, message_ids=None):
+                calls.append(int(entry.get("delivery_sequence") or 0))
+                message_ids.append(9001)
+                return message_ids
+
+            with patch(
+                "modules.job_runner.existing_delivery._send_archived_entry",
+                side_effect=fake_send,
+            ):
+                result = replay_recoverable_final_watchlist(ctx, source)
+
+            self.assertEqual(calls, [3])
+            self.assertEqual(result[0]["status"], "RECOVERY_ALREADY_SENT")
+            self.assertEqual(result[1]["status"], "DELIVERY_STATE_UNCERTAIN")
+            self.assertTrue(result[1]["automatic_retry_blocked"])
+            self.assertEqual(result[2]["status"], "SENT")
+
+    def test_live_read_timeout_is_uncertain_and_does_not_skip_later_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            ctx = make_ctx(tmp)
+            write_failed_bundle(tmp)
+            source, _, _ = find_recoverable_final_watchlist(ctx)
+            calls: list[int] = []
+
+            def fake_send(_ctx, entry, _spec, message_ids=None):
+                sequence = int(entry.get("delivery_sequence") or 0)
+                calls.append(sequence)
+                if sequence == 2:
+                    raise TimeoutError("ReadTimeout: read timed out")
+                message_ids.append(9100 + sequence)
+                return message_ids
+
+            with patch(
+                "modules.job_runner.existing_delivery._send_archived_entry",
+                side_effect=fake_send,
+            ):
+                result = replay_recoverable_final_watchlist(ctx, source)
+
+            self.assertEqual(calls, [1, 2, 3])
+            self.assertEqual(result[0]["status"], "SENT")
+            self.assertEqual(result[1]["status"], "DELIVERY_STATE_UNCERTAIN")
+            self.assertEqual(result[2]["status"], "SENT")
+
     def test_windows_menu_routes_preview_and_resend_through_recovery_wrapper(self) -> None:
         source = (ROOT / "RUN_FINAL_WATCHLIST.bat").read_text(encoding="utf-8-sig")
         self.assertEqual(source.count("tools\\resend_final_watchlist_recovery.py"), 2)
-        self.assertIn("Preview exact/recovery source - kunci source run", source)
+        self.assertIn("Preview exact pesan terakhir - kunci source run", source)
 
 
 if __name__ == "__main__":
