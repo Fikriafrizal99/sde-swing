@@ -164,7 +164,7 @@ def record_portfolio_buy(
         """,
         (
             position_id,
-            linked_signal or None,
+            linked_signal,
             symbol,
             buy_date,
             quantity,
