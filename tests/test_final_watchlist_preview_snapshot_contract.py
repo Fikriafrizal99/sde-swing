@@ -97,15 +97,23 @@ def test_final_watchlist_menu_uses_preview_locked_snapshot_flow() -> None:
     assert "maks 10 chart-card" in source
     assert "[2] Preview / cek hasil trading terakhir" in source
     assert "[3] Kirim ulang snapshot yang sudah dicek di [2]" in source
-    assert "tools\\final_watchlist_snapshot.py --trade-date !PREVIEW_DATE! --preview-only" in source
-    assert "tools\\final_watchlist_snapshot.py --trade-date !RESEND_DATE!" in source
+    assert (
+        "tools\\final_watchlist_snapshot.py --config config\\pipeline.json --scheduler-config config\\scheduler.json "
+        "--trade-date !PREVIEW_DATE! --preview-only"
+    ) in source
+    assert (
+        "tools\\final_watchlist_snapshot.py --config config\\pipeline.json --scheduler-config config\\scheduler.json "
+        "--trade-date !RESEND_DATE!"
+    ) in source
     assert "resend_final_watchlist_recovery.py" not in source
 
 
-def test_snapshot_tool_is_presentation_only_and_hash_locked() -> None:
+def test_snapshot_tool_is_presentation_only_hash_locked_and_uses_canonical_config() -> None:
     source = (ROOT / "tools/final_watchlist_snapshot.py").read_text(encoding="utf-8")
     runtime = (ROOT / "modules/job_runner/final_watchlist_snapshot.py").read_text(encoding="utf-8")
 
+    assert 'parser.add_argument("--config", default="config/pipeline.json")' in source
+    assert "config/config.json" not in source
     assert "NO_ENGINE_RERUN" in source
     assert "NO_AI_RERUN" in source
     assert "PREVIEW_SEND_LOCKED" in source
