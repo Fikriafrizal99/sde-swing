@@ -81,34 +81,43 @@ if not "!RC!"=="0" (
 )
 echo [OK] BUY aktual tersimpan.
 
-rem Freeze the portfolio-owned initial plan immediately.  This prevents a
-rem later maintenance run from borrowing a newer same-symbol trading signal.
-set "FREEZE_DATE_ARG="
-if defined BUY_DATE set "FREEZE_DATE_ARG=--buy-date !BUY_DATE!"
-%SDE_PYTHON_CMD% -u modules\portfolio\manual_position_plan.py --db data\database\sde_swing_history.db freeze --symbol "!SYMBOL!" --quantity "!QTY!" --buy-price "!PRICE!" !FREEZE_DATE_ARG!
-set "FREEZE_RC=!ERRORLEVEL!"
-if "!FREEZE_RC!"=="0" (
-  echo [OK] Initial plan dibekukan sesuai tanggal BUY aktual.
-) else (
-  echo [WARNING] BUY tersimpan, tetapi freeze initial plan gagal. Exit code !FREEZE_RC!.
-  echo Jalankan Position Management setelah memperbarui branch; temporal guard akan mencoba repair lagi.
-)
-
 set "PLAN_ARGS="
 if defined INITIAL_SL set "PLAN_ARGS=!PLAN_ARGS! --sl !INITIAL_SL!"
 if defined TP1 set "PLAN_ARGS=!PLAN_ARGS! --tp1 !TP1!"
 if defined TP2 set "PLAN_ARGS=!PLAN_ARGS! --tp2 !TP2!"
+set "FREEZE_NEEDED=1"
+
+rem If the user supplied manual levels, persist them first. set_manual_plan
+rem invokes the temporal guard internally, so an invalid/future machine link
+rem is cleared before manual fields are applied.
 if defined PLAN_ARGS (
   set "PLAN_DATE_ARG="
   if defined BUY_DATE set "PLAN_DATE_ARG=--buy-date !BUY_DATE!"
   %SDE_PYTHON_CMD% -u modules\portfolio\manual_position_plan.py --db data\database\sde_swing_history.db set --symbol "!SYMBOL!" --quantity "!QTY!" --buy-price "!PRICE!" !PLAN_DATE_ARG! !PLAN_ARGS! --setup MANUAL
   set "PLAN_RC=!ERRORLEVEL!"
   if "!PLAN_RC!"=="0" (
-    echo [OK] Initial TP/SL manual tersimpan tanpa menimpa plan mesin yang valid.
+    echo [OK] Initial TP/SL manual tersimpan dan plan dibekukan sesuai tanggal BUY.
+    set "FREEZE_NEEDED=0"
   ) else (
     echo [WARNING] BUY sudah tersimpan, tetapi initial TP/SL manual gagal. Exit code !PLAN_RC!.
   )
 )
+
+rem Machine-linked BUYs are frozen immediately. This prevents a later
+rem maintenance run from borrowing a newer same-symbol trading signal.
+if "!FREEZE_NEEDED!"=="1" (
+  set "FREEZE_DATE_ARG="
+  if defined BUY_DATE set "FREEZE_DATE_ARG=--buy-date !BUY_DATE!"
+  %SDE_PYTHON_CMD% -u modules\portfolio\manual_position_plan.py --db data\database\sde_swing_history.db freeze --symbol "!SYMBOL!" --quantity "!QTY!" --buy-price "!PRICE!" !FREEZE_DATE_ARG!
+  set "FREEZE_RC=!ERRORLEVEL!"
+  if "!FREEZE_RC!"=="0" (
+    echo [OK] Initial plan dibekukan sesuai tanggal BUY aktual.
+  ) else (
+    echo [WARNING] BUY tersimpan, tetapi freeze initial plan gagal. Exit code !FREEZE_RC!.
+    echo Jalankan Position Management setelah memperbarui branch; temporal guard akan mencoba repair lagi.
+  )
+)
+
 call :SYNC_BROKER_TASKS
 pause
 goto MENU
