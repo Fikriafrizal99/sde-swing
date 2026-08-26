@@ -42,9 +42,9 @@ if not defined PREVIEW_DATE goto PREVIEW_DATE_FAILED
 echo.
 echo Membuat preview format FINAL dari hasil trading terakhir !PREVIEW_DATE!...
 echo Engine, scoring, decision, dan broker calculation TIDAK dijalankan ulang.
-rem Legacy compatibility reference: tools\resend_final_watchlist.py --trade-date !PREVIEW_DATE! --preview-only
 %SDE_PYTHON_CMD% -u tools\final_watchlist_snapshot.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date !PREVIEW_DATE! --preview-only
 set "RC=!ERRORLEVEL!"
+if not "!RC!"=="0" goto SNAPSHOT_ATTEMPT_FAILED
 set "STATUS_VIEW=--delivery"
 goto STATUS
 
@@ -55,14 +55,22 @@ if not defined RESEND_DATE goto RESEND_DATE_FAILED
 
 echo.
 echo Mengirim snapshot Final Watchlist yang terakhir dicek di [2] untuk !RESEND_DATE!...
-rem Legacy compatibility reference: tools\resend_final_watchlist.py --trade-date !RESEND_DATE!
 %SDE_PYTHON_CMD% -u tools\final_watchlist_snapshot.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date !RESEND_DATE!
 set "RC=!ERRORLEVEL!"
+if not "!RC!"=="0" goto SNAPSHOT_ATTEMPT_FAILED
 set "STATUS_VIEW=--delivery"
 goto STATUS
 
 :STATUS_ONLY
 %SDE_PYTHON_CMD% tools\print_job_status.py --job final_watchlist
+pause
+goto MENU
+
+:SNAPSHOT_ATTEMPT_FAILED
+echo.
+echo Snapshot attempt gagal dengan exit code !RC!.
+echo Status lama TIDAK ditampilkan agar tidak disalahartikan sebagai hasil attempt ini.
+echo Lihat error yang tercetak di atas. Untuk resend, jalankan [2] sampai RESEND READY: READY terlebih dahulu.
 pause
 goto MENU
 
