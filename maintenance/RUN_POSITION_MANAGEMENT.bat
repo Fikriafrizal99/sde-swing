@@ -61,6 +61,9 @@ if not "!BROKER_META_RC!"=="0" (
   echo [WARNING] Repair metadata broker gagal. Analisis tetap dilanjutkan tanpa mengubah raw broker data.
 )
 
+rem Integrity wrapper delegates the unchanged position_management_runtime.py
+rem after applying an analysis-date cutoff to technical evidence.
+
 echo.
 echo [1/2] Refresh data posisi OPEN...
 %SDE_PYTHON_CMD% -u modules\portfolio\refresh_open_positions.py --config config\pipeline.json --trade-date "!TRADE_DATE!"
