@@ -41,6 +41,7 @@ def _install_final_watchlist_presentation_contract() -> None:
     Presentation-only rules:
     - detail cards are actionable BUY READY / BUY CANDIDATE variants only;
     - Telegram emits at most 10 detail cards and every emitted detail has a chart;
+    - a configured positive limit below 10 remains respected;
     - chart failures remain visible in logs/CSV but never become text-only cards;
     - WATCH/WAIT/AVOID stay in summary/CSV and never consume chart-card slots.
 
@@ -65,6 +66,11 @@ def _install_final_watchlist_presentation_contract() -> None:
     @wraps(original_build)
     def locked_build(self, data):
         configured_limit = int(getattr(self, "max_watchlist_messages", 0) or 0)
+        effective_cap = (
+            FINAL_WATCHLIST_MAX_DETAIL_CARDS
+            if configured_limit <= 0
+            else min(configured_limit, FINAL_WATCHLIST_MAX_DETAIL_CARDS)
+        )
         # Build all actionable candidates so a chart failure in a higher-ranked
         # row can be replaced by the next chart-backed candidate. Only the
         # presentation result is capped; engine facts and CSV remain complete.
@@ -89,7 +95,7 @@ def _install_final_watchlist_presentation_contract() -> None:
                 attachment = getattr(artifact, "attachment_path", None)
                 if attachment in (None, ""):
                     continue
-                if chart_detail_count >= FINAL_WATCHLIST_MAX_DETAIL_CARDS:
+                if chart_detail_count >= effective_cap:
                     continue
                 chart_detail_count += 1
             result.append(artifact)
