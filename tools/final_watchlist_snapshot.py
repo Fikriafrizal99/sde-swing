@@ -43,18 +43,39 @@ def parse_args() -> argparse.Namespace:
 
 
 def _preview_builder(ctx):
-    """Build presentation only; never invoke AI during Preview Existing."""
+    """Build presentation only; never invoke AI during Preview/Cek."""
     cfg = ctx.scheduler_config.get("enhanced_reporting", {})
     builder = EnhancedDailyReportBuilder(
         output_root=resolve(cfg.get("output_root", "data/output")),
-        interpreter=GeminiInterpreter(api_key="", cache_enabled=False),
+        interpreter=GeminiInterpreter(api_key="", enabled=False, cache_enabled=False),
         max_watchlist_messages=MAX_DETAIL_CARDS,
     )
     builder.historical_dir = ctx.path("historical_dir", "data/output/historical/by_symbol")
-    builder.chart_output_root = resolve(
-        cfg.get("final_watchlist_chart_output_root", "output/final_watchlist")
+    # Preview charts are run-scoped so opening [2] never replaces the normal
+    # Final Watchlist chart files produced by the live job.
+    builder.chart_output_root = (
+        ctx.previews_root
+        / ctx.trade_date.isoformat()
+        / f"{ctx.run_id}_rendered_charts"
     )
     return builder
+
+
+def _canonical_csv_path(ctx) -> Path:
+    cfg = ctx.scheduler_config.get("enhanced_reporting", {})
+    output_root = resolve(cfg.get("output_root", "data/output"))
+    return output_root / "final_watchlist" / f"sde-final-watchlist-{ctx.trade_date.isoformat()}.csv"
+
+
+def _restore_canonical_csv(path: Path, existed: bool, backup: bytes | None) -> None:
+    if existed:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(backup or b"")
+    else:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _delivery_summary(delivery: list[dict]) -> tuple[str, str, int]:
@@ -109,11 +130,15 @@ def main() -> int:
         with FileLock(ctx):
             if args.preview_only:
                 original_builder = bridge._builder
+                canonical_csv = _canonical_csv_path(ctx)
+                csv_existed = canonical_csv.exists() and canonical_csv.is_file()
+                csv_backup = canonical_csv.read_bytes() if csv_existed else None
                 bridge._builder = _preview_builder
                 try:
                     snapshot = create_snapshot(ctx)
                 finally:
                     bridge._builder = original_builder
+                    _restore_canonical_csv(canonical_csv, csv_existed, csv_backup)
 
                 preview_paths = list(snapshot.get("preview_paths") or [])
                 report_types = list(snapshot.get("report_types") or [])
@@ -132,10 +157,12 @@ def main() -> int:
                     "detail_card_count": detail_count,
                     "detail_card_limit": MAX_DETAIL_CARDS,
                     "exact_resend_readiness": "READY",
+                    "canonical_csv_restored": True,
                     "warnings": [
                         "PREVIEW_CURRENT_PRESENTATION; formatter compact terbaru diterapkan ke hasil trading yang sudah ada.",
                         "NO_ENGINE_RERUN; Final Decision, entry plan, broker facts, dan score tidak dihitung ulang.",
                         "NO_AI_RERUN; Preview tidak memanggil interpreter AI.",
+                        "CANONICAL_OUTPUT_PRESERVED; chart preview run-scoped dan CSV canonical dikembalikan setelah snapshot dibekukan.",
                         "PREVIEW_SEND_LOCKED; menu [3] hanya mengirim snapshot hash-locked yang dibuat oleh preview ini.",
                     ],
                 })
