@@ -27,6 +27,7 @@ echo [2] Catat SELL aktual
 echo [3] Lihat portfolio
 echo [4] Isi TP/SL manual posisi OPEN
 echo [5] Edit posisi OPEN
+echo [6] Koreksi posisi CLOSED
 echo [0] Keluar
 echo.
 set "ACTION="
@@ -36,6 +37,7 @@ if "!ACTION!"=="2" goto SELL
 if "!ACTION!"=="3" goto LIST
 if "!ACTION!"=="4" goto MANUAL_PLAN
 if "!ACTION!"=="5" goto EDIT_OPEN
+if "!ACTION!"=="6" goto EDIT_CLOSED
 if "!ACTION!"=="0" exit /b 0
 echo Pilihan tidak valid.
 pause
@@ -202,6 +204,7 @@ echo Portfolio saat ini:
 echo.
 echo Kosongkan field yang tidak ingin diubah.
 echo TP/SL tidak diedit di sini; gunakan menu [4].
+echo Jika BUY date diubah, initial plan akan di-resolve ulang sesuai tanggal BUY baru.
 echo.
 set "POSITION_ID="
 set "SYMBOL="
@@ -222,14 +225,63 @@ if defined QTY set "EDIT_ARGS=!EDIT_ARGS! --quantity !QTY!"
 if defined PRICE set "EDIT_ARGS=!EDIT_ARGS! --buy-price !PRICE!"
 if defined BUY_DATE set "EDIT_ARGS=!EDIT_ARGS! --buy-date !BUY_DATE!"
 if defined NOTES set EDIT_ARGS=!EDIT_ARGS! --notes "!NOTES!"
-%SDE_PYTHON_CMD% -u modules\portfolio\edit_position.py --db data\database\sde_swing_history.db !EDIT_ARGS!
+%SDE_PYTHON_CMD% -u modules\portfolio\edit_position.py --db data\database\sde_swing_history.db --status OPEN !EDIT_ARGS!
 set "RC=!ERRORLEVEL!"
 echo.
 if "!RC!"=="0" (
-  echo [OK] Edit posisi selesai.
+  echo [OK] Edit posisi OPEN selesai.
   call :SYNC_BROKER_TASKS
 ) else (
-  echo [FAILED] Edit posisi gagal. Exit code !RC!.
+  echo [FAILED] Edit posisi OPEN gagal. Exit code !RC!.
+)
+pause
+goto MENU
+
+:EDIT_CLOSED
+cls
+echo --- KOREKSI POSISI CLOSED ---
+echo.
+echo Portfolio saat ini:
+%SDE_PYTHON_CMD% -u modules\analytics\outcome_tracker.py portfolio --db data\database\sde_swing_history.db list
+echo.
+echo Gunakan position_id jika symbol pernah memiliki lebih dari satu posisi CLOSED.
+echo Kosongkan field yang tidak ingin diubah.
+echo Realized return akan dihitung ulang otomatis dari harga BUY dan SELL aktual.
+echo Koreksi ini tidak membuka kembali posisi dan tidak mengubah signal lifecycle mesin.
+echo.
+set "POSITION_ID="
+set "SYMBOL="
+set "QTY="
+set "PRICE="
+set "BUY_DATE="
+set "SELL_PRICE="
+set "SELL_DATE="
+set "NOTES="
+set /p "POSITION_ID=position_id (sangat disarankan): "
+set /p "SYMBOL=Symbol jika position_id kosong: "
+set /p "QTY=Quantity benar (opsional): "
+set /p "PRICE=Harga beli benar (opsional): "
+set /p "BUY_DATE=Tanggal beli benar YYYY-MM-DD (opsional): "
+set /p "SELL_PRICE=Harga jual benar (opsional): "
+set /p "SELL_DATE=Tanggal jual benar YYYY-MM-DD (opsional): "
+set /p "NOTES=Catatan koreksi (opsional): "
+set "EDIT_ARGS="
+if defined POSITION_ID set "EDIT_ARGS=!EDIT_ARGS! --position-id !POSITION_ID!"
+if defined SYMBOL set "EDIT_ARGS=!EDIT_ARGS! --symbol !SYMBOL!"
+if defined QTY set "EDIT_ARGS=!EDIT_ARGS! --quantity !QTY!"
+if defined PRICE set "EDIT_ARGS=!EDIT_ARGS! --buy-price !PRICE!"
+if defined BUY_DATE set "EDIT_ARGS=!EDIT_ARGS! --buy-date !BUY_DATE!"
+if defined SELL_PRICE set "EDIT_ARGS=!EDIT_ARGS! --sell-price !SELL_PRICE!"
+if defined SELL_DATE set "EDIT_ARGS=!EDIT_ARGS! --sell-date !SELL_DATE!"
+if defined NOTES set EDIT_ARGS=!EDIT_ARGS! --notes "!NOTES!"
+%SDE_PYTHON_CMD% -u modules\portfolio\edit_position.py --db data\database\sde_swing_history.db --status CLOSED !EDIT_ARGS!
+set "RC=!ERRORLEVEL!"
+echo.
+if "!RC!"=="0" (
+  echo [OK] Koreksi posisi CLOSED selesai dan realized return sudah dihitung ulang.
+  call :SYNC_BROKER_TASKS
+) else (
+  echo [FAILED] Koreksi posisi CLOSED gagal. Exit code !RC!.
 )
 pause
 goto MENU
