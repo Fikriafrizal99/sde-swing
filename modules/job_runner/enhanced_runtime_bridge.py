@@ -74,6 +74,27 @@ def _final_watchlist_plan_rr(plan: Mapping[str, Any]) -> Any:
     return _value(plan, "Target_2_RR", "Risk_Reward", "RR", "Target_1_RR", default="")
 
 
+def _final_watchlist_buy_cost(primary: Mapping[str, Any], raw: Mapping[str, Any]) -> Any:
+    primary_cost = primary.get("avg_buyer_price")
+    if not _missing_final_fact(primary_cost):
+        return primary_cost
+    return _value(
+        raw,
+        "Bandar_Buy_Cost",
+        "AVG_BUYER_PRICE",
+        "Average_Buyer_Price",
+        "Weighted_Broker_Buy_Cost",
+        "Buyer_Weighted_Avg",
+        "Weighted_Buyer_Avg",
+        "Broker_Buy_Cost",
+        "Buyer_Cost",
+        "Buy_Cost",
+        "Avg_Buy_Price",
+        "Average_Buy_Price",
+        default="",
+    )
+
+
 def _final_watchlist_distance(primary: Mapping[str, Any], raw: Mapping[str, Any]) -> Any:
     existing = _value(
         raw,
@@ -416,6 +437,18 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             "Technical_Regime",
             default=_value(plan, "Plan_Status", "Execution_Status", default=_value(raw, "Technical_State", "Technical_Grade", default="")),
         )
+        trend = _value(
+            raw,
+            "Technical_Regime",
+            "Trend",
+            "Trend_State",
+            "Trend_Direction",
+            "Technical_Trend",
+            "Trend_Final",
+            "Trend_Label",
+            default="",
+        )
+        buy_cost = _final_watchlist_buy_cost(primary, raw)
         broker_fallback = _value(raw, "Broker_Confirmation", "Broker_Direction_Final", default="")
         broker_status = broker_fallback or str(primary.get("broker_accdist") or "") or "MISSING"
         broker_net_flow = primary.get("net_flow", _value(raw, "NET_FLOW", "Net_Flow", "Broker_Net_Flow", default=""))
@@ -440,6 +473,7 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             "target_1": _value(plan, "Target_1", "TP1", default=""),
             "target_2": _value(plan, "Target_2", "TP2", default=""),
             "risk_reward": _final_watchlist_plan_rr(plan),
+            "trend": trend,
             "technical_score": _value(raw, "Technical_Score_Final", "Technical_Score", default=""),
             "technical_state": technical_state,
             # PRIMARY broker facts. Score/status remain Broker Fusion owned.
@@ -454,14 +488,8 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             "seller_concentration": seller_concentration,
             "broker_pattern": primary.get("broker_accdist", _value(raw, "BROKER_ACCDIST", "Broker_AccDist", default="")),
             "avg_accdist": primary.get("avg_accdist", ""),
-            "bandar_buy_cost": primary.get(
-                "avg_buyer_price",
-                _value(raw, "Bandar_Buy_Cost", "AVG_BUYER_PRICE", "Average_Buyer_Price", default=""),
-            ),
-            "avg_buyer_price": primary.get(
-                "avg_buyer_price",
-                _value(raw, "AVG_BUYER_PRICE", "Average_Buyer_Price", "Bandar_Buy_Cost", default=""),
-            ),
+            "bandar_buy_cost": buy_cost,
+            "avg_buyer_price": buy_cost,
             "avg_seller_price": primary.get(
                 "avg_seller_price",
                 _value(raw, "AVG_SELLER_PRICE", "Average_Seller_Price", default=""),
