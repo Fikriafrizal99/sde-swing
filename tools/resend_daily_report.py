@@ -17,6 +17,7 @@ from modules.job_runner.daily_report_recovery import (
     replay_recoverable_daily_report,
     save_recovery_selection,
     source_ack_ambiguous,
+    source_recovery_mode,
 )
 from modules.job_runner.existing_delivery import (
     ExactDeliveryError,
@@ -60,7 +61,7 @@ def _message_ids(delivery: list[dict]) -> list[int]:
 def _source_details(source, source_mode: str) -> dict:
     details = source.source_details()
     details["source_delivery_mode"] = source_mode
-    if source_mode == "RECOVERABLE_FAILED":
+    if source_mode.startswith("RECOVERABLE_"):
         details.update({
             "source_message_count": 0,
             "replay_mode": "ARCHIVED_DAILY_REPORT_EXACT_RECOVERY",
@@ -77,8 +78,9 @@ def _preview_source(ctx, job: str):
         if not str(exc).startswith(f"EXACT_DELIVERY_NOT_FOUND:{job}:"):
             raise
         source = find_recoverable_daily_report(ctx, job)
+        source_mode = source_recovery_mode(source)
         selection_path = save_recovery_selection(ctx, source)
-        return source, "RECOVERABLE_FAILED", selection_path
+        return source, source_mode, selection_path
 
     selection_path = save_preview_selection(ctx, source)
     clear_recovery_selection(ctx, job)
@@ -87,7 +89,8 @@ def _preview_source(ctx, job: str):
 
 def _load_selected_source(ctx, job: str):
     if has_current_recovery_selection(ctx, job):
-        return load_recovery_selection(ctx, job), "RECOVERABLE_FAILED"
+        source = load_recovery_selection(ctx, job)
+        return source, source_recovery_mode(source)
     return load_preview_selection(ctx, job), "DELIVERED"
 
 
@@ -95,8 +98,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Preview/kirim ulang exact Market Outlook atau Post Market; source SENT diprioritaskan, "
-            "dan failed-delivery tanpa Telegram ACK dapat dipulihkan dari immutable archive. "
-            "Formatter, engine, dan artifact LATEST tidak digunakan."
+            "dan source unsent yang aman (FAILED tanpa ACK atau NO_TELEGRAM recovery) dapat dipulihkan "
+            "dari immutable archive. Formatter, engine, dan artifact LATEST tidak digunakan."
         )
     )
     parser.add_argument("--job", required=True, choices=sorted(SUPPORTED_JOBS))
@@ -142,11 +145,18 @@ def main() -> int:
                 warnings = [
                     "EXACT_PREVIEW_READ_ONLY; Kirim Ulang dikunci ke source_run_id ini."
                 ]
-                if source_mode == "RECOVERABLE_FAILED":
-                    warnings.extend([
-                        "FAILED_DELIVERY_RECOVERY_SOURCE; tidak ada source SENT, sehingga Preview memakai immutable archive dari delivery gagal tanpa Telegram message_id.",
-                        "RECOVERY_HASH_LOCKED_ARCHIVE_ONLY; formatter, engine, dan artifact LATEST tidak digunakan saat Kirim Ulang.",
-                    ])
+                if source_mode.startswith("RECOVERABLE_"):
+                    if source_mode == "RECOVERABLE_FAILED":
+                        warnings.append(
+                            "FAILED_DELIVERY_RECOVERY_SOURCE; tidak ada source SENT, sehingga Preview memakai immutable archive dari delivery gagal tanpa Telegram message_id."
+                        )
+                    elif source_mode == "RECOVERABLE_NO_TELEGRAM":
+                        warnings.append(
+                            "NO_TELEGRAM_RECOVERY_SOURCE; tidak ada source SENT, sehingga Preview memakai immutable archive hasil recovery [9] yang sengaja tidak dikirim ke Telegram."
+                        )
+                    warnings.append(
+                        "RECOVERY_HASH_LOCKED_ARCHIVE_ONLY; formatter, engine, dan artifact LATEST tidak digunakan saat Kirim Ulang."
+                    )
                     if source_ack_ambiguous(source):
                         warnings.append(
                             "TELEGRAM_ACK_AMBIGUOUS_READ_TIMEOUT; request asli timeout saat menunggu respons. Telegram mungkin sempat menerima pesan; Kirim Ulang [3] adalah keputusan operator dan dapat menghasilkan duplikat."
@@ -171,16 +181,16 @@ def main() -> int:
                 return EXIT_SUCCESS
 
             source, source_mode = _load_selected_source(ctx, args.job)
-            if source_mode == "RECOVERABLE_FAILED":
+            if source_mode.startswith("RECOVERABLE_"):
                 delivery = replay_recoverable_daily_report(ctx, source)
             else:
                 delivery = copy_existing_delivery(ctx, source)
             overall, telegram_status, code = _delivery_result(delivery)
             ids = _message_ids(delivery)
             warnings = []
-            if source_mode == "RECOVERABLE_FAILED":
+            if source_mode.startswith("RECOVERABLE_"):
                 warnings.append(
-                    "TELEGRAM_FAILED_DELIVERY_RECOVERY; immutable preview/archive yang dikunci oleh [2] dikirim tanpa menjalankan formatter atau engine."
+                    "TELEGRAM_UNSENT_ARCHIVE_RECOVERY; immutable preview/archive yang dikunci oleh [2] dikirim tanpa menjalankan formatter atau engine."
                 )
                 if source_ack_ambiguous(source):
                     warnings.append(
@@ -211,7 +221,7 @@ def main() -> int:
             "errors": [str(exc)],
             "warnings": [
                 "Jalankan Preview Existing terlebih dahulu; resend tidak boleh memilih atau membangun format sendiri.",
-                "Failed-delivery recovery hanya diterima jika bundle immutable lengkap dan tidak ada partial Telegram ACK.",
+                "Recovery hanya diterima jika bundle immutable lengkap, nol Telegram ACK, dan source berstatus FAILED atau NO_TELEGRAM.",
             ],
         })
         print(str(exc), file=sys.stderr)
