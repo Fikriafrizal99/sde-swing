@@ -88,7 +88,75 @@ def _payload_status(payload: Mapping[str, Any]) -> str:
 
 
 def _payload_stage(payload: Mapping[str, Any]) -> str:
-    return str(payload.get("stage", payload.get("stage_v1_7", ""))).upper()
+    return str(
+        payload.get("stage")
+        or payload.get("stage_v1_7")
+        or payload.get("current_stage")
+        or ""
+    ).upper()
+
+
+def _payload_details(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    details = payload.get("details")
+    return details if isinstance(details, Mapping) else {}
+
+
+def _payload_engine_status(payload: Mapping[str, Any]) -> str:
+    details = _payload_details(payload)
+    return str(payload.get("engine_status") or details.get("engine_status") or "").upper()
+
+
+def _payload_delivery_status(payload: Mapping[str, Any]) -> str:
+    details = _payload_details(payload)
+    return str(
+        payload.get("delivery_status")
+        or details.get("delivery_status")
+        or payload.get("telegram_status")
+        or details.get("telegram_status")
+        or ""
+    ).upper()
+
+
+def _status_root(context: RuntimeContext) -> Path:
+    configured_root = str(
+        (context.scheduler_config.get("paths", {}) or {}).get(
+            "job_status_root", "data/output/job_status"
+        )
+    ).strip() or "data/output/job_status"
+    return context.paths.resolve(configured_root)
+
+
+def _engine_result_for_payload(
+    context: RuntimeContext,
+    dependency: str,
+    payload: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    """Read the exact child engine result for an interrupted parent lifecycle.
+
+    ``run_sde_job_integrated.py`` launches ``run_sde_job.py`` with the same
+    run_id and ``--parent-managed-lifecycle``. The child writes an immutable
+    ``engine_result_<run_id>.json`` before the parent builds reports/delivery.
+    This recovery is intentionally Final-Watchlist-only and accepts the file
+    only when its engine stage exactly matches the dependency contract.
+    """
+    run_id = str(payload.get("run_id") or "").strip()
+    expected_stage = FINAL_WATCHLIST_ENGINE_COMPLETE_STAGES.get(dependency, "")
+    if not run_id or not expected_stage:
+        return None
+    path = _status_root(context) / f"engine_result_{run_id}.json"
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        result = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(result, dict):
+        return None
+    status = _payload_status(result)
+    stage = _payload_stage(result)
+    if status not in DEPENDENCY_READY_STATUSES or stage != expected_stage:
+        return None
+    return result
 
 
 def _dated_dependency_status(
@@ -98,12 +166,7 @@ def _dated_dependency_status(
     ready_only: bool = False,
 ) -> Mapping[str, Any] | None:
     """Return the newest persisted status for the effective trade date."""
-    configured_root = str(
-        (context.scheduler_config.get("paths", {}) or {}).get(
-            "job_status_root", "data/output/job_status"
-        )
-    ).strip() or "data/output/job_status"
-    dated_root = context.paths.resolve(configured_root) / context.trade_date.isoformat()
+    dated_root = _status_root(context) / context.trade_date.isoformat()
     if not dated_root.exists():
         return None
 
@@ -147,14 +210,57 @@ def _final_watchlist_dependency_payload(
     status = _payload_status(payload)
     stage = _payload_stage(payload)
     expected_stage = FINAL_WATCHLIST_ENGINE_COMPLETE_STAGES.get(dependency, "")
+    engine_status = _payload_engine_status(payload)
+    delivery_status = _payload_delivery_status(payload)
+    legacy_status = str(payload.get("legacy_status") or "").upper()
 
-    if status == "DELIVERY_FAILED" and expected_stage and stage == expected_stage:
+    # Current runtime deliberately exposes a finite top-level status vocabulary.
+    # Therefore DELIVERY_FAILED is normalized to FAILED while the truthful
+    # engine/delivery split is retained in engine_status, delivery_status and
+    # legacy_status. Final Watchlist depends on the completed market engine,
+    # not on Telegram availability, so preserve that distinction here.
+    delivery_failed_after_engine = (
+        bool(expected_stage)
+        and engine_status in DEPENDENCY_READY_STATUSES
+        and (
+            legacy_status == "DELIVERY_FAILED"
+            or delivery_status in {"DELIVERY_FAILED", "FAILED"}
+        )
+    )
+    legacy_delivery_failed = (
+        status == "DELIVERY_FAILED"
+        and bool(expected_stage)
+        and stage == expected_stage
+    )
+    if delivery_failed_after_engine or legacy_delivery_failed:
         normalized = dict(payload)
         normalized["status"] = "SUCCESS_WITH_WARNING"
         normalized["status_v1_7"] = "SUCCESS_WITH_WARNING"
-        normalized["dependency_source_status"] = status
+        normalized["dependency_source_status"] = (
+            "DELIVERY_FAILED"
+            if legacy_status == "DELIVERY_FAILED" or status == "DELIVERY_FAILED"
+            else (delivery_status or status)
+        )
         normalized["dependency_status_override"] = "ENGINE_COMPLETE_DELIVERY_FAILED"
         return normalized, "ENGINE_COMPLETE_DELIVERY_FAILED"
+
+    # A parent integrated process can terminate after the child engine has
+    # completed but before it replaces the child's START status. Recover only
+    # from the exact same run_id engine result and only when the canonical engine
+    # stage is complete. Real engine failures remain blocking.
+    if expected_stage and status not in DEPENDENCY_READY_STATUSES:
+        engine_result = _engine_result_for_payload(context, dependency, payload)
+        if engine_result is not None:
+            recovered_status = _payload_status(engine_result)
+            normalized = dict(payload)
+            normalized["status"] = recovered_status
+            normalized["status_v1_7"] = recovered_status
+            normalized["stage"] = expected_stage
+            normalized["current_stage"] = expected_stage
+            normalized["engine_status"] = recovered_status
+            normalized["dependency_source_status"] = status
+            normalized["dependency_status_override"] = "ENGINE_RESULT_RECOVERY"
+            return normalized, "ENGINE_RESULT_RECOVERY"
 
     if status == "SKIPPED" and stage == "DEPENDENCY_VALIDATION":
         previous = _dated_dependency_status(context, dependency, ready_only=True)
