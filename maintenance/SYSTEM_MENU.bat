@@ -22,7 +22,7 @@ echo [2] Test Telegram
 echo [3] Configure / Cek Telegram Topic IDs
 echo [4] Jalankan Test Validasi
 echo [5] Buka Folder Output
-echo [6] Final Watchlist Preview Existing
+echo [6] Final Watchlist Preview Existing ^(exact, delivery-only^)
 echo [0] Kembali
 echo.
 set "CHOICE="
@@ -65,9 +65,19 @@ goto MENU
 
 :FW_PREVIEW
 cls
-%SDE_PYTHON_CMD% -u run_sde_job_integrated.py --job final_watchlist --preview-existing --no-telegram
+set "PREVIEW_DATE="
+for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_day.py" 2^>nul`) do set "PREVIEW_DATE=%%D"
+if not defined PREVIEW_DATE (
+  echo [FAILED] Gagal menentukan hari trading terakhir untuk Final Watchlist Preview Existing.
+  pause
+  goto MENU
+)
+echo Final Watchlist Preview Existing !PREVIEW_DATE! - exact archived delivery, tanpa engine/formatter/Telegram.
+%SDE_PYTHON_CMD% -u tools\resend_final_watchlist_recovery.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date !PREVIEW_DATE! --preview-only
 set "RC=!ERRORLEVEL!"
 echo.
-%SDE_PYTHON_CMD% tools\print_job_status.py --job final_watchlist
+%SDE_PYTHON_CMD% tools\print_job_status.py --job final_watchlist --delivery
+echo.
+echo Exit code: !RC!
 pause
 goto MENU
