@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import logging
+import os
 import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from modules.historical_downloader.historical_downloader import DownloadResult, REPAIR_OVERLAP
-from modules.historical_downloader.post_market_resilient_downloader import summarize_manifest
+from modules.historical_downloader.post_market_resilient_downloader import (
+    configure_yahoo_provider_logging,
+    summarize_manifest,
+)
 from modules.technical_feature_engine.post_market_validated_runner import (
     build_validated_input,
     select_current_symbols,
@@ -109,6 +115,34 @@ class PostMarketCoverageGuardrailTests(unittest.TestCase):
         self.assertEqual(manifest["Data_Quality_Status"], "PROVIDER_FAILED")
         self.assertFalse(manifest["Failure_Tolerance_Applied"])
         self.assertEqual(manifest["Valid_Symbol_Coverage_Ratio"], 0.97)
+
+
+class PostMarketYahooLoggingTests(unittest.TestCase):
+    def test_default_quiets_only_yfinance_provider_logger(self) -> None:
+        root_logger = logging.getLogger()
+        yahoo_logger = logging.getLogger("yfinance")
+        root_level = root_logger.level
+        yahoo_level = yahoo_logger.level
+        try:
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("SDE_YAHOO_PROVIDER_LOG_LEVEL", None)
+                configured = configure_yahoo_provider_logging()
+            self.assertEqual(configured, logging.CRITICAL)
+            self.assertEqual(yahoo_logger.level, logging.CRITICAL)
+            self.assertEqual(root_logger.level, root_level)
+        finally:
+            yahoo_logger.setLevel(yahoo_level)
+
+    def test_provider_log_level_can_be_reenabled_for_debugging(self) -> None:
+        yahoo_logger = logging.getLogger("yfinance")
+        yahoo_level = yahoo_logger.level
+        try:
+            with patch.dict(os.environ, {"SDE_YAHOO_PROVIDER_LOG_LEVEL": "ERROR"}):
+                configured = configure_yahoo_provider_logging()
+            self.assertEqual(configured, logging.ERROR)
+            self.assertEqual(yahoo_logger.level, logging.ERROR)
+        finally:
+            yahoo_logger.setLevel(yahoo_level)
 
 
 class ValidatedTechnicalInputTests(unittest.TestCase):
