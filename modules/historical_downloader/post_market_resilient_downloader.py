@@ -8,6 +8,7 @@ coverage still fails closed.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from datetime import date
@@ -22,7 +23,16 @@ from modules.historical_downloader import historical_downloader as base  # noqa:
 
 
 DEFAULT_MIN_VALID_COVERAGE_RATIO = 0.98
+DEFAULT_YAHOO_PROVIDER_LOG_LEVEL = "CRITICAL"
 _ORIGINAL_SUMMARIZE_MANIFEST = base.summarize_manifest
+
+
+def configure_yahoo_provider_logging() -> int:
+    """Reduce duplicate provider noise without hiding SDE-owned diagnostics."""
+    raw = str(os.getenv("SDE_YAHOO_PROVIDER_LOG_LEVEL", DEFAULT_YAHOO_PROVIDER_LOG_LEVEL)).strip().upper()
+    level = getattr(logging, raw, logging.CRITICAL)
+    logging.getLogger("yfinance").setLevel(level)
+    return level
 
 
 def minimum_valid_coverage_ratio() -> float:
@@ -117,6 +127,11 @@ def summarize_manifest(
 
 
 def main() -> int:
+    # Suppress only yfinance's repeated internal ERROR lines. SDE-owned batch
+    # fallback warnings, failed-symbol records, coverage checks, and manifests
+    # remain visible and unchanged.
+    configure_yahoo_provider_logging()
+
     # Monkey-patch only the run-level manifest classifier. Download planning,
     # Yahoo requests, candle merging, same-session revalidation, file writing,
     # and per-symbol status logic remain exactly in the baseline downloader.
