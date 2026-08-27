@@ -52,7 +52,8 @@ for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_
 if not defined PREVIEW_DATE goto PREVIEW_DATE_FAILED
 
 echo.
-echo Membuka exact preview Post Market yang benar-benar sudah terkirim pada !PREVIEW_DATE!...
+echo Membuka exact preview Post Market pada !PREVIEW_DATE!...
+echo Source SENT diprioritaskan; jika tidak ada, failed-delivery tanpa Telegram ACK dapat dipakai dari immutable archive.
 %SDE_PYTHON_CMD% -u tools\resend_daily_report.py --job post_market --trade-date !PREVIEW_DATE! --preview-only
 set "RC=!ERRORLEVEL!"
 set "STATUS_VIEW=--delivery"
@@ -70,7 +71,7 @@ echo ================================================================
 echo Mesin/scoring tidak diubah. Runtime yang sama dijalankan dengan trade-date
 echo sesi terakhir yang sudah selesai dan Telegram dimatikan.
 echo Preview recovery tersedia pada path/status run recovery ini.
-echo Preview existing/Kirim ulang exact hanya untuk pesan yang sebelumnya berstatus SENT.
+echo Preview existing/Kirim ulang exact tetap delivery-only: source SENT diprioritaskan, failed-delivery aman hanya fallback immutable tanpa Telegram ACK.
 echo.
 %SDE_PYTHON_CMD% -u run_sde_job_integrated_market_first.py --job post_market --trade-date !RECOVERY_DATE! --no-telegram
 set "RC=!ERRORLEVEL!"
