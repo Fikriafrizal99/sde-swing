@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-"""Recovery support for Market Outlook/Post Market failed Telegram delivery.
+"""Recovery support for Market Outlook/Post Market unsent Telegram delivery.
 
 The normal exact-delivery path remains authoritative and is always preferred.
 This module is used only when no fully SENT source exists for the selected trade
-date.  It can select a failed daily-report bundle only when the original run has
-zero Telegram acknowledgement, every outbound payload is represented, and all
-replay files are immutable/hash-locked.  Engine, formatter, and mutable LATEST
-artifacts are never used.
+date. It can select either a failed daily-report bundle with zero Telegram ACK
+or a deliberate NO_TELEGRAM recovery bundle, provided every outbound payload is
+represented and all replay files are immutable/hash-locked. Engine, formatter,
+and mutable LATEST artifacts are never used during preview/resend.
 
-A source ReadTimeout is surfaced as ACK ambiguity during preview.  Re-send still
+A source ReadTimeout is surfaced as ACK ambiguity during preview. Re-send still
 requires the operator to explicitly choose the existing [3] action after [2]
-has pinned the exact source.  A ReadTimeout during the recovery attempt itself
+has pinned the exact source. A ReadTimeout during the recovery attempt itself
 is checkpointed as DELIVERY_STATE_UNCERTAIN and is never retried automatically.
 """
 
@@ -29,6 +29,7 @@ from .runtime import RunnerContext, append_jsonl, now_wib, read_json, write_json
 SUPPORTED_JOBS = {"market_outlook", "post_market"}
 RECOVERY_SELECTION_SCHEMA = "SDE_DAILY_REPORT_RECOVERY_SELECTION_V1"
 _RECOVERY_COPY_MODE = "ARCHIVED_DAILY_REPORT_EXACT_RECOVERY"
+_RECOVERABLE_SOURCE_STATUSES = {"FAILED", "NO_TELEGRAM"}
 
 
 def _selection_path(ctx: RunnerContext, job: str) -> Path:
@@ -47,6 +48,22 @@ def _looks_like_read_timeout(value: Any) -> bool:
 
 def source_ack_ambiguous(source: ExistingDelivery) -> bool:
     return any(_looks_like_read_timeout(item.get("error")) for item in source.entries)
+
+
+def source_recovery_mode(source: ExistingDelivery) -> str:
+    statuses = {
+        str(item.get("status") or "").upper()
+        for item in source.entries
+        if str(item.get("status") or "").strip()
+    }
+    if statuses == {"FAILED"}:
+        return "RECOVERABLE_FAILED"
+    if statuses == {"NO_TELEGRAM"}:
+        return "RECOVERABLE_NO_TELEGRAM"
+    raise ExactDeliveryError(
+        f"DAILY_REPORT_RECOVERY_SOURCE_STATE_UNSAFE:{source.requested_job}:"
+        f"{source.source_run_id}:{','.join(sorted(statuses))}"
+    )
 
 
 def _candidate_groups(
@@ -71,16 +88,19 @@ def _candidate_groups(
         if run_id:
             grouped.setdefault(run_id, []).append(dict(event))
 
-    # Recovery-only candidates must include a real failed delivery attempt.
-    # Later --no-telegram recovery runs therefore cannot hide the failed source.
-    return [
-        (run_id, entries)
-        for run_id, entries in grouped.items()
-        if any(str(item.get("status") or "").upper() == "FAILED" for item in entries)
-    ]
+    recoverable: list[tuple[str, list[dict[str, Any]]]] = []
+    for run_id, entries in grouped.items():
+        statuses = {
+            str(item.get("status") or "").upper()
+            for item in entries
+            if str(item.get("status") or "").strip()
+        }
+        if statuses in ({"FAILED"}, {"NO_TELEGRAM"}):
+            recoverable.append((run_id, entries))
+    return recoverable
 
 
-def _canonical_failed_entries(
+def _canonical_unsent_entries(
     job: str,
     run_id: str,
     entries: list[dict[str, Any]],
@@ -114,15 +134,15 @@ def _canonical_failed_entries(
             + ",".join(str(value) for value in acknowledged)
         )
 
-    unsafe = sorted({
+    statuses = {
         str(item.get("status") or "").upper()
         for item in candidates
-        if str(item.get("status") or "").upper() != "FAILED"
-    })
-    if unsafe:
+        if str(item.get("status") or "").strip()
+    }
+    if statuses not in ({"FAILED"}, {"NO_TELEGRAM"}):
         raise ExactDeliveryError(
-            f"DAILY_REPORT_RECOVERY_BLOCKED_NONFAILED_STATE:{job}:{run_id}:"
-            + ",".join(unsafe)
+            f"DAILY_REPORT_RECOVERY_BLOCKED_SOURCE_STATE:{job}:{run_id}:"
+            + ",".join(sorted(statuses))
         )
 
     for entry in candidates:
@@ -307,7 +327,7 @@ def find_recoverable_daily_report(
         groups,
         key=lambda item: max(str(entry.get("time") or "") for entry in item[1]),
     )
-    entries = _canonical_failed_entries(job, run_id, raw_entries)
+    entries = _canonical_unsent_entries(job, run_id, raw_entries)
     preview_paths, manifest_path = _manifest_source(ctx, job, run_id, entries)
     source_time = max(str(entry.get("time") or "") for entry in entries)
     source_job = str(entries[0].get("job") or job)
@@ -325,6 +345,7 @@ def find_recoverable_daily_report(
 
 
 def save_recovery_selection(ctx: RunnerContext, source: ExistingDelivery) -> Path:
+    mode = source_recovery_mode(source)
     path = _selection_path(ctx, source.requested_job)
     write_json(path, {
         "schema": RECOVERY_SELECTION_SCHEMA,
@@ -336,7 +357,7 @@ def save_recovery_selection(ctx: RunnerContext, source: ExistingDelivery) -> Pat
         "preview_paths": [str(item) for item in source.preview_paths],
         "preview_sha256": [file_sha256(item) for item in source.preview_paths],
         "selected_at": now_wib().isoformat(timespec="seconds"),
-        "source_delivery_mode": "RECOVERABLE_FAILED",
+        "source_delivery_mode": mode,
         "source_ack_ambiguous": source_ack_ambiguous(source),
     })
     return path
@@ -375,6 +396,9 @@ def load_recovery_selection(ctx: RunnerContext, job: str) -> ExistingDelivery:
     source = find_recoverable_daily_report(ctx, job, source_run_id=run_id)
     if str(selection.get("source_delivery_signature") or "") != source.signature:
         raise ExactDeliveryError(f"DAILY_REPORT_RECOVERY_SELECTION_INTEGRITY_FAILED:{job}:{run_id}")
+    selected_mode = str(selection.get("source_delivery_mode") or "").strip()
+    if selected_mode and selected_mode != source_recovery_mode(source):
+        raise ExactDeliveryError(f"DAILY_REPORT_RECOVERY_SELECTION_MODE_CHANGED:{job}:{run_id}")
     selected_paths = [str(value) for value in selection.get("preview_paths", [])]
     current_paths = [str(value) for value in source.preview_paths]
     selected_hashes = [str(value) for value in selection.get("preview_sha256", [])]
@@ -428,6 +452,7 @@ def replay_recoverable_daily_report(
     results: list[dict[str, Any]] = []
     log_path = exact._delivery_log_path(ctx)
     total = len(source.entries)
+    source_mode = source_recovery_mode(source)
 
     for replay_sequence, entry in enumerate(source.entries, start=1):
         spec = specs[replay_sequence]
@@ -446,7 +471,7 @@ def replay_recoverable_daily_report(
             "copy_mode": _RECOVERY_COPY_MODE,
             "force_resend": True,
             "source_delivery_signature": source.signature,
-            "source_delivery_mode": "RECOVERABLE_FAILED",
+            "source_delivery_mode": source_mode,
             "source_ack_ambiguous": source_ack_ambiguous(source),
             "recovery_preview_path": str(spec.get("preview_path") or ""),
         }
