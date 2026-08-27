@@ -13,6 +13,7 @@ from modules.job_runner.daily_report_recovery import (
     load_recovery_selection,
     save_recovery_selection,
     source_ack_ambiguous,
+    source_recovery_mode,
 )
 from modules.job_runner.existing_delivery import ExactDeliveryError
 
@@ -114,11 +115,34 @@ def test_market_outlook_failed_delivery_can_be_preview_selected(tmp_path: Path) 
     assert source.source_run_id == "OUTLOOK-FAILED"
     assert source.message_count == 0
     assert source_ack_ambiguous(source) is True
+    assert source_recovery_mode(source) == "RECOVERABLE_FAILED"
     selection = save_recovery_selection(ctx, source)
     assert selection.exists()
     loaded = load_recovery_selection(ctx, "market_outlook")
     assert loaded.source_run_id == source.source_run_id
     assert loaded.signature == source.signature
+
+
+def test_post_market_no_telegram_recovery_can_be_preview_selected(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path, "post_market")
+    _write_failed_bundle(
+        ctx,
+        run_id="POST-RECOVERY-NO-TELEGRAM",
+        report_types=["post_market_heatmap", "post_market"],
+        statuses=["NO_TELEGRAM", "NO_TELEGRAM"],
+        errors=["", ""],
+    )
+
+    source = find_recoverable_daily_report(ctx, "post_market")
+    assert source.source_run_id == "POST-RECOVERY-NO-TELEGRAM"
+    assert source.message_count == 0
+    assert source_ack_ambiguous(source) is False
+    assert source_recovery_mode(source) == "RECOVERABLE_NO_TELEGRAM"
+    selection = save_recovery_selection(ctx, source)
+    assert selection.exists()
+    loaded = load_recovery_selection(ctx, "post_market")
+    assert loaded.source_run_id == source.source_run_id
+    assert source_recovery_mode(loaded) == "RECOVERABLE_NO_TELEGRAM"
 
 
 def test_daily_recovery_rejects_partial_telegram_ack(tmp_path: Path) -> None:
@@ -157,6 +181,7 @@ def test_daily_resend_keeps_existing_menu_and_requires_preview_selection() -> No
     assert "save_recovery_selection" in source
     assert "has_current_recovery_selection" in source
     assert "replay_recoverable_daily_report" in source
+    assert "RECOVERABLE_NO_TELEGRAM" in source
     assert "if args.preview_only:" in source
     assert "write_payloads" not in source
     assert "deliver(ctx" not in source
