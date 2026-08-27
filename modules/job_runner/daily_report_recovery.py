@@ -88,16 +88,17 @@ def _candidate_groups(
         if run_id:
             grouped.setdefault(run_id, []).append(dict(event))
 
-    recoverable: list[tuple[str, list[dict[str, Any]]]] = []
-    for run_id, entries in grouped.items():
-        statuses = {
-            str(item.get("status") or "").upper()
+    # Include any run that contains a potentially recoverable unsent state.
+    # The canonical validator below then rejects mixed/partial states explicitly
+    # instead of silently falling back to an older same-date run.
+    return [
+        (run_id, entries)
+        for run_id, entries in grouped.items()
+        if any(
+            str(item.get("status") or "").upper() in _RECOVERABLE_SOURCE_STATUSES
             for item in entries
-            if str(item.get("status") or "").strip()
-        }
-        if statuses in ({"FAILED"}, {"NO_TELEGRAM"}):
-            recoverable.append((run_id, entries))
-    return recoverable
+        )
+    ]
 
 
 def _canonical_unsent_entries(
