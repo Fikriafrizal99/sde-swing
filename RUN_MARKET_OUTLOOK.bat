@@ -51,7 +51,8 @@ for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_
 if not defined PREVIEW_DATE goto PREVIEW_DATE_FAILED
 
 echo.
-echo Membuka exact preview Market Outlook yang benar-benar sudah terkirim pada !PREVIEW_DATE!...
+echo Membuka exact preview Market Outlook pada !PREVIEW_DATE!...
+echo Source SENT diprioritaskan; jika tidak ada, failed-delivery tanpa Telegram ACK dapat dipakai dari immutable archive.
 %SDE_PYTHON_CMD% -u tools\resend_daily_report.py --job market_outlook --trade-date !PREVIEW_DATE! --preview-only
 set "RC=!ERRORLEVEL!"
 set "STATUS_VIEW=--delivery"
