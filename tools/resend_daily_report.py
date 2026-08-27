@@ -9,6 +9,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from modules.job_runner.daily_report_recovery import (
+    clear_recovery_selection,
+    find_recoverable_daily_report,
+    has_current_recovery_selection,
+    load_recovery_selection,
+    replay_recoverable_daily_report,
+    save_recovery_selection,
+    source_ack_ambiguous,
+)
 from modules.job_runner.existing_delivery import (
     ExactDeliveryError,
     copy_existing_delivery,
@@ -31,7 +40,8 @@ SUPPORTED_JOBS = {"market_outlook", "post_market"}
 
 
 def _delivery_result(delivery: list[dict]) -> tuple[str, str, int]:
-    if not delivery or any(str(item.get("status") or "").upper() != "SENT" for item in delivery):
+    successful = {"SENT", "RECOVERY_ALREADY_SENT"}
+    if not delivery or any(str(item.get("status") or "").upper() not in successful for item in delivery):
         return "FAILED", "FAILED", EXIT_DELIVERY_FAILED
     return "SUCCESS", "SENT", EXIT_SUCCESS
 
@@ -47,11 +57,46 @@ def _message_ids(delivery: list[dict]) -> list[int]:
     return result
 
 
+def _source_details(source, source_mode: str) -> dict:
+    details = source.source_details()
+    details["source_delivery_mode"] = source_mode
+    if source_mode == "RECOVERABLE_FAILED":
+        details.update({
+            "source_message_count": 0,
+            "replay_mode": "ARCHIVED_DAILY_REPORT_EXACT_RECOVERY",
+            "recovery_outbound_entry_count": len(source.entries),
+            "source_ack_ambiguous": source_ack_ambiguous(source),
+        })
+    return details
+
+
+def _preview_source(ctx, job: str):
+    try:
+        source = find_existing_delivery(ctx, job)
+    except ExactDeliveryError as exc:
+        if not str(exc).startswith(f"EXACT_DELIVERY_NOT_FOUND:{job}:"):
+            raise
+        source = find_recoverable_daily_report(ctx, job)
+        selection_path = save_recovery_selection(ctx, source)
+        return source, "RECOVERABLE_FAILED", selection_path
+
+    selection_path = save_preview_selection(ctx, source)
+    clear_recovery_selection(ctx, job)
+    return source, "DELIVERED", selection_path
+
+
+def _load_selected_source(ctx, job: str):
+    if has_current_recovery_selection(ctx, job):
+        return load_recovery_selection(ctx, job), "RECOVERABLE_FAILED"
+    return load_preview_selection(ctx, job), "DELIVERED"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Preview/kirim ulang exact Market Outlook atau Post Market yang sudah terkirim; "
-            "formatter, engine, dan artifact LATEST tidak digunakan"
+            "Preview/kirim ulang exact Market Outlook atau Post Market; source SENT diprioritaskan, "
+            "dan failed-delivery tanpa Telegram ACK dapat dipulihkan dari immutable archive. "
+            "Formatter, engine, dan artifact LATEST tidak digunakan."
         )
     )
     parser.add_argument("--job", required=True, choices=sorted(SUPPORTED_JOBS))
@@ -93,8 +138,19 @@ def main() -> int:
     try:
         with FileLock(ctx):
             if args.preview_only:
-                source = find_existing_delivery(ctx, args.job)
-                selection_path = save_preview_selection(ctx, source)
+                source, source_mode, selection_path = _preview_source(ctx, args.job)
+                warnings = [
+                    "EXACT_PREVIEW_READ_ONLY; Kirim Ulang dikunci ke source_run_id ini."
+                ]
+                if source_mode == "RECOVERABLE_FAILED":
+                    warnings.extend([
+                        "FAILED_DELIVERY_RECOVERY_SOURCE; tidak ada source SENT, sehingga Preview memakai immutable archive dari delivery gagal tanpa Telegram message_id.",
+                        "RECOVERY_HASH_LOCKED_ARCHIVE_ONLY; formatter, engine, dan artifact LATEST tidak digunakan saat Kirim Ulang.",
+                    ])
+                    if source_ack_ambiguous(source):
+                        warnings.append(
+                            "TELEGRAM_ACK_AMBIGUOUS_READ_TIMEOUT; request asli timeout saat menunggu respons. Telegram mungkin sempat menerima pesan; Kirim Ulang [3] adalah keputusan operator dan dapat menghasilkan duplikat."
+                        )
                 write_status(ctx, "SUCCESS", f"{args.job.upper()}_PREVIEW_EXACT", EXIT_SUCCESS, {
                     "engine_status": "NOT_RUN",
                     "report_status": "REUSED_EXACT",
@@ -102,20 +158,38 @@ def main() -> int:
                     "telegram_status": "SKIPPED",
                     "preview_paths": [str(path) for path in source.preview_paths],
                     "preview_selection": str(selection_path),
-                    **source.source_details(),
-                    "warnings": [
-                        "EXACT_PREVIEW_READ_ONLY; Kirim Ulang dikunci ke source_run_id ini."
-                    ],
+                    **_source_details(source, source_mode),
+                    "warnings": warnings,
                 })
                 print(f"SOURCE RUN: {source.source_run_id}")
+                print(f"SOURCE MODE: {source_mode}")
+                if source_mode == "RECOVERABLE_FAILED" and source_ack_ambiguous(source):
+                    print("SOURCE ACK: AMBIGUOUS_READ_TIMEOUT")
+                    print("WARNING: Telegram mungkin menerima request asli; [3] dapat menduplikasi pesan.")
                 for path in source.preview_paths:
                     print(path)
                 return EXIT_SUCCESS
 
-            source = load_preview_selection(ctx, args.job)
-            delivery = copy_existing_delivery(ctx, source)
+            source, source_mode = _load_selected_source(ctx, args.job)
+            if source_mode == "RECOVERABLE_FAILED":
+                delivery = replay_recoverable_daily_report(ctx, source)
+            else:
+                delivery = copy_existing_delivery(ctx, source)
             overall, telegram_status, code = _delivery_result(delivery)
             ids = _message_ids(delivery)
+            warnings = []
+            if source_mode == "RECOVERABLE_FAILED":
+                warnings.append(
+                    "TELEGRAM_FAILED_DELIVERY_RECOVERY; immutable preview/archive yang dikunci oleh [2] dikirim tanpa menjalankan formatter atau engine."
+                )
+                if source_ack_ambiguous(source):
+                    warnings.append(
+                        "SOURCE_ACK_WAS_AMBIGUOUS; duplicate tetap mungkin karena request asli mengalami ReadTimeout tanpa Telegram message_id."
+                    )
+            else:
+                warnings.append(
+                    "TELEGRAM_EXACT_REPLAY; copyMessage diprioritaskan, dengan fallback preview hash-locked tanpa formatter."
+                )
             write_status(ctx, overall, f"{args.job.upper()}_RESEND_EXACT", code, {
                 "engine_status": "NOT_RUN",
                 "report_status": "REUSED_EXACT",
@@ -125,10 +199,8 @@ def main() -> int:
                 "telegram_part_count": len(ids),
                 "preview_paths": [str(path) for path in source.preview_paths],
                 "delivery": delivery,
-                **source.source_details(),
-                "warnings": [
-                    "TELEGRAM_EXACT_REPLAY; copyMessage diprioritaskan, dengan fallback preview hash-locked tanpa formatter."
-                ],
+                **_source_details(source, source_mode),
+                "warnings": warnings,
             })
             return code
     except ExactDeliveryError as exc:
@@ -138,7 +210,8 @@ def main() -> int:
             "delivery_status": "NOT_RUN",
             "errors": [str(exc)],
             "warnings": [
-                "Jalankan Preview Existing terlebih dahulu; resend tidak boleh memilih atau membangun format sendiri."
+                "Jalankan Preview Existing terlebih dahulu; resend tidak boleh memilih atau membangun format sendiri.",
+                "Failed-delivery recovery hanya diterima jika bundle immutable lengkap dan tidak ada partial Telegram ACK.",
             ],
         })
         print(str(exc), file=sys.stderr)
