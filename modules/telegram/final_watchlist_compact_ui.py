@@ -24,10 +24,6 @@ _GENERIC_TRIGGER_CODES = {
 _TRIGGER_LABELS = {
     "VOLUME_CONFIRMATION_PENDING": "Tunggu konfirmasi volume",
     "ENTRY_NOT_TRIGGERED": "entry belum terpicu",
-    "TRIGGER_NOT_MET": "trigger belum terpenuhi",
-    "WAIT_FOR_CONFIRMATION": "tunggu konfirmasi",
-    "WAIT_FOR_ENTRY_TRIGGER": "tunggu trigger entry",
-    "WAIT_FOR_ENTRY_ZONE": "tunggu area entry",
 }
 
 
@@ -182,13 +178,23 @@ def _participants(value: Any) -> str:
     return " • ".join(rendered) if rendered else "N/A"
 
 
-def _buy_sell_ratio(row: Mapping[str, Any]) -> tuple[str, str]:
-    buy = _pick(row, "broker_buy_ratio", "buy_ratio", "BUY_RATIO", "Buy_Ratio", "Buy Ratio")
-    sell = _pick(row, "broker_sell_ratio", "sell_ratio", "SELL_RATIO", "Sell_Ratio", "Sell Ratio")
-    return _ratio_pct(buy), _ratio_pct(sell)
+def _buy_sell_display(row: Mapping[str, Any]) -> tuple[str, str]:
+    buy_ratio = _pick(row, "broker_buy_ratio", "buy_ratio", "BUY_RATIO", "Buy_Ratio", "Buy Ratio")
+    sell_ratio = _pick(row, "broker_sell_ratio", "sell_ratio", "SELL_RATIO", "Sell_Ratio", "Sell Ratio")
+    if _raw(buy_ratio) or _raw(sell_ratio):
+        return _ratio_pct(buy_ratio), _ratio_pct(sell_ratio)
+
+    # Compatibility only: older archived rows may carry day counts instead of
+    # ratios. Ratios always win when present; no value is recalculated here.
+    buy_days = _num(_pick(row, "buy_days", "broker_buy_days", "Buy_Days", "BUY_DAYS"))
+    sell_days = _num(_pick(row, "sell_days", "broker_sell_days", "Sell_Days", "SELL_DAYS"))
+    return (
+        str(int(round(buy_days))) if buy_days is not None else "N/A",
+        str(int(round(sell_days))) if sell_days is not None else "N/A",
+    )
 
 
-def _trigger_items(value: Any) -> list[str]:
+def _trigger_values(value: Any) -> list[tuple[str, str]]:
     raw = value
     if isinstance(raw, str):
         text = raw.strip()
@@ -202,7 +208,7 @@ def _trigger_items(value: Any) -> list[str]:
     if not isinstance(raw, (list, tuple)):
         raw = [raw]
 
-    rendered: list[str] = []
+    values: list[tuple[str, str]] = []
     for item in raw:
         if isinstance(item, Mapping):
             item = item.get("description") or item.get("trigger") or item.get("condition")
@@ -210,15 +216,26 @@ def _trigger_items(value: Any) -> list[str]:
         if not candidate:
             continue
         normalized = candidate.replace("-", "_").replace(" ", "_").upper()
+        values.append((normalized, candidate))
+    return values
+
+
+def _render_trigger_values(
+    values: list[tuple[str, str]],
+    *,
+    include_entry_not_triggered: bool = False,
+) -> list[str]:
+    rendered: list[str] = []
+    for normalized, candidate in values:
         if normalized.startswith("ENGINE_DATA_"):
             continue
-        label = _TRIGGER_LABELS.get(normalized)
-        if label:
-            rendered.append(label)
+        if normalized == "ENTRY_NOT_TRIGGERED":
+            if include_entry_not_triggered:
+                rendered.append(_TRIGGER_LABELS[normalized])
             continue
         if normalized in _GENERIC_TRIGGER_CODES:
             continue
-        rendered.append(candidate)
+        rendered.append(_TRIGGER_LABELS.get(normalized, candidate))
     return list(dict.fromkeys(rendered))
 
 
@@ -231,12 +248,20 @@ def _explicit_trigger(row: Mapping[str, Any]) -> str:
         "Execution_Trigger",
         default="",
     )
-    direct_items = _trigger_items(direct)
+    direct_values = _trigger_values(direct)
+    meaningful_direct = any(
+        normalized not in _GENERIC_TRIGGER_CODES and not normalized.startswith("ENGINE_DATA_")
+        for normalized, _ in direct_values
+    )
+    direct_items = _render_trigger_values(
+        direct_values,
+        include_entry_not_triggered=meaningful_direct,
+    )
     if direct_items:
         return "; ".join(direct_items)
 
     pending = _pick(row, "waiting_triggers", "Waiting_Triggers", default=[])
-    pending_items = _trigger_items(pending)
+    pending_items = _render_trigger_values(_trigger_values(pending))
     return "; ".join(pending_items)
 
 
@@ -293,7 +318,7 @@ def format_watchlist_detail(row: Mapping[str, Any]) -> str:
     broker = html.escape(_enum(_pick(row, "broker_status", "broker_signal", "Broker_Confirmation", "broker_direction"), "INSUFFICIENT DATA", upper=True))
     broker_score = _score(_pick(row, "broker_score", "Broker_Score"))
     net_flow = html.escape(_money(_pick(row, "broker_net_flow", "net_flow", "NET_FLOW"), with_rp=True, signed=True))
-    buy_ratio, sell_ratio = _buy_sell_ratio(row)
+    buy_display, sell_display = _buy_sell_display(row)
     buy_cost = _price(_pick(
         row,
         "bandar_buy_cost",
@@ -328,7 +353,7 @@ def format_watchlist_detail(row: Mapping[str, Any]) -> str:
         f"S {support} | R {resistance}",
         "",
         f"🏦 {broker} {broker_score}/100",
-        f"Net {net_flow} | B/S {buy_ratio}/{sell_ratio}",
+        f"Net {net_flow} | B/S {buy_display}/{sell_display}",
         f"Cost {buy_cost} ({vs_cost})",
         "",
         f"🟢 {top_buy}",
