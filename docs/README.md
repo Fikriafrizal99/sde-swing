@@ -20,6 +20,7 @@ through environment variables; `config/telegram.json` contains no credentials.
 - [`RUNTIME_JOBS.md`](RUNTIME_JOBS.md) — scheduled jobs, dependencies, and recovery behavior.
 - [`SCHEDULER_RELIABILITY.md`](SCHEDULER_RELIABILITY.md) — retry, locking, and scheduler operations.
 - [`TELEGRAM_ROUTING.md`](TELEGRAM_ROUTING.md) — current message routing contract.
+- [`TELEGRAM_DELIVERY_AUDIT_PREVENTION.md`](TELEGRAM_DELIVERY_AUDIT_PREVENTION.md) — normative Telegram delivery safeguards, release gate, and incident runbook.
 - [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — operator troubleshooting guidance.
 - [`MIGRATION_V1_6_TO_V1_7.md`](MIGRATION_V1_6_TO_V1_7.md) — compatibility and migration reference.
 - [`LEGACY_FILE_MANIFEST.md`](LEGACY_FILE_MANIFEST.md) — active, compatibility, generated, and archived file classes.
