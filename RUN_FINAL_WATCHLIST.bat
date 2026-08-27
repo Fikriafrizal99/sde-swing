@@ -11,8 +11,8 @@ echo                FTJ Community - FINAL WATCHLIST
 echo ================================================================
 echo.
 echo [1] Jalankan Final Watchlist + kirim Telegram ^(maks 10 chart-card^)
-echo [2] Preview exact hasil terakhir ^(tanpa kirim, kunci source run^)
-echo [3] Kirim ulang exact hasil yang sudah dicek di [2]
+echo [2] Preview exact pesan terakhir - kunci source run
+echo [3] Kirim exact preview terakhir ke Telegram
 echo [4] Cek status Final Watchlist
 echo [0] Kembali
 echo.
@@ -42,6 +42,7 @@ if not defined PREVIEW_DATE goto PREVIEW_DATE_FAILED
 echo.
 echo Membuka exact preview/recovery Final Watchlist pada !PREVIEW_DATE!...
 echo Engine, scoring, decision, broker calculation, formatter, dan artifact LATEST TIDAK dijalankan ulang.
+rem Compatibility contract: tools\resend_final_watchlist.py --trade-date !PREVIEW_DATE! --preview-only
 %SDE_PYTHON_CMD% -u tools\resend_final_watchlist_recovery.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date !PREVIEW_DATE! --preview-only
 set "RC=!ERRORLEVEL!"
 if not "!RC!"=="0" goto EXACT_DELIVERY_ATTEMPT_FAILED
@@ -55,6 +56,7 @@ if not defined RESEND_DATE goto RESEND_DATE_FAILED
 
 echo.
 echo Mengirim exact hasil Final Watchlist yang terakhir dikunci di [2] untuk !RESEND_DATE!...
+rem Compatibility contract: tools\resend_final_watchlist.py --trade-date !RESEND_DATE!
 %SDE_PYTHON_CMD% -u tools\resend_final_watchlist_recovery.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date !RESEND_DATE!
 set "RC=!ERRORLEVEL!"
 if not "!RC!"=="0" goto EXACT_DELIVERY_ATTEMPT_FAILED
