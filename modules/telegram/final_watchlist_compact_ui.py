@@ -21,6 +21,14 @@ _GENERIC_TRIGGER_CODES = {
     "WAIT_FOR_ENTRY_TRIGGER",
     "WAIT_FOR_ENTRY_ZONE",
 }
+_TRIGGER_LABELS = {
+    "VOLUME_CONFIRMATION_PENDING": "Tunggu konfirmasi volume",
+    "ENTRY_NOT_TRIGGERED": "entry belum terpicu",
+    "TRIGGER_NOT_MET": "trigger belum terpenuhi",
+    "WAIT_FOR_CONFIRMATION": "tunggu konfirmasi",
+    "WAIT_FOR_ENTRY_TRIGGER": "tunggu trigger entry",
+    "WAIT_FOR_ENTRY_ZONE": "tunggu area entry",
+}
 
 
 def _raw(value: Any) -> str:
@@ -68,6 +76,15 @@ def _pct(value: Any) -> str:
     if number is None:
         return "N/A"
     return f"{number:+.2f}%".replace(".", ",")
+
+
+def _ratio_pct(value: Any) -> str:
+    number = _num(value)
+    if number is None:
+        return "N/A"
+    if 0 <= abs(number) <= 1:
+        number *= 100.0
+    return f"{number:.2f}%".replace(".", ",")
 
 
 def _confidence(value: Any) -> str:
@@ -165,48 +182,62 @@ def _participants(value: Any) -> str:
     return " • ".join(rendered) if rendered else "N/A"
 
 
-def _buy_sell_days(row: Mapping[str, Any]) -> tuple[str, str]:
-    buy = _num(_pick(row, "buy_days", "broker_buy_days", "Buy_Days", "BUY_DAYS"))
-    sell = _num(_pick(row, "sell_days", "broker_sell_days", "Sell_Days", "SELL_DAYS"))
-    return (
-        str(int(round(buy))) if buy is not None else "N/A",
-        str(int(round(sell))) if sell is not None else "N/A",
-    )
+def _buy_sell_ratio(row: Mapping[str, Any]) -> tuple[str, str]:
+    buy = _pick(row, "broker_buy_ratio", "buy_ratio", "BUY_RATIO", "Buy_Ratio", "Buy Ratio")
+    sell = _pick(row, "broker_sell_ratio", "sell_ratio", "SELL_RATIO", "Sell_Ratio", "Sell Ratio")
+    return _ratio_pct(buy), _ratio_pct(sell)
 
 
-def _explicit_trigger(row: Mapping[str, Any]) -> str:
-    candidate = _raw(_pick(
-        row,
-        "trigger_description",
-        "Trigger_Description",
-        "Entry_Trigger",
-        "Execution_Trigger",
-        default="",
-    )).rstrip(" .")
-    if candidate:
-        normalized = candidate.replace("-", "_").replace(" ", "_").upper()
-        if normalized not in _GENERIC_TRIGGER_CODES and not normalized.startswith("ENGINE_DATA_"):
-            return candidate
+def _trigger_items(value: Any) -> list[str]:
+    raw = value
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("["):
+            try:
+                raw = json.loads(text)
+            except Exception:
+                raw = [text]
+        else:
+            raw = [text]
+    if not isinstance(raw, (list, tuple)):
+        raw = [raw]
 
-    pending = _pick(row, "waiting_triggers", "Waiting_Triggers", default=[])
-    if isinstance(pending, str) and pending.strip().startswith("["):
-        try:
-            pending = json.loads(pending)
-        except Exception:
-            pending = []
-    if not isinstance(pending, (list, tuple)):
-        return ""
-    for item in pending:
+    rendered: list[str] = []
+    for item in raw:
         if isinstance(item, Mapping):
             item = item.get("description") or item.get("trigger") or item.get("condition")
         candidate = _raw(item).rstrip(" .")
         if not candidate:
             continue
         normalized = candidate.replace("-", "_").replace(" ", "_").upper()
-        if normalized in _GENERIC_TRIGGER_CODES or normalized.startswith("ENGINE_DATA_"):
+        if normalized.startswith("ENGINE_DATA_"):
             continue
-        return candidate
-    return ""
+        label = _TRIGGER_LABELS.get(normalized)
+        if label:
+            rendered.append(label)
+            continue
+        if normalized in _GENERIC_TRIGGER_CODES:
+            continue
+        rendered.append(candidate)
+    return list(dict.fromkeys(rendered))
+
+
+def _explicit_trigger(row: Mapping[str, Any]) -> str:
+    direct = _pick(
+        row,
+        "trigger_description",
+        "Trigger_Description",
+        "Entry_Trigger",
+        "Execution_Trigger",
+        default="",
+    )
+    direct_items = _trigger_items(direct)
+    if direct_items:
+        return "; ".join(direct_items)
+
+    pending = _pick(row, "waiting_triggers", "Waiting_Triggers", default=[])
+    pending_items = _trigger_items(pending)
+    return "; ".join(pending_items)
 
 
 def _action(row: Mapping[str, Any]) -> str:
@@ -245,7 +276,16 @@ def format_watchlist_detail(row: Mapping[str, Any]) -> str:
     tp2 = _price(_pick(row, "target_2", "Target_2"))
     rr = _rr(_pick(row, "risk_reward", "Target_2_RR", "Target_1_RR"))
 
-    trend = html.escape(_enum(_pick(row, "trend", "Technical_Regime"), "N/A", title=True))
+    trend = html.escape(_enum(_pick(
+        row,
+        "trend",
+        "Technical_Regime",
+        "Trend_State",
+        "Trend_Direction",
+        "Technical_Trend",
+        "Trend_Final",
+        "Trend_Label",
+    ), "N/A", title=True))
     phase = html.escape(_enum(_pick(row, "phase", "execution_state", "Execution_Status", "technical_status"), "N/A", upper=True))
     support = _price(_pick(row, "support", "Support_Level"))
     resistance = _price(_pick(row, "resistance", "Nearest_Resistance", "Minor_Resistance"))
@@ -253,9 +293,27 @@ def format_watchlist_detail(row: Mapping[str, Any]) -> str:
     broker = html.escape(_enum(_pick(row, "broker_status", "broker_signal", "Broker_Confirmation", "broker_direction"), "INSUFFICIENT DATA", upper=True))
     broker_score = _score(_pick(row, "broker_score", "Broker_Score"))
     net_flow = html.escape(_money(_pick(row, "broker_net_flow", "net_flow", "NET_FLOW"), with_rp=True, signed=True))
-    buy_days, sell_days = _buy_sell_days(row)
-    buy_cost = _price(_pick(row, "bandar_buy_cost", "avg_buyer_price", "weighted_broker_buy_cost"))
-    vs_cost = html.escape(_pct(_pick(row, "distance_to_buy_cost", "distance_to_buyer_avg_pct", "distance_to_buy_cost_pct")))
+    buy_ratio, sell_ratio = _buy_sell_ratio(row)
+    buy_cost = _price(_pick(
+        row,
+        "bandar_buy_cost",
+        "avg_buyer_price",
+        "weighted_broker_buy_cost",
+        "broker_buy_cost",
+        "buyer_cost",
+        "buy_cost",
+        "avg_buy_price",
+        "average_buy_price",
+        "buyer_weighted_avg",
+        "weighted_buyer_avg",
+    ))
+    vs_cost = html.escape(_pct(_pick(
+        row,
+        "distance_to_buy_cost",
+        "distance_to_buyer_avg_pct",
+        "distance_to_buy_cost_pct",
+        "distance_to_buyer_cost_pct",
+    )))
     top_buy = _participants(_pick(row, "top_buyers", default=[]))
     top_sell = _participants(_pick(row, "top_sellers", default=[]))
 
@@ -270,7 +328,7 @@ def format_watchlist_detail(row: Mapping[str, Any]) -> str:
         f"S {support} | R {resistance}",
         "",
         f"🏦 {broker} {broker_score}/100",
-        f"Net {net_flow} | B/S {buy_days}/{sell_days}",
+        f"Net {net_flow} | B/S {buy_ratio}/{sell_ratio}",
         f"Cost {buy_cost} ({vs_cost})",
         "",
         f"🟢 {top_buy}",
