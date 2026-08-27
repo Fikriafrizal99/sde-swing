@@ -40,6 +40,6 @@ def test_preview_only_flag_is_supported_for_daily_reports() -> None:
     assert "EXACT_PREVIEW_READ_ONLY" in source
     assert "if args.preview_only:" in source
     preview_branch = source.split("if args.preview_only:", 1)[1].split(
-        "source = load_preview_selection", 1
+        "return EXIT_SUCCESS", 1
     )[0]
     assert "copy_existing_delivery" not in preview_branch
