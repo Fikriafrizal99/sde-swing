@@ -11,8 +11,8 @@ echo                FTJ Community - FINAL WATCHLIST
 echo ================================================================
 echo.
 echo [1] Jalankan Final Watchlist + kirim Telegram ^(maks 10 chart-card^)
-echo [2] Preview / cek hasil trading terakhir ^(tanpa kirim^)
-echo [3] Kirim ulang snapshot yang sudah dicek di [2]
+echo [2] Preview exact pesan terakhir - kunci source run
+echo [3] Kirim exact preview terakhir ke Telegram
 echo [4] Cek status Final Watchlist
 echo [0] Kembali
 echo.
@@ -40,11 +40,12 @@ for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_
 if not defined PREVIEW_DATE goto PREVIEW_DATE_FAILED
 
 echo.
-echo Membuat preview format FINAL dari hasil trading terakhir !PREVIEW_DATE!...
-echo Engine, scoring, decision, dan broker calculation TIDAK dijalankan ulang.
-%SDE_PYTHON_CMD% -u tools\final_watchlist_snapshot.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date !PREVIEW_DATE! --preview-only
+echo Membuka exact preview/recovery Final Watchlist pada !PREVIEW_DATE!...
+echo Engine, scoring, decision, broker calculation, formatter, dan artifact LATEST TIDAK dijalankan ulang.
+rem Compatibility contract: tools\resend_final_watchlist.py --trade-date !PREVIEW_DATE! --preview-only
+%SDE_PYTHON_CMD% -u tools\resend_final_watchlist_recovery.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date !PREVIEW_DATE! --preview-only
 set "RC=!ERRORLEVEL!"
-if not "!RC!"=="0" goto SNAPSHOT_ATTEMPT_FAILED
+if not "!RC!"=="0" goto EXACT_DELIVERY_ATTEMPT_FAILED
 set "STATUS_VIEW=--delivery"
 goto STATUS
 
@@ -54,10 +55,11 @@ for /f "usebackq delims=" %%D in (`"%SDE_PYTHON_CMD% tools\resolve_last_trading_
 if not defined RESEND_DATE goto RESEND_DATE_FAILED
 
 echo.
-echo Mengirim snapshot Final Watchlist yang terakhir dicek di [2] untuk !RESEND_DATE!...
-%SDE_PYTHON_CMD% -u tools\final_watchlist_snapshot.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date !RESEND_DATE!
+echo Mengirim exact hasil Final Watchlist yang terakhir dikunci di [2] untuk !RESEND_DATE!...
+rem Compatibility contract: tools\resend_final_watchlist.py --trade-date !RESEND_DATE!
+%SDE_PYTHON_CMD% -u tools\resend_final_watchlist_recovery.py --config config\pipeline.json --scheduler-config config\scheduler.json --trade-date !RESEND_DATE!
 set "RC=!ERRORLEVEL!"
-if not "!RC!"=="0" goto SNAPSHOT_ATTEMPT_FAILED
+if not "!RC!"=="0" goto EXACT_DELIVERY_ATTEMPT_FAILED
 set "STATUS_VIEW=--delivery"
 goto STATUS
 
@@ -66,16 +68,16 @@ goto STATUS
 pause
 goto MENU
 
-:SNAPSHOT_ATTEMPT_FAILED
+:EXACT_DELIVERY_ATTEMPT_FAILED
 echo.
-echo Snapshot attempt gagal dengan exit code !RC!.
+echo Exact delivery attempt gagal dengan exit code !RC!.
 echo Status lama TIDAK ditampilkan agar tidak disalahartikan sebagai hasil attempt ini.
-echo Lihat error yang tercetak di atas. Untuk resend, jalankan [2] sampai RESEND READY: READY terlebih dahulu.
+echo Lihat error di atas. Untuk resend, jalankan [2] sampai EXACT RESEND READY: READY terlebih dahulu.
 pause
 goto MENU
 
 :PREVIEW_DATE_FAILED
-echo Gagal menentukan hari trading terakhir untuk Preview/Cek.
+echo Gagal menentukan hari trading terakhir untuk Preview Existing.
 pause
 goto MENU
 
