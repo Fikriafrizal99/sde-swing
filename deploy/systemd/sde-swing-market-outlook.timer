@@ -3,7 +3,7 @@ Description=Run SDE Swing Market Outlook at 08:45 WIB
 
 [Timer]
 OnCalendar=Mon..Fri *-*-* 08:45:00 Asia/Jakarta
-Persistent=true
+Persistent=false
 AccuracySec=30s
 Unit=sde-swing-job@market_outlook.service
 
