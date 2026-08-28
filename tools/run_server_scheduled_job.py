@@ -4,9 +4,9 @@ from __future__ import annotations
 """Linux/server wrapper around the canonical Swing scheduler jobs.
 
 It preserves tools/run_scheduled_job.py as the authoritative retry/status layer,
-then chains the optional News monitor only after a real successful Market Outlook
-or Post Market execution. News remains non-blocking and has no decision-engine
-write access.
+chains the optional News monitor only after a fresh successful Market Outlook or
+Post Market execution, and prevents an unattended Final Watchlist from falling
+back to the legacy manual broker-export wait when Stockbit Playwright is OFF.
 """
 
 import argparse
@@ -38,6 +38,34 @@ def _latest_classification(job: str) -> str:
     return str(payload.get("classification") or "").strip().upper()
 
 
+def _final_watchlist_server_preflight() -> tuple[bool, str]:
+    """Require the unattended Stockbit collector before scheduled Final Watchlist.
+
+    The canonical Final Watchlist intentionally preserves a manual-export fallback
+    when Playwright is OFF. That is useful on a desktop, but an unattended server
+    would otherwise wait until the broker timeout. Server mode therefore fails
+    closed immediately and tells the operator to perform the one-time Stockbit
+    login/enable step.
+    """
+    try:
+        from modules.portfolio import stockbit_playwright_collector as collector
+    except Exception as exc:
+        return False, f"STOCKBIT_PLAYWRIGHT_IMPORT_FAILED:{type(exc).__name__}"
+
+    state = collector.load_state(collector.DEFAULT_STATE)
+    if not state.enabled:
+        return False, "STOCKBIT_PLAYWRIGHT_DISABLED"
+    if not collector.DEFAULT_PROFILE.exists():
+        return False, "STOCKBIT_PROFILE_MISSING"
+    try:
+        has_profile_state = any(collector.DEFAULT_PROFILE.iterdir())
+    except OSError:
+        has_profile_state = False
+    if not has_profile_state:
+        return False, "STOCKBIT_PROFILE_EMPTY"
+    return True, "READY"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SDE Swing Linux scheduled job wrapper")
     parser.add_argument(
@@ -46,6 +74,17 @@ def main(argv: list[str] | None = None) -> int:
         choices=("market_outlook", "post_market", "final_watchlist"),
     )
     args, forwarded = parser.parse_known_args(argv)
+
+    if args.job == "final_watchlist":
+        ready, reason = _final_watchlist_server_preflight()
+        if not ready:
+            print(
+                "[SERVER] Final Watchlist blocked before engine start: "
+                f"{reason}. Run the one-time Stockbit Playwright setup/login and enable it.",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 1
 
     scheduler_cmd = [
         sys.executable,
