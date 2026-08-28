@@ -1,0 +1,11 @@
+[Unit]
+Description=Run SDE Swing Market Outlook at 07:30 WIB
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 07:30:00 Asia/Jakarta
+Persistent=true
+AccuracySec=30s
+Unit=sde-swing-job@market_outlook.service
+
+[Install]
+WantedBy=timers.target
