@@ -3,7 +3,7 @@ Description=Run SDE Swing Final Watchlist at 18:00 WIB
 
 [Timer]
 OnCalendar=Mon..Fri *-*-* 18:00:00 Asia/Jakarta
-Persistent=true
+Persistent=false
 AccuracySec=30s
 Unit=sde-swing-job@final_watchlist.service
 
