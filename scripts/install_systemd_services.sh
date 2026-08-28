@@ -51,6 +51,7 @@ REQUIRED_FILES=(
   "$TEMPLATE_DIR/sde-swing-idx-watcher.service.template"
   "$TEMPLATE_DIR/sde-swing-idx-watcher-stop.service"
   "$TEMPLATE_DIR/sde-swing-position-management.service.template"
+  "$TEMPLATE_DIR/sde-swing-performance.service.template"
   "$TEMPLATE_DIR/sde-swing-idx-universe.service.template"
   "$TEMPLATE_DIR/sde-swing-idx-watcher-start.timer"
   "$TEMPLATE_DIR/sde-swing-idx-watcher-stop.timer"
@@ -58,8 +59,10 @@ REQUIRED_FILES=(
   "$TEMPLATE_DIR/sde-swing-post-market.timer"
   "$TEMPLATE_DIR/sde-swing-final-watchlist.timer"
   "$TEMPLATE_DIR/sde-swing-position-management.timer"
+  "$TEMPLATE_DIR/sde-swing-performance.timer"
   "$TEMPLATE_DIR/sde-swing-idx-universe.timer"
   "$ROOT/tools/check_idx_watcher_market_hours.py"
+  "$ROOT/tools/run_server_performance.py"
 )
 
 for required in "${REQUIRED_FILES[@]}"; do
@@ -111,6 +114,9 @@ render_template \
   "$TEMPLATE_DIR/sde-swing-position-management.service.template" \
   "$SYSTEMD_DIR/sde-swing-position-management.service"
 render_template \
+  "$TEMPLATE_DIR/sde-swing-performance.service.template" \
+  "$SYSTEMD_DIR/sde-swing-performance.service"
+render_template \
   "$TEMPLATE_DIR/sde-swing-idx-universe.service.template" \
   "$SYSTEMD_DIR/sde-swing-idx-universe.service"
 
@@ -125,6 +131,7 @@ TIMERS=(
   sde-swing-post-market.timer
   sde-swing-final-watchlist.timer
   sde-swing-position-management.timer
+  sde-swing-performance.timer
   sde-swing-idx-universe.timer
 )
 
@@ -153,6 +160,7 @@ echo "Project root : $ROOT"
 echo "Service user : $SDE_USER"
 echo "Python       : $PYTHON"
 echo "IDX watcher  : Mon-Fri 07:00-18:00 WIB via Xvfb headed Chromium"
+echo "Performance  : Mon-Fri 19:00 WIB after Active Portfolio Management"
 echo ""
 echo "Timers:"
 systemctl list-timers --all "${TIMERS[@]}" --no-pager || true
