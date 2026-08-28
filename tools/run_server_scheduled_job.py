@@ -132,9 +132,10 @@ def main(argv: list[str] | None = None) -> int:
         "-u",
         "-m",
         "modules.news.news_monitor_market_impact",
+        "run",
         "--session",
         session,
-        "--telegram",
+        "--send",
     ]
     news_rc = _run(news_cmd)
     if news_rc != 0:
