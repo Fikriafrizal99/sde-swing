@@ -5,8 +5,10 @@ from __future__ import annotations
 
 It preserves tools/run_scheduled_job.py as the authoritative retry/status layer,
 chains the optional News monitor only after a fresh successful Market Outlook or
-Post Market execution, and prevents an unattended Final Watchlist from falling
-back to the legacy manual broker-export wait when Stockbit Playwright is OFF.
+Post Market execution, prevents an unattended Final Watchlist from falling back
+to the legacy manual broker-export wait when Stockbit Playwright is OFF, and
+sets the unattended Final Watchlist PRIMARY broker period to 3D. The canonical
+broker bridge still captures TODAY as a separate exact 1D pulse.
 """
 
 import argparse
@@ -17,6 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEDULED_RUN_ROOT = ROOT / "data" / "state" / "scheduler" / "scheduled_runs"
+FINAL_WATCHLIST_PRIMARY_PERIOD = "3D"
 
 NEWS_SESSIONS = {
     "market_outlook": "morning",
@@ -66,6 +69,14 @@ def _final_watchlist_server_preflight() -> tuple[bool, str]:
     return True, "READY"
 
 
+def _server_forwarded_args(job: str, forwarded: list[str]) -> list[str]:
+    """Apply server-only defaults without changing the canonical desktop runner."""
+    result = list(forwarded)
+    if job == "final_watchlist" and "--period" not in result:
+        result.extend(["--period", FINAL_WATCHLIST_PRIMARY_PERIOD])
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SDE Swing Linux scheduled job wrapper")
     parser.add_argument(
@@ -86,13 +97,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
+    server_forwarded = _server_forwarded_args(args.job, forwarded)
     scheduler_cmd = [
         sys.executable,
         "-u",
         str(ROOT / "tools" / "run_scheduled_job.py"),
         "--job",
         args.job,
-        *forwarded,
+        *server_forwarded,
     ]
     scheduler_rc = _run(scheduler_cmd)
     if scheduler_rc != 0:
