@@ -1,0 +1,11 @@
+[Unit]
+Description=Stop SDE Swing IDX Disclosure Watcher at 18:00 WIB
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 18:00:00 Asia/Jakarta
+Persistent=true
+AccuracySec=30s
+Unit=sde-swing-idx-watcher-stop.service
+
+[Install]
+WantedBy=timers.target
