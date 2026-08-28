@@ -66,6 +66,7 @@ done
 
 mkdir -p \
   "$ROOT/data/runtime/broker_exports" \
+  "$ROOT/data/runtime/portfolio_broker_exports" \
   "$ROOT/data/state/playwright/stockbit" \
   "$ROOT/data/logs/broker_playwright" \
   "$ROOT/logs"
