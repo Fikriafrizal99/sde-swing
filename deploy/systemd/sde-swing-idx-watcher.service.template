@@ -1,0 +1,24 @@
+[Unit]
+Description=SDE Swing IDX Disclosure Watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__SDE_USER__
+WorkingDirectory=__SDE_ROOT__
+EnvironmentFile=-__SDE_ROOT__/.env
+Environment=PYTHONPATH=__SDE_ROOT__:__SDE_ROOT__/src
+Environment=PYTHONUNBUFFERED=1
+Environment=TZ=Asia/Jakarta
+ExecStart=__SDE_PYTHON__ -u __SDE_ROOT__/run_idx_disclosure_watcher.py --watch --telegram --transport playwright
+Restart=always
+RestartSec=15
+TimeoutStopSec=30
+KillSignal=SIGTERM
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
