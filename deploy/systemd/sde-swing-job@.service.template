@@ -11,7 +11,7 @@ EnvironmentFile=-__SDE_ROOT__/.env
 Environment=PYTHONPATH=__SDE_ROOT__:__SDE_ROOT__/src
 Environment=PYTHONUNBUFFERED=1
 Environment=TZ=Asia/Jakarta
-ExecStart=__SDE_PYTHON__ -u __SDE_ROOT__/tools/run_scheduled_job.py --job %i
+ExecStart=__SDE_PYTHON__ -u __SDE_ROOT__/tools/run_server_scheduled_job.py --job %i
 TimeoutStartSec=3h
 TimeoutStopSec=30
 KillMode=control-group
