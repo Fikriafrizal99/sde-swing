@@ -11,8 +11,18 @@ echo "[IDX Disclosure Watcher]"
 systemctl --no-pager --full status sde-swing-idx-watcher.service || true
 
 echo ""
+echo "[IDX Watcher Hours Guard]"
+if [[ -x "$PYTHON" ]]; then
+  "$PYTHON" -u "$ROOT/tools/check_idx_watcher_market_hours.py" || true
+else
+  echo "Python virtualenv         : MISSING ($PYTHON)"
+fi
+
+echo ""
 echo "[Timers]"
 systemctl list-timers --all \
+  sde-swing-idx-watcher-start.timer \
+  sde-swing-idx-watcher-stop.timer \
   sde-swing-market-outlook.timer \
   sde-swing-post-market.timer \
   sde-swing-final-watchlist.timer \
