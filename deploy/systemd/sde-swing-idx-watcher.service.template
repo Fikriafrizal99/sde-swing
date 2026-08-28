@@ -11,6 +11,7 @@ EnvironmentFile=-__SDE_ROOT__/.env
 Environment=PYTHONPATH=__SDE_ROOT__:__SDE_ROOT__/src
 Environment=PYTHONUNBUFFERED=1
 Environment=TZ=Asia/Jakarta
+ExecCondition=__SDE_PYTHON__ -u __SDE_ROOT__/tools/check_idx_watcher_market_hours.py
 ExecStart=/usr/bin/xvfb-run -a __SDE_PYTHON__ -u __SDE_ROOT__/run_idx_disclosure_watcher.py --watch --telegram --transport playwright
 Restart=always
 RestartSec=15
