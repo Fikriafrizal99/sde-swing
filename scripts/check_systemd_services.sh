@@ -27,6 +27,7 @@ systemctl list-timers --all \
   sde-swing-post-market.timer \
   sde-swing-final-watchlist.timer \
   sde-swing-position-management.timer \
+  sde-swing-performance.timer \
   sde-swing-idx-universe.timer \
   --no-pager || true
 
@@ -59,6 +60,10 @@ journalctl \
 echo ""
 echo "[Latest Active Portfolio logs]"
 journalctl -u sde-swing-position-management.service -n 50 --no-pager -l || true
+
+echo ""
+echo "[Latest Performance logs]"
+journalctl -u sde-swing-performance.service -n 50 --no-pager -l || true
 
 echo ""
 echo "[Latest IDX Universe logs]"
