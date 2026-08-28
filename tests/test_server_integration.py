@@ -74,6 +74,11 @@ def test_news_is_chained_only_by_server_wrapper() -> None:
 def test_active_portfolio_server_runner_preserves_integrity_boundary() -> None:
     runner = _text("tools/run_server_position_management.py")
     assert "refresh_open_positions" in runner
+    assert "portfolio_broker_daily" in runner
+    assert "stockbit_playwright_collector" in runner
+    assert "PORTFOLIO_BACKFILL_TASKS.csv" in runner
+    assert "portfolio_broker_exports" in runner
+    assert '"import"' in runner
     assert "position_management_runtime_integrity" in runner
     assert "repair_legacy_broker_backfill_provenance" in runner
     assert "portfolio_delivery_status" in runner
@@ -103,6 +108,8 @@ def test_installer_manages_complete_server_unit_set() -> None:
         "sde-swing-idx-universe.timer",
     ):
         assert name in installer
+    assert "data/runtime/broker_exports" in installer
+    assert "data/runtime/portfolio_broker_exports" in installer
     assert "playwright install --with-deps chromium" in installer
     assert "stockbit_playwright_collector setup" in installer
     assert "stockbit_playwright_collector enable" in installer
