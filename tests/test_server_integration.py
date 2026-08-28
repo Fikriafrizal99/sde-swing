@@ -63,6 +63,17 @@ def test_server_broker_staging_is_linux_safe_and_stockbit_is_fail_closed() -> No
     assert "run_scheduled_job.py" in wrapper
 
 
+def test_server_final_watchlist_uses_3d_primary_and_keeps_today_pulse_contract() -> None:
+    wrapper = _text("tools/run_server_scheduled_job.py")
+    bridge = _text("tools/run_final_watchlist_playwright_bridge.py")
+
+    assert 'FINAL_WATCHLIST_PRIMARY_PERIOD = "3D"' in wrapper
+    assert 'result.extend(["--period", FINAL_WATCHLIST_PRIMARY_PERIOD])' in wrapper
+    assert "TODAY" in bridge
+    assert "exact real-1D capture" in bridge
+    assert "PRIMARY is longer than 1D" in bridge
+
+
 def test_news_is_chained_only_by_server_wrapper() -> None:
     wrapper = _text("tools/run_server_scheduled_job.py")
     assert '"market_outlook": "morning"' in wrapper
