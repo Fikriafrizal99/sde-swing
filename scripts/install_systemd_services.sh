@@ -13,7 +13,10 @@ for arg in "$@"; do
 Usage: bash scripts/install_systemd_services.sh [--with-browser] [--start]
 
   --with-browser  Install Playwright Chromium and Linux browser dependencies.
-  --start         Start/restart the IDX watcher and timers immediately.
+  --start         Start/restart the IDX watcher and activate all timers now.
+
+Stockbit login is intentionally NOT automated. Run the one-time headed setup
+from an interactive Ubuntu desktop session before relying on Final Watchlist.
 EOF
       exit 0
       ;;
@@ -42,17 +45,30 @@ if [[ ! -f "$ROOT/.env" ]]; then
   exit 1
 fi
 
-for required in \
-  "$TEMPLATE_DIR/sde-swing-job@.service.template" \
-  "$TEMPLATE_DIR/sde-swing-idx-watcher.service.template" \
-  "$TEMPLATE_DIR/sde-swing-market-outlook.timer" \
-  "$TEMPLATE_DIR/sde-swing-post-market.timer" \
-  "$TEMPLATE_DIR/sde-swing-final-watchlist.timer"; do
+REQUIRED_FILES=(
+  "$TEMPLATE_DIR/sde-swing-job@.service.template"
+  "$TEMPLATE_DIR/sde-swing-idx-watcher.service.template"
+  "$TEMPLATE_DIR/sde-swing-position-management.service.template"
+  "$TEMPLATE_DIR/sde-swing-idx-universe.service.template"
+  "$TEMPLATE_DIR/sde-swing-market-outlook.timer"
+  "$TEMPLATE_DIR/sde-swing-post-market.timer"
+  "$TEMPLATE_DIR/sde-swing-final-watchlist.timer"
+  "$TEMPLATE_DIR/sde-swing-position-management.timer"
+  "$TEMPLATE_DIR/sde-swing-idx-universe.timer"
+)
+
+for required in "${REQUIRED_FILES[@]}"; do
   if [[ ! -f "$required" ]]; then
     echo "[ERROR] Missing deployment file: $required" >&2
     exit 1
   fi
 done
+
+mkdir -p \
+  "$ROOT/data/runtime/broker_exports" \
+  "$ROOT/data/state/playwright/stockbit" \
+  "$ROOT/data/logs/broker_playwright" \
+  "$ROOT/logs"
 
 if $INSTALL_BROWSER; then
   echo "[SETUP] Installing Playwright Chromium + Linux dependencies..."
@@ -79,28 +95,36 @@ render_template \
 render_template \
   "$TEMPLATE_DIR/sde-swing-idx-watcher.service.template" \
   "$SYSTEMD_DIR/sde-swing-idx-watcher.service"
+render_template \
+  "$TEMPLATE_DIR/sde-swing-position-management.service.template" \
+  "$SYSTEMD_DIR/sde-swing-position-management.service"
+render_template \
+  "$TEMPLATE_DIR/sde-swing-idx-universe.service.template" \
+  "$SYSTEMD_DIR/sde-swing-idx-universe.service"
 
-sudo install -m 0644 \
-  "$TEMPLATE_DIR/sde-swing-market-outlook.timer" \
-  "$SYSTEMD_DIR/sde-swing-market-outlook.timer"
-sudo install -m 0644 \
-  "$TEMPLATE_DIR/sde-swing-post-market.timer" \
-  "$SYSTEMD_DIR/sde-swing-post-market.timer"
-sudo install -m 0644 \
-  "$TEMPLATE_DIR/sde-swing-final-watchlist.timer" \
-  "$SYSTEMD_DIR/sde-swing-final-watchlist.timer"
+TIMERS=(
+  sde-swing-market-outlook.timer
+  sde-swing-post-market.timer
+  sde-swing-final-watchlist.timer
+  sde-swing-position-management.timer
+  sde-swing-idx-universe.timer
+)
+
+for timer in "${TIMERS[@]}"; do
+  sudo install -m 0644 "$TEMPLATE_DIR/$timer" "$SYSTEMD_DIR/$timer"
+done
 
 sudo systemctl daemon-reload
 sudo systemctl enable sde-swing-idx-watcher.service
-sudo systemctl enable sde-swing-market-outlook.timer
-sudo systemctl enable sde-swing-post-market.timer
-sudo systemctl enable sde-swing-final-watchlist.timer
+for timer in "${TIMERS[@]}"; do
+  sudo systemctl enable "$timer"
+done
 
 if $START_NOW; then
   sudo systemctl restart sde-swing-idx-watcher.service
-  sudo systemctl restart sde-swing-market-outlook.timer
-  sudo systemctl restart sde-swing-post-market.timer
-  sudo systemctl restart sde-swing-final-watchlist.timer
+  for timer in "${TIMERS[@]}"; do
+    sudo systemctl restart "$timer"
+  done
 fi
 
 echo ""
@@ -110,11 +134,16 @@ echo "Service user : $SDE_USER"
 echo "Python       : $PYTHON"
 echo ""
 echo "Timers:"
-systemctl list-timers --all \
-  sde-swing-market-outlook.timer \
-  sde-swing-post-market.timer \
-  sde-swing-final-watchlist.timer \
-  --no-pager || true
+systemctl list-timers --all "${TIMERS[@]}" --no-pager || true
+
+echo ""
+COLLECTOR_STATE="$($PYTHON -m modules.portfolio.stockbit_playwright_collector status --value 2>/dev/null || echo UNKNOWN)"
+echo "Stockbit Playwright collector: $COLLECTOR_STATE"
+if [[ "$COLLECTOR_STATE" != "ON" ]]; then
+  echo "[ACTION REQUIRED] Before Final Watchlist automation:"
+  echo "  $PYTHON -m modules.portfolio.stockbit_playwright_collector setup"
+  echo "  $PYTHON -m modules.portfolio.stockbit_playwright_collector enable"
+fi
 
 echo ""
 if $START_NOW; then
