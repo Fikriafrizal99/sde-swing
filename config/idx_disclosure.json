@@ -1,5 +1,5 @@
 {
-  "version": "1.3.0",
+  "version": "1.3.0-server",
   "enabled": false,
   "timezone": "Asia/Jakarta",
   "endpoint": "https://www.idx.co.id/primary/ListedCompany/GetAnnouncement",
@@ -10,8 +10,8 @@
     "bootstrap_before_api": true,
     "bootstrap_url": "https://www.idx.co.id/id/perusahaan-tercatat/keterbukaan-informasi/",
     "browser": {
-      "channels": ["chrome", "msedge"],
-      "headless": false,
+      "channels": ["chromium", "chrome"],
+      "headless": true,
       "bootstrap_wait_ms": 2500,
       "timeout_seconds": 25,
       "max_retries": 1
