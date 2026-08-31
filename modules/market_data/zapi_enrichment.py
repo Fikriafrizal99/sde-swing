@@ -436,7 +436,7 @@ class ZapiEnrichmentService:
                 result = self.client.fetch_raw(
                     "SymbolMetadata",
                     "",
-                    length=5000,
+                    length=1000,
                     start=0,
                     metadata_endpoint=endpoint,
                 )
