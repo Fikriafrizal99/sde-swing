@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "freeze_id": "PULLBACK_TESTING_20260903",
+  "status": "FROZEN",
+  "branch": "testing",
+  "baseline_commit": "a70a0b7402bab67f3de911546a1bb9381cc986c9",
+  "effective_date": "2026-09-03",
+  "reason": "Preserve the observed PULLBACK edge and prevent post-result tuning while new out-of-sample evidence accumulates.",
+  "performance_evidence": {
+    "source_artifact": "FTJ_PERFORMANCE_SETUP_20260903_164917.xlsx",
+    "closed_trades": 20,
+    "win_rate_pct": 80.0,
+    "avg_return_pct": 3.7,
+    "median_return_pct": 4.83,
+    "profit_factor": 4.79,
+    "avg_mfe_pct": 6.88,
+    "avg_mae_pct": -2.76,
+    "validation_status": "PROMISING_EDGE_NOT_PRODUCTION_PROVEN",
+    "known_limits": [
+      "SAMPLE_SIZE_20",
+      "BULL_REGIME_ONLY",
+      "PRICE_LIFECYCLE_ONLY_REPLAY"
+    ]
+  },
+  "protected_contract": {
+    "candidate_min_score": 58,
+    "setup_profile": {
+      "technical_min": 67.0,
+      "strong_quality": 72.0,
+      "composite_trigger": 64.0,
+      "watch_score": 55.0,
+      "readiness_ready": 64.0,
+      "readiness_trigger_reference": 42.0,
+      "volume_ratio_min": 0.8,
+      "soft_extension": 2.2,
+      "hard_extension": 2.8,
+      "min_rr": 1.0,
+      "preferred_rr": 2.0,
+      "support_lookback": 30.0,
+      "resistance_lookback": 120.0
+    },
+    "candidate_definition": {
+      "trend_context": "close > sma20 AND sma20 > sma50",
+      "distance_ema20_pct_min": -2.0,
+      "distance_ema20_pct_max": 3.0,
+      "rsi_14_min": 45.0,
+      "rsi_14_max": 68.0,
+      "macd_hist_min": 0.0,
+      "readiness_trigger_points": 20,
+      "setup_priority": "AFTER_BREAKOUT_BEFORE_TREND_CONTINUATION"
+    },
+    "entry_geometry": {
+      "entry_low_formula": "ema20 - 0.25 * atr",
+      "entry_high_formula": "min(reference_close * 1.01, ema20 + 0.35 * atr)",
+      "planned_entry_reference": "entry_high",
+      "support_lookback": 30,
+      "resistance_lookback": 120,
+      "min_rr": 1.0,
+      "preferred_rr": 2.0
+    }
+  },
+  "protected_source_blobs": {
+    "modules/candidate_selector/technical_candidate_selector.py": "3e9e77d11eb520e3ebed3b0beffbbc9e726ccfdb",
+    "modules/technical_feature_engine/technical_feature_engine.py": "d95f86f212ebe61823c54c53c2e9732a7763df12",
+    "modules/decision_engine/moderate_profiles.py": "9058c55b635ea8e49f8b5b074312371a321c04b9",
+    "modules/decision_engine/smart_selective_v162.py": "05fd29e596efa2ed08c7b8168b27735692488c3b",
+    "modules/decision_engine/decision_engine.py": "c21f52d6241bc4130956de4b617a2b3988cde052",
+    "modules/entry_plan_validator/validator.py": "cbcb5e751d87e52137aa211bf50404e7fc658173",
+    "modules/exit_engine/exit_engine_baseline.py": "422dfc663a3b8d4c26131c10bdf13daed32dad4c"
+  },
+  "excluded_from_dedicated_freeze": [
+    "BROKER_LOOKBACK_OR_SOURCE_SELECTION_INCLUDING_1D_VS_3D",
+    "BROKER_INGESTION_AND_FUSION_IMPLEMENTATION",
+    "REPORTING_AND_UI",
+    "DATA_SOURCE_ADAPTERS_THAT_DO_NOT_CHANGE_PULLBACK_TECHNICAL_SEMANTICS",
+    "LIFECYCLE_ONLY_FIXES_THAT_DO_NOT_CHANGE_ENTRY_SL_TP_ECONOMICS"
+  ],
+  "change_control": {
+    "default_action": "DO_NOT_TUNE_PULLBACK",
+    "experiments_must_use_separate_branch": true,
+    "unfreeze_requires_documented_before_after_evidence": true,
+    "unfreeze_requires_out_of_sample_validation": true,
+    "recommended_new_closed_pullback_sample": 30,
+    "recommended_regime_coverage": [
+      "BULL",
+      "SIDEWAYS_OR_BEAR"
+    ],
+    "note": "The 30-trade and regime targets are evidence goals, not automatic permission to change the frozen contract."
+  }
+}

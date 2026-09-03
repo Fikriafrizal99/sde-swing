@@ -36,6 +36,9 @@ jobs:
       - name: Quant freeze
         run: python tools/ci_validate_quant_freeze.py
 
+      - name: Pullback logic freeze
+        run: python tools/ci_validate_pullback_freeze.py
+
       - run: python -m pytest -q
       - run: git diff --check
 
