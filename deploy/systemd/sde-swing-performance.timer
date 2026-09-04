@@ -1,0 +1,11 @@
+[Unit]
+Description=Run SDE Swing Performance / Outcome Report at 19:00 WIB
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 19:00:00 Asia/Jakarta
+Persistent=false
+AccuracySec=30s
+Unit=sde-swing-performance.service
+
+[Install]
+WantedBy=timers.target

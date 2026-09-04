@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh SDE Swing IDX Universe weekly
+
+[Timer]
+OnCalendar=Fri *-*-* 20:00:00 Asia/Jakarta
+Persistent=true
+AccuracySec=1m
+Unit=sde-swing-idx-universe.service
+
+[Install]
+WantedBy=timers.target
