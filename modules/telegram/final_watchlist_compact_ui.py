@@ -26,6 +26,8 @@ _TRIGGER_LABELS = {
     "ENTRY_NOT_TRIGGERED": "entry belum terpicu",
     "SIDEWAYS_TRIGGER_CONFIRMATION": "Tunggu konfirmasi di kondisi sideways",
     "ENTRY_TRIGGER_REQUIRED": "tunggu trigger entry",
+    "CHECK_SPREAD_SLIPPAGE": "Cek spread/slippage",
+    "REDUCE_POSITION_SIZE": "kurangi ukuran posisi",
 }
 
 
