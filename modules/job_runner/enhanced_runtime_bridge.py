@@ -428,6 +428,11 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             continue
 
         plan = plans.get(symbol, {})
+        effective_decision = _value(
+            plan,
+            "Decision_Status_Final",
+            default=_value(raw, "Decision_Status_Final", "Decision_V3", "Decision", default=""),
+        )
         period = period_view.symbol(symbol)
         primary = dict(period.get("primary") or {})
         today = dict(period.get("today") or {})
@@ -461,7 +466,7 @@ def final_watchlist_payloads(ctx: RunnerContext, manifest: dict[str, Any] | None
             "trade_date": ctx.trade_date.isoformat(),
             "rank": _value(raw, "Rank_V3", "Rank", default=index),
             "symbol": symbol,
-            "decision": _value(raw, "Decision_Status_Final", "Decision_V3", "Decision", default=""),
+            "decision": effective_decision,
             "risk_flags": _value(raw, "Risk_Flags", default=",".join(zapi.get("risk_flags") or [])),
             "exchange_status": exchange_status,
             "exchange_veto": exchange_veto,
