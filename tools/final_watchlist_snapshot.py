@@ -69,6 +69,21 @@ def _canonical_csv_path(ctx) -> Path:
     return output_root / "final_watchlist" / f"sde-final-watchlist-{ctx.trade_date.isoformat()}.csv"
 
 
+def _clear_canonical_detail_previews(ctx) -> list[Path]:
+    """Remove only mutable Final Watchlist detail aliases before a fresh preview render."""
+    folder = ctx.previews_root / ctx.trade_date.isoformat()
+    if not folder.exists():
+        return []
+    removed: list[Path] = []
+    for path in folder.glob("final_watchlist_detail_*.txt"):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        removed.append(path)
+    return removed
+
+
 def _restore_canonical_csv(path: Path, existed: bool, backup: bytes | None) -> None:
     if existed:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -174,6 +189,7 @@ def main() -> int:
                 csv_existed = canonical_csv.exists() and canonical_csv.is_file()
                 csv_backup = canonical_csv.read_bytes() if csv_existed else None
                 source_manifest = _decision_manifest_hint(ctx)
+                _clear_canonical_detail_previews(ctx)
                 bridge._builder = _preview_builder
                 snapshot_runtime.final_watchlist_payloads = (
                     lambda preview_ctx: original_snapshot_payload_builder(preview_ctx, source_manifest)
