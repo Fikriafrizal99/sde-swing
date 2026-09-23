@@ -24,6 +24,8 @@ _GENERIC_TRIGGER_CODES = {
 _TRIGGER_LABELS = {
     "VOLUME_CONFIRMATION_PENDING": "Tunggu konfirmasi volume",
     "ENTRY_NOT_TRIGGERED": "entry belum terpicu",
+    "SIDEWAYS_TRIGGER_CONFIRMATION": "Tunggu konfirmasi di kondisi sideways",
+    "ENTRY_TRIGGER_REQUIRED": "tunggu trigger entry",
 }
 
 
@@ -212,6 +214,14 @@ def _trigger_values(value: Any) -> list[tuple[str, str]]:
     for item in raw:
         if isinstance(item, Mapping):
             item = item.get("description") or item.get("trigger") or item.get("condition")
+        if isinstance(item, str) and item.strip().startswith("["):
+            try:
+                nested = json.loads(item)
+            except Exception:
+                nested = None
+            if isinstance(nested, list):
+                values.extend(_trigger_values(nested))
+                continue
         candidate = _raw(item).rstrip(" .")
         if not candidate:
             continue
