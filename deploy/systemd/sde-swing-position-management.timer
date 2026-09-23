@@ -1,0 +1,11 @@
+[Unit]
+Description=Run SDE Swing Active Portfolio Management at 18:45 WIB
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 18:45:00 Asia/Jakarta
+Persistent=false
+AccuracySec=30s
+Unit=sde-swing-position-management.service
+
+[Install]
+WantedBy=timers.target

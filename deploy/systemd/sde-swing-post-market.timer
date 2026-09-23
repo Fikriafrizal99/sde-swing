@@ -1,0 +1,11 @@
+[Unit]
+Description=Run SDE Swing Post Market at 16:30 WIB
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 16:30:00 Asia/Jakarta
+Persistent=false
+AccuracySec=30s
+Unit=sde-swing-job@post_market.service
+
+[Install]
+WantedBy=timers.target

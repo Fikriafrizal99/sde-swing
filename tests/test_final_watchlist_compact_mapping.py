@@ -63,3 +63,29 @@ def test_buy_cost_falls_back_to_existing_raw_fact_when_primary_is_nan() -> None:
 
 def test_buy_cost_does_not_recalculate_when_no_source_fact_exists() -> None:
     assert _final_watchlist_buy_cost({}, {}) == ""
+
+def test_compact_card_unwraps_nested_waiting_trigger_json() -> None:
+    row = {
+        "symbol": "GULA",
+        "decision": "BUY ON TRIGGER",
+        "confidence": 63,
+        "setup": "EARLY ACCUMULATION",
+        "analysis_date": "2026-09-23",
+        "entry_low": 822,
+        "entry_high": 838,
+        "resistance": 855,
+        "last_price": 830,
+        "phase": "WAIT TRIGGER",
+        "waiting_triggers": [
+            '["CHECK_SPREAD_SLIPPAGE", "REDUCE_POSITION_SIZE", "SIDEWAYS_TRIGGER_CONFIRMATION", "ENTRY_TRIGGER_REQUIRED", "ENTRY_NOT_TRIGGERED"]'
+        ],
+    }
+
+    message = format_watchlist_detail(row)
+
+    assert "CHECK_SPREAD_SLIPPAGE" not in message
+    assert "REDUCE_POSITION_SIZE" not in message
+    assert "SIDEWAYS_TRIGGER_CONFIRMATION" not in message
+    assert "ENTRY_TRIGGER_REQUIRED" not in message
+    assert "Cek spread/slippage; kurangi ukuran posisi; Tunggu konfirmasi di kondisi sideways; tunggu trigger entry" in message
+

@@ -97,6 +97,7 @@ def test_final_watchlist_uses_exact_primary_and_keeps_v3_unchanged(tmp_path: Pat
         "Entry_Zone_High": 2_252.30, "Initial_Stop": 2_094.64,
         "Target_1": 2_370, "Target_2": 6_300,
         "RR_To_Resistance": 0.75, "Plan_Status": "NOT READY",
+        "Decision_Status_Final": "AVOID",
     }]).to_csv(exit_dir / "ENTRY_PLANS.csv", index=False)
     (manifest_dir / "DECISION_ENGINE_MANIFEST_TEST-CANONICAL.json").write_text(
         json.dumps({"Data_Quality_Status": "VALID", "Decision_Owner": "FINAL_DECISION_ENGINE"}),
@@ -157,6 +158,7 @@ def test_final_watchlist_uses_exact_primary_and_keeps_v3_unchanged(tmp_path: Pat
 
     assert enhanced_runtime_bridge.final_watchlist_payloads(ctx, {"Run_ID": "TEST-CANONICAL"}) == []
     row = captured["rows"][0]
+    assert row["decision"] == "AVOID"
     assert row["confidence"] == 82
     assert row["broker_score"] == 78
     assert row["broker_net_flow"] == 9_000_000

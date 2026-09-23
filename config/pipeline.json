@@ -107,7 +107,7 @@
     }
   },
   "broker": {
-    "downloads_dir": "%USERPROFILE%/Downloads",
+    "downloads_dir": "data/runtime/broker_exports",
     "timeout_seconds": 1200,
     "poll_seconds": 2,
     "min_coverage": 0.8,

@@ -1,0 +1,6 @@
+[Unit]
+Description=Stop SDE Swing IDX Disclosure Watcher
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl stop sde-swing-idx-watcher.service

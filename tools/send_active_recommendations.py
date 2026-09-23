@@ -17,6 +17,7 @@ from modules.analytics.lifecycle_presentation import (
     build_active_message as _build_active_message,
 )
 from modules.branding import apply_ftj_branding
+from modules.job_runner.runtime import load_environment_file
 
 
 def build_active_message(*args, **kwargs) -> str:
@@ -35,6 +36,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    load_environment_file(PROJECT_ROOT / ".env")
     output_dir = Path(args.output_dir)
     active_csv = output_dir / "ACTIVE_RECOMMENDATIONS.csv"
     message_path = output_dir / "ACTIVE_RECOMMENDATIONS_TELEGRAM.txt"
