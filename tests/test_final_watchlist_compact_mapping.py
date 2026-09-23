@@ -77,13 +77,15 @@ def test_compact_card_unwraps_nested_waiting_trigger_json() -> None:
         "last_price": 830,
         "phase": "WAIT TRIGGER",
         "waiting_triggers": [
-            '["SIDEWAYS_TRIGGER_CONFIRMATION", "ENTRY_TRIGGER_REQUIRED", "ENTRY_NOT_TRIGGERED"]'
+            '["CHECK_SPREAD_SLIPPAGE", "REDUCE_POSITION_SIZE", "SIDEWAYS_TRIGGER_CONFIRMATION", "ENTRY_TRIGGER_REQUIRED", "ENTRY_NOT_TRIGGERED"]'
         ],
     }
 
     message = format_watchlist_detail(row)
 
+    assert "CHECK_SPREAD_SLIPPAGE" not in message
+    assert "REDUCE_POSITION_SIZE" not in message
     assert "SIDEWAYS_TRIGGER_CONFIRMATION" not in message
     assert "ENTRY_TRIGGER_REQUIRED" not in message
-    assert "Tunggu konfirmasi di kondisi sideways; tunggu trigger entry" in message
+    assert "Cek spread/slippage; kurangi ukuran posisi; Tunggu konfirmasi di kondisi sideways; tunggu trigger entry" in message
 
